@@ -1,0 +1,31 @@
+{
+  "name": "tapmakerwork",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n bridge,studio,desktop -c yellow,cyan,magenta \"npm run dev -w @tapmakerwork/bridge\" \"npm run dev -w @tapmakerwork/studio\" \"npm run dev -w @tapmakerwork/desktop\"",
+    "dev:web": "concurrently -k -n bridge,studio -c yellow,cyan \"npm run dev -w @tapmakerwork/bridge\" \"npm run dev -w @tapmakerwork/studio\"",
+    "build": "npm run build -w @tapmakerwork/protocol && npm run build -w @tapmakerwork/bridge && npm run build -w @tapmakerwork/studio && npm run build -w @tapmakerwork/desktop",
+    "test": "npm run test -w @tapmakerwork/protocol && npm run test -w @tapmakerwork/bridge",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.2",
+    "vitest": "^5.0.1"
+  },
+  "overrides": {
+    "monaco-editor": {
+      "dompurify": "3.4.15"
+    }
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "electron@44.4.2": true
+  }
+}
