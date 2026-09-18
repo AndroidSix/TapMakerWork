@@ -8,12 +8,15 @@ declare global {
     tapMakerWork?: {
       platform: string;
       desktop: boolean;
+      chooseProject?: () => Promise<string | undefined>;
+      onOpenProject?: (listener: (projectPath: string) => void) => () => void;
     };
   }
 }
 
-if (window.tapMakerWork?.desktop) {
-  document.documentElement.classList.add("desktop-shell", `desktop-${window.tapMakerWork.platform}`);
+const desktopPlatform = window.tapMakerWork?.platform || new URLSearchParams(window.location.search).get("desktop");
+if (desktopPlatform) {
+  document.documentElement.classList.add("desktop-shell", `desktop-${desktopPlatform}`);
 }
 
 createRoot(document.getElementById("root")!).render(

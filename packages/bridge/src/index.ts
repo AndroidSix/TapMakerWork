@@ -7,13 +7,15 @@ import {
   type BridgeCapabilities,
   type BridgeEvent,
   type RuntimeCommand,
+  type UiConversionDocument,
+  type UiNode,
   type UiPatch
 } from "@tapmakerwork/protocol";
 import { discoverMakerRuntime, runMakerCommand, runMakerReadOnly } from "./maker.js";
-import { listProjectEntries, readProjectText, resolveProjectRoot, type ProjectBinding } from "./project.js";
+import { listProjectEntries, readProjectText, resolveInsideProject, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
-import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
+import { convertLuaUiFile, loadProjectPreviewConstants, snapshotFromConversion } from "./lua-converter.js";
 
 const host = "127.0.0.1";
 const port = Number(process.env.TAPMAKERWORK_BRIDGE_PORT || 43121);
@@ -29,10 +31,51 @@ if (process.env.TAPMAKERWORK_PROJECT) {
   }
 }
 
-const uiEntry = process.env.TAPMAKERWORK_UI_ENTRY || "scripts/ui/HomePage.lua";
-let conversion = project && fs.existsSync(path.join(project.root, uiEntry))
-  ? convertLuaUiFile(project.root, uiEntry)
-  : undefined;
+interface UiScreenSummary {
+  path: string;
+  name: string;
+  confidence?: UiConversionDocument["confidence"];
+  nodeCount?: number;
+  error?: string;
+}
+
+function uiNodeCount(node: UiNode): number {
+  return 1 + node.children.reduce((total, child) => total + uiNodeCount(child), 0);
+}
+
+function scanUiScreens(projectRoot: string): { summaries: UiScreenSummary[]; documents: Map<string, UiConversionDocument> } {
+  const uiRoot = path.join(projectRoot, "scripts", "ui");
+  const documents = new Map<string, UiConversionDocument>();
+  const summaries: UiScreenSummary[] = [];
+  if (!fs.existsSync(uiRoot)) return { summaries, documents };
+  const constants = loadProjectPreviewConstants(projectRoot);
+  const pending = [uiRoot];
+  while (pending.length) {
+    const directory = pending.pop()!;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const filename = path.join(directory, entry.name);
+      if (entry.isDirectory()) { pending.push(filename); continue; }
+      if (!entry.isFile() || !entry.name.endsWith(".lua")) continue;
+      const relativePath = path.relative(projectRoot, filename).split(path.sep).join("/");
+      try {
+        const document = convertLuaUiFile(projectRoot, relativePath, constants);
+        documents.set(relativePath, document);
+        summaries.push({ path: relativePath, name: path.basename(entry.name, ".lua"), confidence: document.confidence, nodeCount: uiNodeCount(document.root) });
+      } catch (error) {
+        summaries.push({ path: relativePath, name: path.basename(entry.name, ".lua"), error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+  summaries.sort((a, b) => a.name.localeCompare(b.name));
+  return { summaries, documents };
+}
+
+const defaultUiEntry = process.env.TAPMAKERWORK_UI_ENTRY || "scripts/ui/HomePage.lua";
+let activeUiEntry = defaultUiEntry;
+let uiScreens = project ? scanUiScreens(project.root) : { summaries: [] as UiScreenSummary[], documents: new Map<string, UiConversionDocument>() };
+let conversion = uiScreens.documents.get(activeUiEntry) ?? uiScreens.documents.values().next().value;
+if (conversion) activeUiEntry = conversion.sourceFile;
 const editor = new EditorState(conversion ? snapshotFromConversion(conversion) : undefined);
 const runtimeCommands: RuntimeCommand[] = [];
 let nextRuntimeCommandId = 1;
@@ -66,6 +109,29 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
     "access-control-allow-origin": "http://127.0.0.1:4173"
   });
   response.end(JSON.stringify(body));
+}
+
+function sendProjectAsset(response: ServerResponse, filename: string): void {
+  const extension = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml"
+  };
+  const mimeType = mimeTypes[extension];
+  if (!mimeType) throw new Error("unsupported_asset_type");
+  if (!fs.existsSync(filename) || !fs.statSync(filename).isFile()) throw new Error("asset_not_found");
+  response.writeHead(200, {
+    "content-type": mimeType,
+    "cache-control": "no-store",
+    "access-control-allow-origin": "http://127.0.0.1:4173"
+  });
+  fs.createReadStream(filename).pipe(response);
+}
+
+function resolveProjectAsset(projectRoot: string, assetPath: string): string {
+  const direct = resolveInsideProject(projectRoot, assetPath);
+  if (fs.existsSync(direct)) return direct;
+  return resolveInsideProject(projectRoot, path.join("assets", assetPath));
 }
 
 async function readJson(request: IncomingMessage, maxBytes = 1_048_576): Promise<unknown> {
@@ -104,11 +170,16 @@ const server = http.createServer(async (request, response) => {
     } else if (request.method === "GET" && url.pathname === "/api/health") {
       sendJson(response, 200, { ok: true, capabilities, makerVersion: makerRuntime?.version, sandbox, runtimeSessionId, runtimeConnectedAt });
     } else if (request.method === "GET" && url.pathname === "/api/project") {
-      sendJson(response, 200, { project });
+      sendJson(response, 200, { project, activeUiEntry });
     } else if (request.method === "POST" && url.pathname === "/api/project/open") {
       const body = await readJson(request) as { path?: string };
       project = resolveProjectRoot(body.path || "");
-      sendJson(response, 200, { project });
+      uiScreens = scanUiScreens(project.root);
+      conversion = uiScreens.documents.get(defaultUiEntry) ?? uiScreens.documents.values().next().value;
+      activeUiEntry = conversion?.sourceFile ?? defaultUiEntry;
+      const snapshot = editor.reset(conversion ? snapshotFromConversion(conversion) : new EditorState().getSnapshot());
+      broadcast({ type: "ui.snapshot", snapshot });
+      sendJson(response, 200, { project, snapshot, activeUiEntry });
     } else if (request.method === "GET" && url.pathname === "/api/project/files") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, { entries: listProjectEntries(project.root, url.searchParams.get("path") || ".") });
@@ -116,12 +187,45 @@ const server = http.createServer(async (request, response) => {
       if (!project) throw new Error("project_not_open");
       const sourceFile = url.searchParams.get("path");
       if (!sourceFile) throw new Error("project_file_path_required");
-      sendJson(response, 200, { path: sourceFile, text: readProjectText(project.root, sourceFile), readOnly: true });
+      sendJson(response, 200, { path: sourceFile, text: readProjectText(project.root, sourceFile), readOnly: false });
+    } else if (request.method === "POST" && url.pathname === "/api/project/file") {
+      if (!project) throw new Error("project_not_open");
+      const body = await readJson(request, 5_500_000) as { path?: string; text?: string };
+      if (!body.path || typeof body.text !== "string") throw new Error("project_file_content_required");
+      writeProjectText(project.root, body.path, body.text);
+      let snapshot;
+      if (body.path.endsWith(".lua")) {
+        uiScreens = scanUiScreens(project.root);
+        conversion = uiScreens.documents.get(activeUiEntry);
+        if (conversion) {
+          snapshot = editor.reset(snapshotFromConversion(conversion));
+          broadcast({ type: "ui.snapshot", snapshot });
+        }
+      }
+      sendJson(response, 200, { ok: true, path: body.path, snapshot });
+    } else if (request.method === "GET" && url.pathname === "/api/project/asset") {
+      if (!project) throw new Error("project_not_open");
+      const assetPath = url.searchParams.get("path");
+      if (!assetPath) throw new Error("project_asset_path_required");
+      sendProjectAsset(response, resolveProjectAsset(project.root, assetPath));
     } else if (request.method === "GET" && url.pathname === "/api/ui/snapshot") {
       sendJson(response, 200, editor.getSnapshot());
+    } else if (request.method === "GET" && url.pathname === "/api/ui/screens") {
+      if (!project) throw new Error("project_not_open");
+      sendJson(response, 200, { screens: uiScreens.summaries, activePath: activeUiEntry });
+    } else if (request.method === "POST" && url.pathname === "/api/ui/open") {
+      if (!project) throw new Error("project_not_open");
+      const body = await readJson(request) as { path?: string };
+      if (!body.path) throw new Error("ui_screen_path_required");
+      conversion = uiScreens.documents.get(body.path);
+      if (!conversion) throw new Error("ui_screen_not_convertible");
+      activeUiEntry = body.path;
+      const snapshot = editor.reset(snapshotFromConversion(conversion));
+      broadcast({ type: "ui.snapshot", snapshot });
+      sendJson(response, 200, { path: activeUiEntry, snapshot, conversion });
     } else if (request.method === "GET" && url.pathname === "/api/ui/convert") {
       if (!project) throw new Error("project_not_open");
-      const sourceFile = url.searchParams.get("path") || uiEntry;
+      const sourceFile = url.searchParams.get("path") || activeUiEntry;
       conversion = convertLuaUiFile(project.root, sourceFile);
       sendJson(response, 200, conversion);
     } else if (request.method === "POST" && url.pathname === "/api/ui/patch") {

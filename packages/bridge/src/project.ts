@@ -47,6 +47,20 @@ export function readProjectText(projectRoot: string, relativePath: string, maxBy
   return fs.readFileSync(filename, "utf8");
 }
 
+export function writeProjectText(projectRoot: string, relativePath: string, text: string, maxBytes = 5_242_880): void {
+  const filename = resolveInsideProject(projectRoot, relativePath);
+  const stat = fs.statSync(filename);
+  if (!stat.isFile()) throw new Error("project_path_not_file");
+  if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error("project_file_too_large");
+  const temporary = path.join(path.dirname(filename), `.${path.basename(filename)}.tapmakerwork-${process.pid}.tmp`);
+  try {
+    fs.writeFileSync(temporary, text, { encoding: "utf8", mode: stat.mode });
+    fs.renameSync(temporary, filename);
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
+}
+
 export function listProjectEntries(projectRoot: string, relativePath = "."): Array<{
   name: string;
   path: string;
@@ -54,7 +68,7 @@ export function listProjectEntries(projectRoot: string, relativePath = "."): Arr
 }> {
   const directory = relativePath === "." ? projectRoot : resolveInsideProject(projectRoot, relativePath);
   return fs.readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => ![".git", "node_modules", ".tapmakerwork"].includes(entry.name))
+    .filter((entry) => ![".git", "node_modules", ".tapmakerwork", ".DS_Store"].includes(entry.name))
     .slice(0, 250)
     .map((entry) => ({
       name: entry.name,

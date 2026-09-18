@@ -82,6 +82,13 @@ export class EditorState {
     return this.snapshot;
   }
 
+  reset(snapshot: UiSnapshot): UiSnapshot {
+    this.snapshot = { ...snapshot, revision: this.snapshot.revision + 1 };
+    this.undoStack = [];
+    this.redoStack = [];
+    return this.snapshot;
+  }
+
   replaceFromRuntime(snapshot: UiSnapshot): UiSnapshot {
     this.snapshot = { ...snapshot, revision: this.snapshot.revision + 1 };
     return this.snapshot;
