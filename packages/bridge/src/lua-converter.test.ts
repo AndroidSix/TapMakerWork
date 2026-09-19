@@ -127,4 +127,59 @@ describe("Lua UI conversion", () => {
 
     expect(document.root.children[0]?.props.text).toEqual({ $expression: '"州" .. index' });
   });
+
+  it("does not nest sibling locals into factory panels via shared symbol names", () => {
+    const document = convertLuaUiSource(`
+      local function WrapWithRedDot(btn)
+        return UI.Panel { children = { btn } }
+      end
+      local function CreateSubTabs()
+        local kids = {}
+        local btn = UI.Button { text = "tab" }
+        kids[#kids + 1] = WrapWithRedDot(btn)
+        return UI.Panel { id = "subTabs", children = kids }
+      end
+      function M.Show()
+        local sub = CreateSubTabs()
+        local kids = {}
+        kids[#kids + 1] = sub
+        local root_ = UI.Panel {
+          id = "root",
+          children = {
+            UI.Panel { id = "mapBleed", children = kids },
+          },
+        }
+        return root_
+      end
+      return M
+    `, "scripts/ui/MainShellLike.lua");
+
+    expect(document.root.props.id).toBe("root");
+    const mapBleed = document.root.children[0];
+    expect(mapBleed?.props.id).toBe("mapBleed");
+    const subTabs = mapBleed?.children[0];
+    expect(subTabs?.props.id).toBe("subTabs");
+    expect(maxDepth(document.root)).toBeLessThan(6);
+  });
+
+  it("marks non-UI modules instead of failing conversion", () => {
+    const document = convertLuaUiSource(`
+      local M = {}
+      function M.Apply(size)
+        return size + 2
+      end
+      return M
+    `, "scripts/ui/FontBoost.lua");
+
+    expect(document.confidence).toBe("module");
+    expect(document.root.type).toBe("Module");
+  });
 });
+
+function maxDepth(node: { children: Array<{ children: unknown[] }> }): number {
+  const walk = (current: { children: Array<{ children: unknown[] }> }): number => {
+    if (!current.children.length) return 1;
+    return 1 + Math.max(...current.children.map((child) => walk(child as { children: Array<{ children: unknown[] }> })));
+  };
+  return walk(node);
+}

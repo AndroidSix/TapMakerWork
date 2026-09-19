@@ -31,7 +31,10 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     { uri: "tapmakerwork://project", name: "Current Maker project", mimeType: "application/json" },
     { uri: "tapmakerwork://ui/snapshot", name: "Live visual UI snapshot", mimeType: "application/json" },
     { uri: "tapmakerwork://runtime/status", name: "Official Maker Runtime status", mimeType: "application/json" },
-    { uri: "tapmakerwork://runtime/logs", name: "Official Maker Runtime logs", mimeType: "application/json" }
+    { uri: "tapmakerwork://runtime/logs", name: "Official Maker Runtime logs", mimeType: "application/json" },
+    { uri: "tapmakerwork://system/info", name: "Bridge system info", mimeType: "application/json" },
+    { uri: "tapmakerwork://runtime/adapter", name: "Runtime adapter install status", mimeType: "application/json" },
+    { uri: "tapmakerwork://maker/project-meta", name: "Maker project metadata and test QR URL", mimeType: "application/json" }
   ]
 }));
 
@@ -40,7 +43,10 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     "tapmakerwork://project": "/api/project",
     "tapmakerwork://ui/snapshot": "/api/ui/snapshot",
     "tapmakerwork://runtime/status": "/api/maker/preview/status",
-    "tapmakerwork://runtime/logs": "/api/maker/preview/logs"
+    "tapmakerwork://runtime/logs": "/api/maker/preview/logs",
+    "tapmakerwork://system/info": "/api/system/info",
+    "tapmakerwork://runtime/adapter": "/api/runtime/adapter",
+    "tapmakerwork://maker/project-meta": "/api/maker/project-meta"
   };
   const route = routes[request.params.uri];
   if (!route) throw new Error("resource_not_found");
@@ -84,7 +90,41 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     { name: "ui_undo", description: "Undo the latest in-memory visual patch.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
-    { name: "ui_redo", description: "Redo the latest in-memory visual patch.", inputSchema: { type: "object", properties: {}, additionalProperties: false } }
+    { name: "ui_redo", description: "Redo the latest in-memory visual patch.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    {
+      name: "project_search",
+      description: "Search text inside the bound Maker project files.",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" }, limit: { type: "number" } },
+        required: ["query"],
+        additionalProperties: false
+      }
+    },
+    { name: "git_status", description: "Read-only git status for the bound Maker project.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    { name: "maker_preview_status", description: "Official Maker preview status.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    { name: "maker_preview_logs", description: "Official Maker preview / supervisor logs when available.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    { name: "maker_preview_start", description: "Start official Maker preview for the bound project.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    { name: "maker_preview_stop", description: "Stop official Maker preview for the bound project.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    { name: "maker_preview_refresh", description: "Refresh official Maker preview for the bound project.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    { name: "maker_doctor", description: "Run official Maker doctor for the bound project.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    { name: "maker_build", description: "Run official Maker remote build (maker_build_current_directory equivalent). Does not auto-open preview URLs.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    { name: "maker_qrcode", description: "Generate official Maker test QR code for the bound project.", inputSchema: {
+      type: "object",
+      properties: { confirmedScreenOrientation: { type: "string", enum: ["portrait", "landscape"] } },
+      additionalProperties: false
+    } },
+    { name: "maker_project_meta", description: "Read Maker project.json metadata including test QR URL.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    {
+      name: "export_runtime_adapter",
+      description: "Export the staged Runtime adapter package into TapMakerWork outputs/runtime-adapter. Does not write the Maker project.",
+      inputSchema: {
+        type: "object",
+        properties: { projectName: { type: "string" } },
+        additionalProperties: false
+      }
+    },
+    { name: "runtime_adapter_status", description: "Whether TapMakerWorkBridge.lua is installed in the bound Maker project.", inputSchema: { type: "object", properties: {}, additionalProperties: false } }
   ]
 }));
 
@@ -115,6 +155,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     case "ui_undo": return jsonText(await bridge("/api/ui/undo", { method: "POST" }));
     case "ui_redo": return jsonText(await bridge("/api/ui/redo", { method: "POST" }));
+    case "project_search": {
+      const query = encodeURIComponent(String(args.query || ""));
+      const limit = Number(args.limit || 50);
+      return jsonText(await bridge(`/api/project/search?q=${query}&limit=${limit}`));
+    }
+    case "git_status": return jsonText(await bridge("/api/git/status"));
+    case "maker_preview_status": return jsonText(await bridge("/api/maker/preview/status"));
+    case "maker_preview_logs": return jsonText(await bridge("/api/maker/preview/logs"));
+    case "maker_preview_start":
+    case "maker_preview_stop":
+    case "maker_preview_refresh": {
+      const action = request.params.name.replace("maker_preview_", "");
+      return jsonText(await bridge(`/api/maker/preview/${action}`, { method: "POST" }));
+    }
+    case "maker_doctor": return jsonText(await bridge("/api/maker/doctor"));
+    case "maker_build": return jsonText(await bridge("/api/maker/build", { method: "POST" }));
+    case "maker_qrcode": {
+      return jsonText(await bridge("/api/maker/qrcode", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          confirmedScreenOrientation: args.confirmedScreenOrientation
+        })
+      }));
+    }
+    case "maker_project_meta": return jsonText(await bridge("/api/maker/project-meta"));
+    case "export_runtime_adapter": {
+      return jsonText(await bridge("/api/runtime/adapter/export", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectName: args.projectName })
+      }));
+    }
+    case "runtime_adapter_status": return jsonText(await bridge("/api/runtime/adapter"));
     default: throw new Error(`unknown_tool:${request.params.name}`);
   }
 });

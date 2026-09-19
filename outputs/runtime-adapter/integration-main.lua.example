@@ -1,0 +1,26 @@
+-- TapMakerWork Runtime adapter integration sketch
+-- Project: wujinxianyu
+-- Generated: 2026-09-19T04:09:00.177Z
+--
+-- 1) Copy TapMakerWorkBridge.lua into the project, e.g. scripts/core/TapMakerWorkBridge.lua
+-- 2) From the game bootstrap / main UI host, after the UI root exists:
+
+local TapMakerWorkBridge = require("core.TapMakerWorkBridge")
+
+-- Call once after UI.SetRoot / first screen mount:
+TapMakerWorkBridge.Start({
+  url = "http://127.0.0.1:43121",
+  pollInterval = 0.1,
+  frames = false,
+  rootProvider = function()
+    return UI.GetRoot()
+  end,
+})
+
+-- Call every frame from the existing update loop:
+-- TapMakerWorkBridge.Update(dt)
+
+-- 3) Keep TapMakerWork IDE running with the same project bound.
+-- 4) Do not use official preview refresh for live visual patches.
+--
+-- This export is a review package. It does NOT modify any Maker project.

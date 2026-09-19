@@ -1,9 +1,30 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell, WebContentsView } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 app.setName("TapMakerWork");
+
+let mainWindow: BrowserWindow | null = null;
+let previewView: WebContentsView | null = null;
+
+function ensurePreviewView(): { view: WebContentsView; window: BrowserWindow } | { error: string } {
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getAllWindows()[0];
+  if (!window) return { error: "window_unavailable" };
+  if (!previewView) {
+    previewView = new WebContentsView({
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        partition: "persist:tapmakerwork-preview"
+      }
+    });
+    window.contentView.addChildView(previewView);
+  }
+  previewView.setVisible(false);
+  return { view: previewView, window };
+}
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -21,6 +42,7 @@ function createWindow(): void {
       sandbox: true
     }
   });
+  mainWindow = window;
   const studioUrl = new URL(process.env.TAPMAKERWORK_STUDIO_URL || "http://127.0.0.1:4173");
   studioUrl.searchParams.set("desktop", process.platform);
   void window.loadURL(studioUrl.toString());
@@ -31,6 +53,10 @@ function createWindow(): void {
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
+  });
+  window.on("closed", () => {
+    mainWindow = null;
+    previewView = null;
   });
 }
 
@@ -46,6 +72,52 @@ async function chooseProject(window: BrowserWindow): Promise<string | undefined>
 ipcMain.handle("tapmakerwork:choose-project", async (event) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   return window ? chooseProject(window) : undefined;
+});
+
+ipcMain.handle("tapmakerwork:preview-mount", async (_event, opts: {
+  url: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  orientation?: string;
+}) => {
+  const ensured = ensurePreviewView();
+  if ("error" in ensured) return { ok: false, error: ensured.error };
+  const { view } = ensured;
+  if (!opts?.url) return { ok: false, error: "preview_url_required" };
+  const width = Math.max(120, Math.round(opts.width));
+  const height = Math.max(160, Math.round(opts.height));
+  view.setBounds({ x: Math.round(opts.x), y: Math.round(opts.y), width, height });
+  try {
+    const current = view.webContents.getURL();
+    if (current !== opts.url) await view.webContents.loadURL(opts.url);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  view.setVisible(true);
+  return { ok: true };
+});
+
+ipcMain.handle("tapmakerwork:preview-reload", async () => {
+  if (!previewView) return { ok: false };
+  previewView.webContents.reload();
+  return { ok: true };
+});
+
+ipcMain.handle("tapmakerwork:preview-unmount", async () => {
+  if (previewView) previewView.setVisible(false);
+  return { ok: true };
+});
+
+ipcMain.handle("tapmakerwork:preview-capture", async () => {
+  if (!previewView || previewView.webContents.isDestroyed()) return { ok: false, error: "preview_not_mounted" };
+  try {
+    const image = await previewView.webContents.capturePage();
+    return { ok: true, dataUrl: image.toDataURL() };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 });
 
 app.whenReady().then(() => {
@@ -85,5 +157,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
+  previewView = null;
+  mainWindow = null;
   if (process.platform !== "darwin") app.quit();
 });

@@ -54,7 +54,7 @@ export interface UiConversionDocument {
   formatVersion: 1;
   sourceFile: string;
   sourceHash: string;
-  confidence: "static" | "hybrid" | "runtime";
+  confidence: "static" | "hybrid" | "runtime" | "module";
   root: UiNode;
   diagnostics: UiConversionDiagnostic[];
 }
@@ -64,6 +64,7 @@ export interface UiPatch {
   baseRevision: number;
   nodeId: string;
   props: Record<string, UiValue | undefined>;
+  source?: UiSourceLocation | undefined;
 }
 
 export interface BridgeCapabilities {
@@ -75,26 +76,59 @@ export interface BridgeCapabilities {
   platform: "aix" | "android" | "darwin" | "freebsd" | "haiku" | "linux" | "openbsd" | "sunos" | "win32" | "cygwin" | "netbsd";
 }
 
+export type PreviewTransport = "auto" | "iframe" | "webcontentsview";
+
+export interface PreviewPanelState {
+  url: string;
+  urlSource: "manual" | "qrcode" | "none";
+  orientation: "portrait" | "landscape";
+  autoRefreshIframe: boolean;
+  autoRefreshMaker: boolean;
+  transport: PreviewTransport;
+  lastRefreshedAt?: string | undefined;
+  lastShotPath?: string | undefined;
+  reloadToken: number;
+}
+
+export type SnapshotSource = "conversion" | "sidecar" | "runtime" | "empty";
+
 export type BridgeEvent =
   | { type: "session.hello"; protocolVersion: typeof PROTOCOL_VERSION; capabilities: BridgeCapabilities }
-  | { type: "ui.snapshot"; snapshot: UiSnapshot }
-  | { type: "ui.patch.applied"; requestId: string; snapshot: UiSnapshot }
+  | { type: "ui.snapshot"; snapshot: UiSnapshot; source?: SnapshotSource }
+  | { type: "ui.patch.applied"; requestId: string; snapshot: UiSnapshot; source?: SnapshotSource }
   | { type: "ui.patch.rejected"; requestId: string; reason: string; snapshot: UiSnapshot }
   | { type: "log.append"; channel: LogChannel; lines: string[] }
-  | { type: "runtime.frame"; frameId: number; mimeType: string; data: string; width: number; height: number };
+  | { type: "runtime.frame"; frameId: number; mimeType: string; data: string; width: number; height: number }
+  | { type: "preview.panel"; panel: PreviewPanelState; reason?: string };
 
 export type RuntimeCommand =
   | { id: number; type: "ui.patch"; patch: UiPatch }
   | { id: number; type: "ui.replace"; snapshot: UiSnapshot }
   | { id: number; type: "runtime.pause"; paused: boolean };
 
+function nodeChildren(node: UiNode): UiNode[] {
+  return Array.isArray(node.children) ? node.children : [];
+}
+
 export function findUiNode(root: UiNode, id: string): UiNode | undefined {
+  if (!root || typeof root !== "object") return undefined;
   if (root.id === id) return root;
-  for (const child of root.children) {
+  for (const child of nodeChildren(root)) {
     const match = findUiNode(child, id);
     if (match) return match;
   }
   return undefined;
+}
+
+export function findParentInfo(root: UiNode, nodeId: string): { parentId: string; index: number } | null {
+  const kids = nodeChildren(root);
+  const index = kids.findIndex((child) => child.id === nodeId);
+  if (index >= 0) return { parentId: root.id, index };
+  for (const child of kids) {
+    const found = findParentInfo(child, nodeId);
+    if (found) return found;
+  }
+  return null;
 }
 
 export function applyUiPatch(snapshot: UiSnapshot, patch: UiPatch): UiSnapshot {
@@ -113,8 +147,8 @@ export function applyUiPatch(snapshot: UiSnapshot, patch: UiPatch): UiSnapshot {
       }
       return { ...node, props };
     }
-    const children = node.children.map(visit);
-    return children.some((child, index) => child !== node.children[index]) ? { ...node, children } : node;
+    const children = nodeChildren(node).map(visit);
+    return children.some((child, index) => child !== nodeChildren(node)[index]) ? { ...node, children } : node;
   };
 
   const root = visit(snapshot.root);
@@ -122,7 +156,205 @@ export function applyUiPatch(snapshot: UiSnapshot, patch: UiPatch): UiSnapshot {
   return { ...snapshot, revision: snapshot.revision + 1, root, selectedId: patch.nodeId };
 }
 
+export type UiNodeType = "Panel" | "Label" | "Button" | "Image";
+
+export type UiTreeOp =
+  | { type: "toggle-visible"; nodeId: string }
+  | { type: "move"; nodeId: string; direction: "up" | "down" }
+  | { type: "delete"; nodeId: string }
+  | { type: "insert-child"; nodeId: string; nodeType?: UiNodeType; name?: string }
+  | { type: "insert-sibling"; nodeId: string; nodeType?: UiNodeType; name?: string }
+  | { type: "rename"; nodeId: string; name: string }
+  | { type: "duplicate"; nodeId: string }
+  | { type: "relocate"; nodeId: string; parentId: string; index: number };
+
+function cloneNode(node: UiNode): UiNode {
+  return {
+    ...node,
+    props: { ...node.props },
+    children: nodeChildren(node).map(cloneNode)
+  };
+}
+
+function defaultNode(type: UiNodeType, name: string, id: string): UiNode {
+  const base: UiNode = {
+    id,
+    type,
+    name,
+    props: { id: name },
+    children: []
+  };
+  if (type === "Panel") {
+    base.props = {
+      id: name,
+      width: "100%",
+      minHeight: 48,
+      flexDirection: "column",
+      backgroundColor: [30, 40, 58, 180]
+    };
+  } else if (type === "Label") {
+    base.props = { id: name, text: name, fontSize: 16, fontColor: [232, 237, 245, 255] };
+  } else if (type === "Button") {
+    base.props = { id: name, text: name, height: 40, backgroundColor: [48, 78, 130, 255], borderRadius: 8 };
+  } else if (type === "Image") {
+    base.props = { id: name, width: 64, height: 64, backgroundColor: [20, 28, 40, 255] };
+  }
+  return base;
+}
+
+function reassignIds(node: UiNode, suffix: string, path = "0"): UiNode {
+  const id = `${node.id}#${suffix}:${path}`;
+  const props = { ...node.props };
+  if (typeof props.id === "string") props.id = `${props.id}_copy`;
+  return {
+    ...node,
+    id,
+    name: `${node.name}_copy`,
+    props,
+    children: nodeChildren(node).map((child, index) => reassignIds(child, suffix, `${path}.${index}`))
+  };
+}
+
+function isAncestor(root: UiNode, ancestorId: string, nodeId: string): boolean {
+  if (ancestorId === nodeId) return true;
+  const ancestor = findUiNode(root, ancestorId);
+  if (!ancestor) return false;
+  return Boolean(findUiNode(ancestor, nodeId));
+}
+
+export function applyUiTreeOp(snapshot: UiSnapshot, op: UiTreeOp): UiSnapshot {
+  if (!op?.nodeId) throw new Error("tree_op_node_required");
+  const isRoot = snapshot.root.id === op.nodeId;
+  let selectedId = op.nodeId;
+
+  const mapNodeSelf = (node: UiNode): UiNode => {
+    if (op.type === "toggle-visible") {
+      const hidden = node.props.visible === false;
+      return { ...cloneNode(node), props: { ...node.props, visible: !hidden ? false : true } };
+    }
+    if (op.type === "rename") {
+      const name = op.name || node.name;
+      return { ...cloneNode(node), name, props: { ...node.props, id: name } };
+    }
+    if (op.type === "insert-child") {
+      const type = op.nodeType || "Panel";
+      const name = op.name || `New${type}`;
+      const childId = `${node.id}:new:${Date.now()}`;
+      selectedId = childId;
+      return {
+        ...cloneNode(node),
+        children: [...nodeChildren(node).map(cloneNode), defaultNode(type, name, childId)]
+      };
+    }
+    return cloneNode(node);
+  };
+
+  if (isRoot && (op.type === "delete" || op.type === "move" || op.type === "insert-sibling")) {
+    throw new Error(op.type === "delete" ? "tree_op_cannot_delete_root" : "tree_op_root_no_sibling_or_move");
+  }
+  if (op.type === "duplicate" && isRoot) {
+    throw new Error("tree_op_cannot_duplicate_root");
+  }
+
+  if (op.type === "relocate") {
+    if (isRoot) throw new Error("tree_op_cannot_relocate_root");
+    if (isAncestor(snapshot.root, op.nodeId, op.parentId)) throw new Error("tree_op_relocate_cycle");
+    const source = findUiNode(snapshot.root, op.nodeId);
+    if (!source) throw new Error(`node_not_found:${op.nodeId}`);
+    const extracted = cloneNode(source);
+    const strip = (node: UiNode): UiNode => {
+      const next = nodeChildren(node)
+        .filter((child) => child.id !== op.nodeId)
+        .map(strip);
+      return { ...cloneNode(node), children: next };
+    };
+    const stripped = strip(snapshot.root);
+    const insert = (node: UiNode): UiNode => {
+      if (node.id === op.parentId) {
+        const kids = nodeChildren(node).map(cloneNode);
+        const index = Math.max(0, Math.min(op.index, kids.length));
+        kids.splice(index, 0, extracted);
+        selectedId = extracted.id;
+        return { ...cloneNode(node), children: kids };
+      }
+      return { ...cloneNode(node), children: nodeChildren(node).map(insert) };
+    };
+    const root = insert(stripped);
+    return { revision: snapshot.revision + 1, root, selectedId: extracted.id };
+  }
+
+  const walk = (node: UiNode): UiNode | null => {
+    if (!isRoot && node.id === op.nodeId && (op.type === "toggle-visible" || op.type === "rename" || op.type === "insert-child")) {
+      return mapNodeSelf(node);
+    }
+    if (isRoot && node.id === op.nodeId) {
+      return mapNodeSelf(node);
+    }
+
+    const children = nodeChildren(node);
+
+    // Parent-level structural ops
+    const childIndex = children.findIndex((child) => child.id === op.nodeId);
+    if (childIndex >= 0 && (op.type === "delete" || op.type === "move" || op.type === "insert-sibling" || op.type === "duplicate")) {
+      if (op.type === "delete") {
+        return { ...cloneNode(node), children: children.filter((_, index) => index !== childIndex).map(cloneNode) };
+      }
+      if (op.type === "move") {
+        const dest = op.direction === "up" ? childIndex - 1 : childIndex + 1;
+        if (dest < 0 || dest >= children.length) throw new Error("tree_op_edge");
+        const reordered = children.map(cloneNode);
+        const [moved] = reordered.splice(childIndex, 1);
+        reordered.splice(dest, 0, moved!);
+        return { ...cloneNode(node), children: reordered };
+      }
+      if (op.type === "insert-sibling") {
+        const type = op.nodeType || "Panel";
+        const name = op.name || `New${type}`;
+        const siblingId = `${node.id}:new:${Date.now()}`;
+        selectedId = siblingId;
+        const reordered = children.map(cloneNode);
+        reordered.splice(childIndex + 1, 0, defaultNode(type, name, siblingId));
+        return { ...cloneNode(node), children: reordered };
+      }
+      if (op.type === "duplicate") {
+        const copy = reassignIds(cloneNode(children[childIndex]!), String(Date.now()));
+        selectedId = copy.id;
+        const reordered = children.map(cloneNode);
+        reordered.splice(childIndex + 1, 0, copy);
+        return { ...cloneNode(node), children: reordered };
+      }
+    }
+
+    let changed = false;
+    const nextChildren = children.map((child) => {
+      const rewritten = walk(child);
+      if (rewritten && rewritten.id !== child.id) changed = true;
+      if (rewritten && rewritten !== child) changed = true;
+      return rewritten ?? cloneNode(child);
+    });
+    if (!changed) return null;
+    return { ...cloneNode(node), children: nextChildren };
+  };
+
+  const root = walk(snapshot.root);
+  if (!root) throw new Error(`node_not_found:${op.nodeId}`);
+  return {
+    revision: snapshot.revision + 1,
+    root,
+    selectedId
+  };
+}
+
 export const DEFAULT_DEVICE_PROFILES: DeviceProfile[] = [
+  {
+    id: "maker-portrait",
+    label: "Maker 720 竖屏",
+    width: 720,
+    height: 1280,
+    dpr: 2,
+    safeArea: { top: 36, right: 0, bottom: 28, left: 0 },
+    orientation: "portrait"
+  },
   {
     id: "phone-portrait",
     label: "手机竖屏",

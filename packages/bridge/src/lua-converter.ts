@@ -26,12 +26,14 @@ interface ConversionContext {
   source: string;
   sourceFile: string;
   symbols: Map<string, SymbolValue>;
+  moduleSymbols: Map<string, SymbolValue>;
   functions: Map<string, FunctionDeclaration>;
   constants: Map<string, UiValue>;
   diagnostics: UiConversionDiagnostic[];
   candidates: UiNode[];
   expansionDepth: number;
   resolvingSymbols: Set<string>;
+  expansionStack: Set<string>;
 }
 
 function sourceText(context: ConversionContext, node: Located): string {
@@ -188,32 +190,108 @@ function dynamicNode(context: ConversionContext, expression: Expression, ordinal
   };
 }
 
+function collectSymbols(context: ConversionContext, statements: Statement[]): void {
+  for (const statement of statements) {
+    if (statement.type === "LocalStatement") {
+      statement.variables.forEach((variable, index) => {
+        const expression = statement.init[index];
+        if (!expression || variable.type !== "Identifier") return;
+        const previous = context.symbols.get(variable.name);
+        context.symbols.set(variable.name, { expression, appended: previous?.appended ?? [] });
+      });
+      continue;
+    }
+    if (statement.type === "AssignmentStatement") {
+      appendAssignment(context, statement);
+      continue;
+    }
+    if (statement.type === "IfStatement") {
+      for (const clause of statement.clauses) collectSymbols(context, clause.body);
+      continue;
+    }
+    if (statement.type === "DoStatement" || statement.type === "WhileStatement" || statement.type === "RepeatStatement" || statement.type === "ForNumericStatement" || statement.type === "ForGenericStatement") {
+      collectSymbols(context, statement.body);
+    }
+  }
+}
+
+function walkStatements(statements: Statement[], visit: (statement: Statement) => void): void {
+  for (const statement of statements) {
+    visit(statement);
+    if (statement.type === "IfStatement") {
+      for (const clause of statement.clauses) walkStatements(clause.body, visit);
+    } else if (statement.type === "DoStatement" || statement.type === "WhileStatement" || statement.type === "RepeatStatement" || statement.type === "ForNumericStatement" || statement.type === "ForGenericStatement") {
+      walkStatements(statement.body, visit);
+    }
+  }
+}
+
+function collectReturnedWidgets(context: ConversionContext, statements: Statement[], ordinal = 0): UiNode[] {
+  const nodes: UiNode[] = [];
+  walkStatements(statements, (statement) => {
+    if (statement.type !== "ReturnStatement") return;
+    for (const argument of statement.arguments) {
+      const widget = toWidget(context, argument, ordinal);
+      if (widget) nodes.push(widget);
+    }
+  });
+  return nodes;
+}
+
+function expandFunctionWidget(
+  context: ConversionContext,
+  declaration: FunctionDeclaration,
+  args: Expression[],
+  ordinal: number
+): UiNode | undefined {
+  const name = declaration.identifier?.type === "Identifier" ? declaration.identifier.name : undefined;
+  if (name) {
+    if (context.expansionStack.has(name) || context.expansionDepth >= 8) {
+      return dynamicNode(context, { loc: declaration.loc } as Expression, ordinal);
+    }
+  }
+  const nested: ConversionContext = {
+    ...context,
+    // Current call-site scope (function locals + module symbols), not module-only.
+    symbols: new Map(context.symbols),
+    candidates: [],
+    expansionDepth: context.expansionDepth + 1,
+    resolvingSymbols: new Set(),
+    expansionStack: new Set(name ? [...context.expansionStack, name] : context.expansionStack)
+  };
+  declaration.parameters.forEach((parameter, index) => {
+    if (parameter.type === "Identifier" && args[index]) {
+      nested.symbols.set(parameter.name, { expression: args[index], appended: [] });
+    }
+  });
+  collectSymbols(nested, declaration.body);
+  const returned = collectReturnedWidgets(nested, declaration.body, ordinal);
+  return returned[0];
+}
+
 function toWidget(context: ConversionContext, expression: Expression, ordinal = 0): UiNode | undefined {
   if (expression.type === "Identifier") {
-    const resolved = context.symbols.get(expression.name)?.expression;
-    if (resolved && resolved !== expression) return toWidget(context, resolved, ordinal);
+    if (context.resolvingSymbols.has(expression.name)) return dynamicNode(context, expression, ordinal);
+    context.resolvingSymbols.add(expression.name);
+    try {
+      const resolved = context.symbols.get(expression.name)?.expression;
+      if (resolved && resolved !== expression) return toWidget(context, resolved, ordinal);
+    } finally {
+      context.resolvingSymbols.delete(expression.name);
+    }
+    return undefined;
   }
-  if ((expression.type === "CallExpression" || expression.type === "TableCallExpression") && expression.base.type === "Identifier") {
-    const declaration = context.functions.get(expression.base.name);
-    if (declaration && context.expansionDepth < 12) {
+  if ((expression.type === "CallExpression" || expression.type === "TableCallExpression") && (expression.base.type === "Identifier" || expression.base.type === "MemberExpression" || expression.base.type === "IndexExpression")) {
+    const fullName = calleeName(expression.base);
+    const leaf = fullName.split(/[.:]/).at(-1) || fullName;
+    const declaration = context.functions.get(fullName)
+      ?? context.functions.get(leaf)
+      ?? context.functions.get(`Q.${leaf}`)
+      ?? context.functions.get(`PC.${leaf}`);
+    if (declaration) {
       const args = expression.type === "CallExpression" ? expression.arguments : [expression.arguments];
-      const nested: ConversionContext = {
-        ...context,
-        symbols: new Map(context.symbols),
-        candidates: [],
-        expansionDepth: context.expansionDepth + 1,
-        resolvingSymbols: new Set(context.resolvingSymbols)
-      };
-      declaration.parameters.forEach((parameter, index) => {
-        if (parameter.type === "Identifier" && args[index]) nested.symbols.set(parameter.name, { expression: args[index], appended: [] });
-      });
-      for (const statement of declaration.body) {
-        if (statement.type !== "ReturnStatement") continue;
-        for (const returned of statement.arguments) {
-          const widget = toWidget(nested, returned, ordinal);
-          if (widget) return widget;
-        }
-      }
+      const expanded = expandFunctionWidget(context, declaration, args, ordinal);
+      if (expanded) return expanded;
     }
   }
   const call = widgetTable(expression);
@@ -357,16 +435,78 @@ function scanStatements(context: ConversionContext, statements: Statement[]): vo
 }
 
 function scanFunction(parent: ConversionContext, declaration: FunctionDeclaration): void {
-  const nested: ConversionContext = { ...parent, symbols: new Map(parent.symbols), candidates: [], resolvingSymbols: new Set() };
+  const nested: ConversionContext = {
+    ...parent,
+    symbols: new Map(parent.symbols),
+    candidates: [],
+    resolvingSymbols: new Set(),
+    expansionStack: new Set(parent.expansionStack)
+  };
   scanStatements(nested, declaration.body);
-  const rootSymbol = nested.symbols.get("root")?.expression;
+  const returned = collectReturnedWidgets(nested, declaration.body);
+  if (returned.length) parent.candidates.push(...returned);
+  const rootSymbol = nested.symbols.get("root")?.expression
+    ?? nested.symbols.get("root_")?.expression;
   const root = rootSymbol ? toWidget(nested, rootSymbol) : undefined;
   if (root) parent.candidates.push(root);
-  else parent.candidates.push(...nested.candidates);
+  else if (!returned.length) parent.candidates.push(...nested.candidates);
 }
 
 function nodeSize(node: UiNode): number {
-  return 1 + node.children.reduce((sum, child) => sum + nodeSize(child), 0);
+  if (!node || typeof node !== "object") return 0;
+  const children = Array.isArray(node.children) ? node.children : [];
+  return 1 + children.reduce((sum, child) => sum + nodeSize(child), 0);
+}
+
+function countConcreteNodes(node: UiNode): number {
+  return (node.type === "Slot" || node.type === "Module" ? 0 : 1) + node.children.reduce((sum, child) => sum + countConcreteNodes(child), 0);
+}
+
+function treeDepth(node: UiNode): number {
+  return 1 + node.children.reduce((max, child) => Math.max(max, treeDepth(child)), 0);
+}
+
+function maxSameSourceLineRepeat(node: UiNode, line?: number, repeat = 0): number {
+  const current = node.source?.line;
+  const next = line !== undefined && current === line ? repeat + 1 : 1;
+  let max = next;
+  for (const child of node.children) {
+    max = Math.max(max, maxSameSourceLineRepeat(child, current ?? line, next));
+  }
+  return max;
+}
+
+function scoreCandidate(node: UiNode): number {
+  const concrete = countConcreteNodes(node);
+  const size = nodeSize(node);
+  let score = concrete * 8 + size;
+  const propsId = typeof node.props.id === "string" ? node.props.id : "";
+  const name = node.name || "";
+  const factory = typeof node.props.$factory === "string" ? node.props.$factory : "";
+  if (propsId === "root" || name === "root" || /root_?$/i.test(name)) score += 800;
+  if (/^(show|build|create|open|main|load)$/i.test(name) || /\.(Show|Build|Create|Open|Main)$/i.test(factory)) score += 120;
+  if (propsId && propsId !== "root") score += 20;
+  const lineRepeat = maxSameSourceLineRepeat(node);
+  if (lineRepeat > 2) score -= 250 * (lineRepeat - 2);
+  const depth = treeDepth(node);
+  if (depth > 10) score -= 80 * (depth - 10);
+  const slots = size - concrete;
+  if (concrete > 0 && slots / concrete > 0.75) score -= 90;
+  return score;
+}
+
+function pickConversionRoot(candidates: UiNode[]): UiNode | undefined {
+  if (!candidates.length) return undefined;
+  let best: UiNode | undefined;
+  let bestScore = -Infinity;
+  for (const candidate of candidates) {
+    const score = scoreCandidate(candidate);
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 function firstSelectable(root: UiNode): string {
@@ -388,26 +528,109 @@ function withStableTreeIds(node: UiNode, pathParts: number[] = [0]): UiNode {
   };
 }
 
-export function convertLuaUiSource(source: string, sourceFile: string, constants: Map<string, UiValue> = new Map()): UiConversionDocument {
-  const context: ConversionContext = {
+function emptyContext(source: string, sourceFile: string, constants: Map<string, UiValue>): ConversionContext {
+  return {
     source,
     sourceFile,
     symbols: new Map(),
+    moduleSymbols: new Map(),
     functions: new Map(),
     constants,
     diagnostics: [],
     candidates: [],
     expansionDepth: 0,
-    resolvingSymbols: new Set()
+    resolvingSymbols: new Set(),
+    expansionStack: new Set()
   };
+}
+
+function moduleStubDocument(source: string, sourceFile: string, message: string): UiConversionDocument {
+  const name = path.basename(sourceFile, ".lua");
+  return {
+    formatVersion: 1,
+    sourceFile,
+    sourceHash: crypto.createHash("sha256").update(source).digest("hex"),
+    confidence: "module",
+    root: {
+      id: `${sourceFile}:module:0`,
+      type: "Module",
+      name,
+      props: {
+        id: name,
+        $module: true,
+        note: "未检测到可静态转换的 UI 根，已标记为逻辑/样式/工具模块。"
+      },
+      source: { file: sourceFile, line: 1 },
+      children: []
+    },
+    diagnostics: [{ severity: "info", message }]
+  };
+}
+
+function registerModuleFunctions(
+  functions: Map<string, FunctionDeclaration>,
+  projectRoot: string,
+  source: string
+): void {
+  const requires = [...source.matchAll(/local\s+([A-Za-z_]\w*)\s*=\s*require\s*\(\s*["']([^"']+)["']\s*\)/g)];
+  for (const match of requires) {
+    const [, alias, moduleName] = match;
+    if (!alias || !moduleName) continue;
+    if (!/^(ui|config)\./.test(moduleName)) continue;
+    const relativeModule = `scripts/${moduleName.replace(/\./g, "/")}.lua`;
+    try {
+      const moduleFile = resolveInsideProject(projectRoot, relativeModule);
+      const moduleSource = fs.readFileSync(moduleFile, "utf8");
+      const chunk = luaparse.parse(moduleSource, { locations: true, ranges: true, luaVersion: "5.3", encodingMode: "none" });
+      const saveFunction = (name: string, declaration: FunctionDeclaration): void => {
+        const leaf = name.split(/[.:]/).at(-1) || name;
+        functions.set(name, declaration);
+        functions.set(leaf, declaration);
+        functions.set(`${alias}.${leaf}`, declaration);
+      };
+      walkStatements(chunk.body, (statement) => {
+        if (statement.type !== "FunctionDeclaration") return;
+        const identifier = statement.identifier;
+        if (identifier?.type === "Identifier") saveFunction(identifier.name, statement);
+        else if (identifier?.type === "MemberExpression") saveFunction(calleeName(identifier), statement);
+      });
+      walkStatements(chunk.body, (statement) => {
+        if (statement.type !== "AssignmentStatement") return;
+        statement.variables.forEach((variable, index) => {
+          const value = statement.init[index];
+          if (!value || value.type !== "FunctionDeclaration") return;
+          if (variable.type === "MemberExpression") saveFunction(calleeName(variable), value);
+          else if (variable.type === "Identifier") saveFunction(variable.name, value);
+        });
+      });
+    } catch {
+      // optional module
+    }
+  }
+}
+
+export function convertLuaUiSource(
+  source: string,
+  sourceFile: string,
+  constants: Map<string, UiValue> = new Map(),
+  extraFunctions?: Map<string, FunctionDeclaration>
+): UiConversionDocument {
+  const context = emptyContext(source, sourceFile, constants);
+  if (extraFunctions) {
+    for (const [name, declaration] of extraFunctions) context.functions.set(name, declaration);
+  }
   try {
     const chunk = luaparse.parse(source, { locations: true, ranges: true, luaVersion: "5.3", encodingMode: "none" });
+    collectSymbols(context, chunk.body);
+    context.moduleSymbols = new Map(context.symbols);
     scanStatements(context, chunk.body);
   } catch (error) {
     context.diagnostics.push({ severity: "error", message: error instanceof Error ? error.message : String(error) });
   }
-  const candidate = context.candidates.sort((a, b) => nodeSize(b) - nodeSize(a))[0];
-  if (!candidate) throw new Error(context.diagnostics[0]?.message || "no_ui_root_found");
+  const candidate = pickConversionRoot(context.candidates);
+  if (!candidate) {
+    return moduleStubDocument(source, sourceFile, context.diagnostics[0]?.message || "no_ui_root_found");
+  }
   const designWidth = [...constants.entries()].find(([key, value]) => key.endsWith(".DESIGN_W") && typeof value === "number")?.[1];
   if (typeof designWidth === "number") candidate.props.$previewDesignWidth = designWidth;
   const root = withStableTreeIds(candidate);
@@ -429,7 +652,9 @@ export function convertLuaUiSource(source: string, sourceFile: string, constants
 }
 
 function countConcrete(node: UiNode): number {
-  return (node.type === "Slot" ? 0 : 1) + node.children.reduce((sum, child) => sum + countConcrete(child), 0);
+  if (!node || typeof node !== "object") return 0;
+  const children = Array.isArray(node.children) ? node.children : [];
+  return (node.type === "Slot" || node.type === "Module" ? 0 : 1) + children.reduce((sum, child) => sum + countConcrete(child), 0);
 }
 
 export function convertLuaUiFile(projectRoot: string, relativeFile: string, previewConstants?: Map<string, UiValue>): UiConversionDocument {
@@ -437,7 +662,9 @@ export function convertLuaUiFile(projectRoot: string, relativeFile: string, prev
   const source = fs.readFileSync(filename, "utf8");
   const constants = new Map(previewConstants ?? loadProjectPreviewConstants(projectRoot));
   for (const [key, value] of loadRequiredConstants(projectRoot, source)) constants.set(key, value);
-  return convertLuaUiSource(source, path.relative(projectRoot, filename).split(path.sep).join("/"), constants);
+  const extraFunctions = new Map<string, FunctionDeclaration>();
+  registerModuleFunctions(extraFunctions, projectRoot, source);
+  return convertLuaUiSource(source, path.relative(projectRoot, filename).split(path.sep).join("/"), constants, extraFunctions);
 }
 
 function parseSimpleLiteral(raw: string): UiValue | undefined {
@@ -512,17 +739,8 @@ function loadRequiredConstants(projectRoot: string, source: string): Map<string,
     try {
       const moduleFile = resolveInsideProject(projectRoot, relativeModule);
       const moduleSource = fs.readFileSync(moduleFile, "utf8");
-      const moduleContext: ConversionContext = {
-        source: moduleSource,
-        sourceFile: relativeModule,
-        symbols: new Map(),
-        functions: new Map(),
-        constants: new Map(),
-        diagnostics: [],
-        candidates: [],
-        expansionDepth: 0,
-        resolvingSymbols: new Set()
-      };
+      const moduleContext = emptyContext(moduleSource, relativeModule, new Map());
+      moduleContext.constants = new Map();
       const flatten = (prefix: string, value: UiValue): void => {
         constants.set(prefix, value);
         moduleContext.constants.set(prefix, value);

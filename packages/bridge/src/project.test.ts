@@ -31,11 +31,13 @@ describe("project boundary", () => {
     expect(() => readProjectText(root, "outside/nonexistent.txt")).toThrow("path_outside_project");
   });
 
-  it("writes existing project files without leaving the project boundary", () => {
+  it("writes existing project files and creates missing sidecars inside the project", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-project-"));
     temporary.push(root);
     fs.writeFileSync(path.join(root, "screen.lua"), "return 1");
     writeProjectText(root, "screen.lua", "return 2");
     expect(readProjectText(root, "screen.lua")).toBe("return 2");
+    writeProjectText(root, "scripts/ui/screen.ui.json", "{\"formatVersion\":1}");
+    expect(readProjectText(root, "scripts/ui/screen.ui.json")).toBe("{\"formatVersion\":1}");
   });
 });

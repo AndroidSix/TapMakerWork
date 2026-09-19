@@ -1,5 +1,7 @@
 # TapMakerWork 一键启动器
 
+创建于 2026-09-19
+
 ## macOS
 
 双击 `TapMakerWork-macOS.command`。
@@ -18,6 +20,9 @@
 
 - 要求 Node.js 22 或更高版本，并且 `node`、`npm` 已加入 PATH。
 - 首次运行会自动执行 `npm install`。
-- 上次项目路径保存在 TapMakerWork 根目录的 `.tapmakerwork/last-project.txt`。
+- Electron 二进制默认走 npmmirror（`cdn.npmmirror.com`），避免 GitHub 不可达导致桌面端启动失败；也可用环境变量 `ELECTRON_MIRROR` 覆盖。
+- 上次项目路径保存在 TapMakerWork 根目录的 `.tapmakerwork/last-project.txt`（本机状态，不会随 git 同步）。
 - 可预先设置环境变量 `TAPMAKERWORK_PROJECT`，或把项目路径作为第一个参数传入。
+- 换机器后记忆路径常失效：启动器会区分「记忆路径失效」与「刚输入路径无效」，并列出邻近目录便于重新选择。
+- 路径校验只检查目录是否存在；若缺少 `.maker-mcp/config.json` 会提示可能不是 Maker 项目，但仍继续启动。
 - 关闭启动终端会同时停止 Bridge、Studio 和桌面 IDE。

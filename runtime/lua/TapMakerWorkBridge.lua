@@ -1,4 +1,5 @@
 -- TapMakerWork Runtime Dev Bridge
+-- Export package: TapMakerWork IDE → 设置 → 导出接入包（outputs/runtime-adapter）
 -- Copy into a Maker project only after reviewing the generated integration diff.
 -- The host application must call Start({ rootProvider = function() ... end }) once
 -- and Update(dt) from its existing update loop. No game restart is required for patches.

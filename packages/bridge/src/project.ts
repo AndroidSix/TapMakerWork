@@ -49,12 +49,14 @@ export function readProjectText(projectRoot: string, relativePath: string, maxBy
 
 export function writeProjectText(projectRoot: string, relativePath: string, text: string, maxBytes = 5_242_880): void {
   const filename = resolveInsideProject(projectRoot, relativePath);
-  const stat = fs.statSync(filename);
-  if (!stat.isFile()) throw new Error("project_path_not_file");
   if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error("project_file_too_large");
+  const exists = fs.existsSync(filename);
+  if (exists && !fs.statSync(filename).isFile()) throw new Error("project_path_not_file");
+  const mode = exists ? fs.statSync(filename).mode : 0o644;
+  fs.mkdirSync(path.dirname(filename), { recursive: true });
   const temporary = path.join(path.dirname(filename), `.${path.basename(filename)}.tapmakerwork-${process.pid}.tmp`);
   try {
-    fs.writeFileSync(temporary, text, { encoding: "utf8", mode: stat.mode });
+    fs.writeFileSync(temporary, text, { encoding: "utf8", mode });
     fs.renameSync(temporary, filename);
   } finally {
     if (fs.existsSync(temporary)) fs.unlinkSync(temporary);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyUiPatch, findUiNode, type UiSnapshot } from "./index.js";
+import { applyUiPatch, applyUiTreeOp, findUiNode, type UiSnapshot } from "./index.js";
 
 const snapshot: UiSnapshot = {
   revision: 2,
@@ -32,5 +32,79 @@ describe("UI patch protocol", () => {
       nodeId: "button",
       props: { width: 10 }
     })).toThrow("revision_conflict:2");
+  });
+});
+
+function sampleTree(): UiSnapshot {
+  return {
+    revision: 1,
+    root: {
+      id: "root",
+      type: "Panel",
+      name: "root",
+      props: { id: "root" },
+      children: [
+        {
+          id: "a",
+          type: "Panel",
+          name: "A",
+          props: { id: "A", visible: true },
+          children: [
+            { id: "a1", type: "Label", name: "A1", props: { text: "one" }, children: [] }
+          ]
+        },
+        { id: "b", type: "Panel", name: "B", props: { id: "B" }, children: [] }
+      ]
+    }
+  };
+}
+
+describe("ui tree ops", () => {
+  it("toggles visible", () => {
+    const next = applyUiTreeOp(sampleTree(), { type: "toggle-visible", nodeId: "a" });
+    expect(findUiNode(next.root, "a")?.props.visible).toBe(false);
+  });
+
+  it("moves sibling up/down", () => {
+    const up = applyUiTreeOp(sampleTree(), { type: "move", nodeId: "b", direction: "up" });
+    expect(up.root.children.map((n) => n.id)).toEqual(["b", "a"]);
+    const down = applyUiTreeOp(sampleTree(), { type: "move", nodeId: "a", direction: "down" });
+    expect(down.root.children.map((n) => n.id)).toEqual(["b", "a"]);
+  });
+
+  it("deletes non-root nodes and rejects root delete", () => {
+    const next = applyUiTreeOp(sampleTree(), { type: "delete", nodeId: "a" });
+    expect(next.root.children.map((n) => n.id)).toEqual(["b"]);
+    expect(() => applyUiTreeOp(sampleTree(), { type: "delete", nodeId: "root" })).toThrow();
+  });
+
+  it("inserts child and sibling", () => {
+    const child = applyUiTreeOp(sampleTree(), { type: "insert-child", nodeId: "b", nodeType: "Label", name: "NewLabel" });
+    expect(findUiNode(child.root, "b")?.children.some((n) => n.name === "NewLabel")).toBe(true);
+    const sibling = applyUiTreeOp(sampleTree(), { type: "insert-sibling", nodeId: "b", nodeType: "Button", name: "NewBtn" });
+    expect(sibling.root.children.some((n) => n.name === "NewBtn")).toBe(true);
+  });
+
+  it("duplicates a node after itself", () => {
+    const next = applyUiTreeOp(sampleTree(), { type: "duplicate", nodeId: "a" });
+    const names = next.root.children.map((n) => n.name);
+    expect(names[0]).toBe("A");
+    expect(names[1]).toContain("A_copy");
+  });
+
+  it("relocates node under another parent", () => {
+    const next = applyUiTreeOp(sampleTree(), { type: "relocate", nodeId: "a1", parentId: "b", index: 0 });
+    expect(findUiNode(next.root, "a")?.children.length).toBe(0);
+    expect(findUiNode(next.root, "b")?.children[0]?.id).toBe("a1");
+  });
+
+  it("relocates sibling order within same parent", () => {
+    const next = applyUiTreeOp(sampleTree(), { type: "relocate", nodeId: "b", parentId: "root", index: 0 });
+    expect(next.root.children.map((n) => n.id)).toEqual(["b", "a"]);
+  });
+
+  it("renames node", () => {
+    const next = applyUiTreeOp(sampleTree(), { type: "rename", nodeId: "a", name: "PanelA" });
+    expect(findUiNode(next.root, "a")?.name).toBe("PanelA");
   });
 });

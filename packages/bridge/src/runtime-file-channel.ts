@@ -1,0 +1,197 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+export interface RuntimeFileStatus {
+  kind?: string;
+  sessionId?: string;
+  cursor?: number;
+  revision?: number;
+  transport?: string;
+  url?: string;
+  lastHttpError?: string;
+  snapshotError?: string;
+  snapshotBytes?: number;
+  rootType?: string;
+  childCount?: number;
+  hasRootProvider?: boolean;
+  updatedAt?: number;
+  snapshot?: unknown;
+  sourcePath?: string;
+  snapshotPath?: string;
+}
+
+function previewRoot(): string {
+  return path.join(os.homedir(), ".taptap-maker", "preview");
+}
+
+function walkStatusFiles(dir: string, found: string[] = [], depth = 0): string[] {
+  if (depth > 10 || found.length > 50) return found;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return found;
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkStatusFiles(full, found, depth + 1);
+      continue;
+    }
+    if (entry.name === "runtime-status.json" && full.includes(`${path.sep}tapmakerwork${path.sep}`)) {
+      found.push(full);
+    }
+  }
+  return found;
+}
+
+function parseFirstJsonObject(text: string): RuntimeFileStatus | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  try {
+    return JSON.parse(trimmed) as RuntimeFileStatus;
+  } catch {
+    // Maker File write may append; parse the first balanced JSON object.
+  }
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let start = -1;
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (inString) {
+      if (escape) escape = false;
+      else if (char === "\\") escape = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        try {
+          return JSON.parse(trimmed.slice(start, index + 1)) as RuntimeFileStatus;
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+export function normalizeUiTree(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeUiTree(item));
+  }
+  const record = value as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...record };
+  const children = record.children;
+  if (children == null) {
+    out.children = [];
+  } else if (Array.isArray(children)) {
+    out.children = children.map((child) => normalizeUiTree(child));
+  } else if (typeof children === "object") {
+    // Lua/cjson encodes empty tables as {}
+    const nested = Object.values(children as Record<string, unknown>);
+    out.children = nested.length ? nested.map((child) => normalizeUiTree(child)) : [];
+  } else {
+    out.children = [];
+  }
+  return out;
+}
+
+export function normalizeRuntimeSnapshot(snapshot: unknown): unknown {
+  if (!snapshot || typeof snapshot !== "object") return snapshot;
+  const record = snapshot as Record<string, unknown>;
+  return {
+    ...record,
+    root: normalizeUiTree(record.root)
+  };
+}
+
+function readSiblingSnapshot(statusPath: string): unknown {
+  const dir = path.dirname(statusPath);
+  const metaPath = path.join(dir, "runtime-snapshot.json.meta.json");
+  const singlePath = path.join(dir, "runtime-snapshot.json");
+  if (fs.existsSync(metaPath)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8").split("\0")[0] || "{}") as { parts?: number; total?: number };
+      const parts = Number(meta.parts || 0);
+      if (parts > 0) {
+        let text = "";
+        for (let index = 1; index <= parts; index += 1) {
+          const partPath = path.join(dir, `runtime-snapshot.json.part${String(index).padStart(2, "0")}`);
+          if (!fs.existsSync(partPath)) return undefined;
+          // Maker File 分片可能在中间插入 \0，必须全部去掉再拼接
+          text += fs.readFileSync(partPath, "utf8").replace(/\0+/g, "");
+        }
+        return normalizeRuntimeSnapshot(parseFirstJsonObject(text));
+      }
+    } catch {
+      // fall through
+    }
+  }
+  if (!fs.existsSync(singlePath)) return undefined;
+  try {
+    return normalizeRuntimeSnapshot(parseFirstJsonObject(fs.readFileSync(singlePath, "utf8")));
+  } catch {
+    return undefined;
+  }
+}
+
+export function findRuntimeFileStatus(): RuntimeFileStatus | undefined {
+  const root = previewRoot();
+  if (!fs.existsSync(root)) return undefined;
+  const candidates = walkStatusFiles(root);
+  if (!candidates.length) return undefined;
+  let best: RuntimeFileStatus | undefined;
+  let bestMtime = 0;
+  for (const file of candidates) {
+    try {
+      const stat = fs.statSync(file);
+      if (stat.mtimeMs < bestMtime) continue;
+      const parsed = parseFirstJsonObject(fs.readFileSync(file, "utf8"));
+      if (!parsed || typeof parsed !== "object" || !parsed.sessionId) continue;
+      const snapshot = readSiblingSnapshot(file);
+      const metaPath = path.join(path.dirname(file), "runtime-snapshot.json.meta.json");
+      const singlePath = path.join(path.dirname(file), "runtime-snapshot.json");
+      const snapshotPath = fs.existsSync(metaPath) ? metaPath : (fs.existsSync(singlePath) ? singlePath : undefined);
+      best = {
+        ...parsed,
+        sourcePath: file,
+        ...(snapshotPath ? { snapshotPath } : {}),
+        snapshot
+      };
+      bestMtime = stat.mtimeMs;
+    } catch {
+      // ignore unreadable status
+    }
+  }
+  return best;
+}
+
+export function writeIdeCommandsFile(status: RuntimeFileStatus, commands: Array<Record<string, unknown>>): string | undefined {
+  const sourcePath = status.sourcePath;
+  if (!sourcePath) return undefined;
+  const commandsPath = path.join(path.dirname(sourcePath), "ide-commands.json");
+  const payload = {
+    kind: "tapmakerwork.ide.commands",
+    sessionId: status.sessionId,
+    cursor: status.cursor ?? 0,
+    updatedAt: Date.now(),
+    commands
+  };
+  fs.writeFileSync(commandsPath, JSON.stringify(payload), "utf8");
+  return commandsPath;
+}

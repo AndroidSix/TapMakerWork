@@ -1,4 +1,4 @@
-import { applyUiPatch, type UiPatch, type UiSnapshot } from "@tapmakerwork/protocol";
+import { applyUiPatch, applyUiTreeOp, type UiPatch, type UiSnapshot, type UiTreeOp } from "@tapmakerwork/protocol";
 
 export function initialUiSnapshot(): UiSnapshot {
   return {
@@ -98,6 +98,13 @@ export class EditorState {
     this.undoStack.push(this.snapshot);
     this.redoStack = [];
     this.snapshot = applyUiPatch(this.snapshot, patch);
+    return this.snapshot;
+  }
+
+  applyTreeOp(op: UiTreeOp): UiSnapshot {
+    this.undoStack.push(this.snapshot);
+    this.redoStack = [];
+    this.snapshot = applyUiTreeOp(this.snapshot, op);
     return this.snapshot;
   }
 
