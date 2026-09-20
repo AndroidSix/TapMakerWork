@@ -1,5 +1,42 @@
 # Change log
 
+## 2026-09-20 — true Runtime view and explicit source navigation
+
+- Maker MCP now defaults to the newest version already installed on the device, with correct prerelease ordering.
+- Studio settings can check the official stable and Beta channels, install updates, switch channels, or pin an installed version.
+- Canvas clicks now select controls without automatically switching to code; source navigation is an explicit inspector action.
+- Play mode now opens a dedicated true Runtime view instead of presenting the DOM control-tree renderer as final game output.
+- The desktop host samples the actual Maker / UrhoX window, with automatic matching, manual window selection and a macOS screen-recording permission state.
+- Final Runtime frames now share one surface with engine-reported hit-test rectangles, selection labels, drag movement, eight-direction resizing and keyboard nudging.
+- The Runtime inspector remains visible beside the final frame and edits position, size and appearance without switching to code.
+- Live-edit mode keeps the captured frame synchronized with Runtime while preserving editor-owned selection and draft overlays during interaction.
+- Added an opt-in adapter installer, automatic entry backup and a savedata file transport for Maker environments that block localhost HTTP.
+- Fixed the sandboxed Electron preload entry to compile as CommonJS, restoring reliable desktop IPC injection for project picking, embedded preview and Runtime capture.
+- Design canvas, Web preview and true Runtime are separately named and described so each rendering path has a clear role.
+- Runtime status now recognizes both the official Maker preview process and the optional UI Bridge connection.
+- UI discovery now scans the complete `scripts` tree instead of assuming every screen lives under `scripts/ui`, and the refresh action performs a real rescan.
+- The file browser now opens project files in a locally bundled Monaco editor, avoiding the blank loading state caused by blocked CDN initialization.
+- Runtime auto-selection now rejects a bare project-name editor window and prefers the titled Maker / UrhoX game window, preventing Cursor from being shown as the final frame.
+- The Events and Animation inspector tabs now expose their own populated or empty states and retain explicit source-navigation actions.
+- Runtime edit mode now keeps the edit frame synchronized with the latest engine frame instead of leaving the left pane visually stale after a property change.
+- Added shared Shift multi-selection across the Runtime canvas, structure canvas and hierarchy tree; group move, rotate, scale and keyboard nudging apply to every selected node.
+- Added a Cocos-style transform toolbar: `Q` select, `W` move, `E` rotate, `R` scale and `T` rect, with visible gizmos, matching inspector fields, an incremental-snap toggle and Ctrl/Cmd temporary snapping.
+- Added official Node.js LTS update checks beside Maker MCP versions; optional updates install into an isolated TapMakerWork runtime without overwriting the system Node.js.
+- Routed desktop `Command/Ctrl+Z` and redo through the visual editor history instead of Electron's native text history, while preserving native undo inside form fields and Monaco.
+- Runtime transforms now stream throttled patches while dragging and coalesce the entire gesture into one undo step.
+- Added accessible Unity-style RGBA editors for image tint, text color and background color, including native color selection, per-channel sliders/numbers, alpha and hexadecimal input.
+- Added native Runtime input forwarding on macOS: the captured game surface now has a Play mode and the live result pane accepts clicks that are mapped back to the real Runtime window.
+- Reworked the structure canvas around its real logical viewport size, with scrollable overflow, 10–400% zoom, step controls and one-click best fit.
+- Added persistent document-tab ordering plus detachable, movable and resizable workspace panels that can be dragged back to the dock; keyboard and visible-button alternatives remain available.
+
+## 2026-09-20 — delivery loop workspace
+
+- Added a six-stage delivery cockpit backed by live Bridge facts rather than static demo data.
+- Added contextual tools for Maker Doctor, visual editing, preview, evidence capture, test QR generation and explicit remote build.
+- Expanded project asset discovery to images, audio, video, models and fonts, with source/config reference detection.
+- Added an evidence center for preview shots, UI sidecars, Runtime snapshots and test QR readiness.
+- Exposed the shared delivery overview and objective through the project MCP.
+
 ## 2026-09-18 — M0 working slice
 
 - Added React/Vite Studio, Electron desktop host, protocol and local Bridge workspaces.

@@ -12,7 +12,13 @@ local state = {
     rootProvider = nil,
     cursor = 0,
     elapsed = 0,
+    snapshotElapsed = 0,
     pollInterval = 0.1,
+    snapshotInterval = 0.5,
+    httpEnabled = true,
+    lastHttpError = nil,
+    lastCommandError = nil,
+    lastCommandResult = nil,
     requestPending = false,
     widgetById = {},
     nextWidgetId = 0,
@@ -24,7 +30,69 @@ local METHOD = {
     POST = HTTP_POST,
 }
 
+local FILE_DIR = "tapmakerwork"
+local STATUS_FILE = FILE_DIR .. "/runtime-status.json"
+local SNAPSHOT_FILE = FILE_DIR .. "/runtime-snapshot.json"
+local COMMANDS_FILE = FILE_DIR .. "/ide-commands.json"
+
+local function closeFile(file)
+    if file then pcall(function() file:Close() end) end
+end
+
+local function writeTextFile(path, text)
+    if not File or not FILE_WRITE or not fileSystem then return false end
+    pcall(function()
+        if not fileSystem:DirExists(FILE_DIR) then fileSystem:CreateDir(FILE_DIR) end
+    end)
+    local ok, file = pcall(function() return File(path, FILE_WRITE) end)
+    if not ok or not file then return false end
+    local opened = false
+    pcall(function() opened = file:IsOpen() == true end)
+    if not opened then closeFile(file); return false end
+    local wrote = pcall(function()
+        file:WriteString(text)
+        file:Flush()
+    end)
+    closeFile(file)
+    return wrote
+end
+
+local function readJsonFile(path)
+    if not File or not FILE_READ or not fileSystem then return nil end
+    local exists = false
+    pcall(function() exists = fileSystem:FileExists(path) == true end)
+    if not exists then return nil end
+    local ok, file = pcall(function() return File(path, FILE_READ) end)
+    if not ok or not file then return nil end
+    local opened = false
+    pcall(function() opened = file:IsOpen() == true end)
+    if not opened then closeFile(file); return nil end
+    local readOk, text = pcall(function() return file:ReadString() end)
+    closeFile(file)
+    if not readOk or type(text) ~= "string" then return nil end
+    local decodeOk, value = pcall(cjson.decode, text)
+    return decodeOk and value or nil
+end
+
+local function writeStatus()
+    local ok, encoded = pcall(cjson.encode, {
+        kind = "tapmakerwork.runtime.status",
+        sessionId = state.sessionId,
+        cursor = state.cursor,
+        revision = state.revision,
+        transport = "file+http",
+        url = state.url,
+        lastHttpError = state.lastHttpError,
+        lastCommandError = state.lastCommandError,
+        lastCommandResult = state.lastCommandResult,
+        hasRootProvider = state.rootProvider ~= nil,
+        updatedAt = os.time() * 1000,
+    })
+    return ok and writeTextFile(STATUS_FILE, encoded)
+end
+
 local function request(method, route, payload, callback)
+    if not state.httpEnabled then return false end
     if state.requestPending then return false end
     local client = http and http:Create() or nil
     if not client then return false end
@@ -41,6 +109,8 @@ local function request(method, route, payload, callback)
     end)
     client:OnError(function(_, status, message)
         state.requestPending = false
+        state.lastHttpError = tostring(message or status or "request_failed")
+        state.httpEnabled = false
         if callback then callback(tostring(message or status or "request_failed"), nil) end
     end)
     client:Send()
@@ -74,13 +144,39 @@ local function snapshotWidget(widget)
     local id = widgetId(widget)
     state.widgetById[id] = widget
     local children = {}
-    for _, child in ipairs(widget.children or {}) do children[#children + 1] = snapshotWidget(child) end
-    local props = safeValue(widget.props or {}, 0, {})
+    local seenChildren = {}
+    local function appendChildren(items)
+        for _, child in ipairs(items or {}) do
+            if child and not seenChildren[child] then
+                seenChildren[child] = true
+                children[#children + 1] = snapshotWidget(child)
+            end
+        end
+    end
+    local okRender, renderChildren = pcall(function()
+        return widget.GetRenderChildren and widget:GetRenderChildren() or widget.children
+    end)
+    appendChildren(okRender and renderChildren or widget.children)
+    appendChildren(widget.bodyChildren_)
+    local props = {}
+    for key, value in pairs(widget.props or {}) do
+        -- children contain live Widget objects and event handlers are functions;
+        -- both would explode the snapshot without adding editable style data.
+        if key ~= "children" and type(value) ~= "function" then
+            props[key] = safeValue(value, 0, {})
+        end
+    end
     local ok, layout = pcall(function() return widget:GetLayout() end)
     if ok and layout then props["$layout"] = safeValue(layout, 0, {}) end
+    local okScreen, screen = pcall(function()
+        if widget.GetAbsoluteLayoutForHitTest then return widget:GetAbsoluteLayoutForHitTest() end
+        if widget.GetAbsoluteLayout then return widget:GetAbsoluteLayout() end
+        return nil
+    end)
+    if okScreen and screen then props["$screen"] = safeValue(screen, 0, {}) end
     return {
         id = id,
-        type = widget._className or "Widget",
+        type = widget.__tapmakerworkType or widget._className or "Widget",
         name = (widget.props and widget.props.id) or (widget._className or "Widget"),
         props = props,
         source = { file = widget._sourceFile or "runtime", line = widget._sourceLine or 0 },
@@ -93,13 +189,35 @@ local function makeSnapshot()
     if not root then return nil end
     state.widgetById = {}
     state.revision = state.revision + 1
-    return { revision = state.revision, root = snapshotWidget(root) }
+    local scale = 1
+    local okScale, value = pcall(function()
+        local UI = require("urhox-libs/UI")
+        return UI.GetScale and UI.GetScale() or 1
+    end)
+    if okScale and tonumber(value) then scale = tonumber(value) end
+    local physicalWidth = graphics and tonumber(graphics.width) or 0
+    local physicalHeight = graphics and tonumber(graphics.height) or 0
+    return {
+        revision = state.revision,
+        root = snapshotWidget(root),
+        viewport = {
+            width = physicalWidth > 0 and physicalWidth / scale or 0,
+            height = physicalHeight > 0 and physicalHeight / scale or 0,
+            scale = scale,
+            physicalWidth = physicalWidth,
+            physicalHeight = physicalHeight,
+        },
+    }
 end
 
 local function applyPatch(patch)
     local widget = patch and state.widgetById[patch.nodeId] or nil
     if not widget then return false, "node_not_found" end
-    local ok, err = pcall(function() widget:SetStyle(patch.props or {}) end)
+    local style = {}
+    for key, value in pairs(patch.props or {}) do
+        if type(key) == "string" and key:sub(1, 1) ~= "$" then style[key] = value end
+    end
+    local ok, err = pcall(function() widget:SetStyle(style) end)
     if not ok then return false, tostring(err) end
     return true
 end
@@ -107,22 +225,144 @@ end
 local function applySnapshotNode(node)
     if not node then return end
     local widget = state.widgetById[node.id]
-    if widget then pcall(function() widget:SetStyle(node.props or {}) end) end
+    if widget then
+        local style = {}
+        for key, value in pairs(node.props or {}) do
+            if type(key) == "string" and key:sub(1, 1) ~= "$" then style[key] = value end
+        end
+        pcall(function() widget:SetStyle(style) end)
+    end
     for _, child in ipairs(node.children or {}) do applySnapshotNode(child) end
 end
 
-local function handleCommands(value)
-    for _, command in ipairs((value and value.commands) or {}) do
-        if command.type == "ui.patch" then applyPatch(command.patch)
-        elseif command.type == "ui.replace" then applySnapshotNode(command.snapshot and command.snapshot.root) end
-        state.cursor = math.max(state.cursor, tonumber(command.id) or state.cursor)
+local function runtimeProps(node)
+    local props = {}
+    for key, value in pairs((node and node.props) or {}) do
+        if type(key) == "string" and key:sub(1, 1) ~= "$" and key ~= "children" then
+            props[key] = value
+        end
     end
+    return props
+end
+
+local function createRuntimeWidget(node)
+    if not node then return nil, "node_required" end
+    local okUI, UI = pcall(require, "urhox-libs/UI")
+    if not okUI or not UI then return nil, "ui_module_unavailable" end
+    local requestedType = tostring(node.type or "Panel")
+    -- UrhoX UI renders ordinary images as a Panel background and uses an
+    -- unpainted Panel as the transform container for editor-facing Nodes.
+    local constructorType = (requestedType == "Image" or requestedType == "Node") and "Panel" or requestedType
+    local constructor = UI[constructorType] or UI.Panel
+    if not constructor then return nil, "widget_constructor_unavailable:" .. constructorType end
+    local props = runtimeProps(node)
+    if requestedType == "Image" and not props.backgroundImage then
+        props.backgroundImage = props.path or props.sprite or props.image or props.texture or props.fileName or props.file
+    end
+    local okWidget, widget = pcall(function() return constructor(props) end)
+    if not okWidget or not widget then return nil, tostring(widget or "widget_create_failed") end
+    widget.__tapmakerworkId = node.id
+    widget.__tapmakerworkType = requestedType
+    state.widgetById[node.id] = widget
+    for _, childNode in ipairs(node.children or {}) do
+        local child, childError = createRuntimeWidget(childNode)
+        if not child then
+            pcall(function() widget:Destroy() end)
+            return nil, childError
+        end
+        widget:AddChild(child)
+    end
+    return widget
+end
+
+local function forgetRuntimeWidget(widget)
+    if not widget then return end
+    for _, child in ipairs(widget.children or {}) do forgetRuntimeWidget(child) end
+    if widget.__tapmakerworkId then state.widgetById[widget.__tapmakerworkId] = nil end
+end
+
+local function applyTreeMutation(mutation)
+    if not mutation then return false, "mutation_required" end
+    if mutation.action == "delete" then
+        local widget = state.widgetById[mutation.nodeId]
+        if not widget then return false, "node_not_found" end
+        forgetRuntimeWidget(widget)
+        local ok, err = pcall(function() widget:Destroy() end)
+        return ok, ok and nil or tostring(err)
+    end
+    if mutation.action == "create" then
+        local parent = state.widgetById[mutation.parentId]
+        if not parent then return false, "parent_not_found" end
+        local beforeCount = #(parent.children or {})
+        local widget, createError = createRuntimeWidget(mutation.node)
+        if not widget then return false, createError end
+        local ok, err = pcall(function()
+            parent:InsertChild(widget, (tonumber(mutation.index) or #parent.children) + 1)
+        end)
+        if not ok then
+            forgetRuntimeWidget(widget)
+            pcall(function() widget:Destroy() end)
+            return false, tostring(err)
+        end
+        state.lastCommandResult = "create:" .. tostring(mutation.node.id) .. ":" .. tostring(beforeCount) .. "->" .. tostring(#(parent.children or {}))
+        return true
+    end
+    if mutation.action == "move" then
+        local widget = state.widgetById[mutation.nodeId]
+        local parent = state.widgetById[mutation.parentId]
+        if not widget then return false, "node_not_found" end
+        if not parent then return false, "parent_not_found" end
+        local ok, err = pcall(function()
+            parent:InsertChild(widget, (tonumber(mutation.index) or #parent.children) + 1)
+        end)
+        return ok, ok and nil or tostring(err)
+    end
+    return false, "unsupported_mutation:" .. tostring(mutation.action)
+end
+
+local function handleCommands(value)
+    local changed = false
+    for _, command in ipairs((value and value.commands) or {}) do
+        local commandId = tonumber(command.id) or 0
+        if commandId <= state.cursor then
+            -- File transport retains recent commands; never replay an already
+            -- acknowledged structural edit on every polling tick.
+        elseif command.type == "ui.patch" then
+            local ok, err = applyPatch(command.patch)
+            state.lastCommandError = ok and nil or tostring(err)
+            state.lastCommandResult = ok and ("patch:" .. tostring(command.patch and command.patch.nodeId)) or nil
+            changed = changed or ok
+        elseif command.type == "ui.tree" then
+            local ok, err = applyTreeMutation(command.mutation)
+            state.lastCommandError = ok and nil or tostring(err)
+            changed = changed or ok
+        elseif command.type == "ui.replace" then
+            applySnapshotNode(command.snapshot and command.snapshot.root)
+            state.lastCommandError = nil
+            state.lastCommandResult = "replace"
+            changed = true
+        end
+        state.cursor = math.max(state.cursor, commandId)
+    end
+    return changed
+end
+
+local function handleFileCommands()
+    local value = readJsonFile(COMMANDS_FILE)
+    if not value or (value.sessionId and value.sessionId ~= state.sessionId) then return false end
+    local changed = handleCommands(value)
+    if changed then writeStatus() end
+    return changed
 end
 
 function Bridge.PushSnapshot()
     local snapshot = makeSnapshot()
     if not snapshot then return false end
-    return request("POST", "/api/runtime/snapshot", { snapshot = snapshot })
+    local encodedOk, encoded = pcall(cjson.encode, snapshot)
+    local wrote = encodedOk and writeTextFile(SNAPSHOT_FILE, encoded)
+    writeStatus()
+    local sent = request("POST", "/api/runtime/snapshot", { snapshot = snapshot })
+    return wrote or sent
 end
 
 function Bridge.Start(options)
@@ -130,19 +370,29 @@ function Bridge.Start(options)
     state.url = options.url or state.url
     state.rootProvider = assert(options.rootProvider, "TapMakerWorkBridge requires rootProvider")
     state.pollInterval = math.max(0.016, tonumber(options.pollInterval) or state.pollInterval)
+    state.snapshotInterval = math.max(0.1, tonumber(options.snapshotInterval) or state.snapshotInterval)
     state.sessionId = options.sessionId or tostring(os.time())
-    request("POST", "/api/runtime/hello", { sessionId = state.sessionId, frames = false }, function(err)
-        if not err then Bridge.PushSnapshot() end
-    end)
+    writeStatus()
+    Bridge.PushSnapshot()
+    request("POST", "/api/runtime/hello", { sessionId = state.sessionId, frames = false })
 end
 
 function Bridge.Update(dt)
-    state.elapsed = state.elapsed + (tonumber(dt) or 0)
-    if state.elapsed < state.pollInterval or state.requestPending then return end
+    local delta = tonumber(dt) or 0
+    state.elapsed = state.elapsed + delta
+    state.snapshotElapsed = state.snapshotElapsed + delta
+    if state.elapsed < state.pollInterval then return end
     state.elapsed = 0
-    request("GET", "/api/runtime/commands?cursor=" .. tostring(state.cursor), nil, function(err, value)
-        if not err then handleCommands(value) end
-    end)
+    local changed = handleFileCommands()
+    if changed or state.snapshotElapsed >= state.snapshotInterval then
+        state.snapshotElapsed = 0
+        Bridge.PushSnapshot()
+    end
+    if not state.requestPending then
+        request("GET", "/api/runtime/commands?cursor=" .. tostring(state.cursor), nil, function(err, value)
+            if not err and handleCommands(value) then Bridge.PushSnapshot() end
+        end)
+    end
 end
 
 function Bridge.Diagnostics()

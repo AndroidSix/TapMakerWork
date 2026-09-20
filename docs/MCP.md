@@ -35,6 +35,7 @@ Codex uses the equivalent stdio server entry in its MCP configuration. Client co
 - `tapmakerwork://runtime/logs`
 - `tapmakerwork://system/info`
 - `tapmakerwork://runtime/adapter`
+- `tapmakerwork://workflow/overview` — delivery stages, semantic asset binding and saved evidence
 
 ## Tools
 
@@ -56,6 +57,7 @@ Codex uses the equivalent stdio server entry in its MCP configuration. Client co
 - `maker_project_meta` — project.json metadata including test QR URL
 - `export_runtime_adapter`
 - `runtime_adapter_status`
+- `workflow_set_objective` — writes only `.tapmakerwork/workflow.json`
 
 All file paths are project-relative and pass through real-path boundary checks. The MCP server exposes no general shell execution.
 

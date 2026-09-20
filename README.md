@@ -11,8 +11,16 @@ This repository currently contains the first working feasibility slice:
 - static/hybrid conversion of existing Lua widget trees into visual IR;
 - undo/redo, official Runtime lifecycle controls, and a state-preserving Runtime command queue;
 - a project MCP server for Codex, Claude and Cursor;
-- a reviewed Lua Runtime adapter that has not yet been installed in the pilot project;
-- fail-closed placeholders for native frame capture and filesystem sandboxing.
+- a reviewed, project-scoped Lua Runtime adapter installer with automatic entry backup;
+- a delivery cockpit that turns environment, project, content, Runtime, evidence and build readiness into one actionable workflow;
+- a semantic asset audit for images, audio, video, models and fonts, including source/config reference evidence;
+- whole-project UI discovery across `scripts`, with one-click rescanning and source navigation;
+- an offline-bundled Monaco editor for expanding, viewing and editing project files without a CDN dependency;
+- Cocos-style Runtime transforms with Shift multi-selection, `W/E/R/T` shortcuts and Ctrl/Cmd incremental snapping;
+- device-default Maker MCP discovery with stable/Beta update checks, installation and version switching;
+- stable-LTS Node.js update checks and an isolated managed runtime for Maker MCP processes;
+- realtime drag commits with gesture-level undo, plus Unity-style RGBA controls for image, text and background colors;
+- native Maker Runtime window capture on macOS with project-aware window matching, plus fail-closed filesystem sandboxing.
 
 ## Start the prototype
 
@@ -54,6 +62,6 @@ The MCP server exposes project files, conversion, the current visual snapshot, R
 
 The Shell panel is deliberately disabled until an OS-backed sandbox passes the macOS and Windows escape tests. Setting a working directory is not considered a sandbox.
 
-The pilot Maker project remains read-only in this milestone. Runtime integration is staged in `runtime/lua/TapMakerWorkBridge.lua` for a later reviewed diff.
+Runtime integration is opt-in per project. The installer writes only the managed bridge hook and adapter, and backs up the original entry file under `.tapmakerwork/backups`; it does not modify the official Maker installation.
 
 See `docs/ARCHITECTURE.md` and `docs/ROADMAP.md` for the implementation contract.

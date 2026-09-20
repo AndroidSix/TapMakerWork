@@ -624,6 +624,7 @@ export function convertLuaUiSource(
     collectSymbols(context, chunk.body);
     context.moduleSymbols = new Map(context.symbols);
     scanStatements(context, chunk.body);
+    context.candidates.push(...collectReturnedWidgets(context, chunk.body));
   } catch (error) {
     context.diagnostics.push({ severity: "error", message: error instanceof Error ? error.message : String(error) });
   }

@@ -75,6 +75,7 @@ describe("ui tree ops", () => {
   it("deletes non-root nodes and rejects root delete", () => {
     const next = applyUiTreeOp(sampleTree(), { type: "delete", nodeId: "a" });
     expect(next.root.children.map((n) => n.id)).toEqual(["b"]);
+    expect(next.selectedId).toBe("root");
     expect(() => applyUiTreeOp(sampleTree(), { type: "delete", nodeId: "root" })).toThrow();
   });
 
@@ -83,6 +84,13 @@ describe("ui tree ops", () => {
     expect(findUiNode(child.root, "b")?.children.some((n) => n.name === "NewLabel")).toBe(true);
     const sibling = applyUiTreeOp(sampleTree(), { type: "insert-sibling", nodeId: "b", nodeType: "Button", name: "NewBtn" });
     expect(sibling.root.children.some((n) => n.name === "NewBtn")).toBe(true);
+  });
+
+  it("creates an empty transform node for visual composition", () => {
+    const next = applyUiTreeOp(sampleTree(), { type: "insert-child", nodeId: "b", nodeType: "Node" });
+    const node = findUiNode(next.root, next.selectedId!);
+    expect(node?.type).toBe("Node");
+    expect(node?.props).toMatchObject({ position: "absolute", left: 0, top: 0, width: 100, height: 100 });
   });
 
   it("duplicates a node after itself", () => {

@@ -9,6 +9,113 @@ export interface AdapterExportResult {
   nextSteps: string[];
 }
 
+export interface AdapterInstallResult {
+  ok: true;
+  projectRoot: string;
+  adapterPath: string;
+  entryPath: string;
+  backupPath?: string;
+  changed: boolean;
+  requiresPreviewRefresh: boolean;
+}
+
+const BOOTSTRAP_START = "-- >>> TapMakerWork live editor (managed)";
+const BOOTSTRAP_END = "-- <<< TapMakerWork live editor (managed)";
+const START_CALL = "TapMakerWorkLiveEditorStart() -- TapMakerWork managed";
+const UPDATE_CALL = "TapMakerWorkLiveEditorUpdate(dt) -- TapMakerWork managed";
+
+function timestampForPath(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+export function installRuntimeAdapter(options: {
+  bridgePackageRoot: string;
+  projectRoot: string;
+}): AdapterInstallResult {
+  const repoRoot = findRepoRoot(options.bridgePackageRoot);
+  const templatePath = path.join(repoRoot, "runtime", "lua", "TapMakerWorkBridge.lua");
+  if (!fs.existsSync(templatePath)) throw new Error("adapter_template_not_found");
+
+  const projectRoot = path.resolve(options.projectRoot);
+  const entryPath = path.join(projectRoot, "scripts", "main.lua");
+  if (!fs.existsSync(entryPath)) throw new Error("maker_main_lua_not_found");
+  const original = fs.readFileSync(entryPath, "utf8");
+  const alreadyManaged = original.includes(BOOTSTRAP_START)
+    && original.includes(START_CALL)
+    && original.includes(UPDATE_CALL);
+  let next = original;
+
+  if (!alreadyManaged) {
+    if (original.includes(BOOTSTRAP_START) || original.includes(BOOTSTRAP_END)) {
+      throw new Error("runtime_adapter_partial_install");
+    }
+    if (!/\bapp_:Init\(\)/.test(original)) throw new Error("runtime_adapter_start_hook_not_found");
+    if (!/local\s+dt\s*=\s*eventData:GetFloat\(["']TimeStep["']\)/.test(original)) {
+      throw new Error("runtime_adapter_update_hook_not_found");
+    }
+
+    const bootstrap = `${BOOTSTRAP_START}
+local tapMakerWorkLiveEditor_ = nil
+
+local function TapMakerWorkLiveEditorStart()
+    if IsServerMode and IsServerMode() then return end
+    local okBridge, bridge = pcall(require, "tapmakerwork/TapMakerWorkBridge")
+    local okUi, UI = pcall(require, "urhox-libs/UI")
+    if not okBridge or not okUi then
+        print("[TapMakerWork] live editor unavailable: " .. tostring(okBridge and UI or bridge))
+        return
+    end
+    tapMakerWorkLiveEditor_ = bridge
+    bridge.Start({
+        url = "http://127.0.0.1:43121",
+        pollInterval = 0.05,
+        snapshotInterval = 0.35,
+        rootProvider = function() return UI.GetRoot() end,
+    })
+end
+
+local function TapMakerWorkLiveEditorUpdate(dt)
+    if tapMakerWorkLiveEditor_ then tapMakerWorkLiveEditor_.Update(dt) end
+end
+${BOOTSTRAP_END}
+
+`;
+    const startIndex = next.search(/\bfunction\s+Start\s*\(/);
+    if (startIndex < 0) throw new Error("maker_start_function_not_found");
+    next = next.slice(0, startIndex) + bootstrap + next.slice(startIndex);
+    next = next.replace(/(\bapp_:Init\(\)[^\n]*\n)/, `$1    ${START_CALL}\n`);
+    next = next.replace(
+      /(local\s+dt\s*=\s*eventData:GetFloat\(["']TimeStep["']\)[^\n]*\n)/,
+      `$1    ${UPDATE_CALL}\n`
+    );
+  }
+
+  const adapterPath = path.join(projectRoot, "scripts", "tapmakerwork", "TapMakerWorkBridge.lua");
+  const adapterSource = fs.readFileSync(templatePath, "utf8");
+  const adapterChanged = !fs.existsSync(adapterPath) || fs.readFileSync(adapterPath, "utf8") !== adapterSource;
+  const entryChanged = next !== original;
+  let backupPath: string | undefined;
+  if (entryChanged) {
+    const backupDir = path.join(projectRoot, ".tapmakerwork", "backups");
+    fs.mkdirSync(backupDir, { recursive: true });
+    backupPath = path.join(backupDir, `main.lua.${timestampForPath()}.bak`);
+    fs.copyFileSync(entryPath, backupPath, fs.constants.COPYFILE_EXCL);
+  }
+  fs.mkdirSync(path.dirname(adapterPath), { recursive: true });
+  if (adapterChanged) fs.writeFileSync(adapterPath, adapterSource, "utf8");
+  if (entryChanged) fs.writeFileSync(entryPath, next, "utf8");
+
+  return {
+    ok: true,
+    projectRoot,
+    adapterPath,
+    entryPath,
+    ...(backupPath ? { backupPath } : {}),
+    changed: adapterChanged || entryChanged,
+    requiresPreviewRefresh: adapterChanged || entryChanged
+  };
+}
+
 function findRepoRoot(fromDir: string): string {
   let current = fromDir;
   for (let index = 0; index < 8; index += 1) {

@@ -11,7 +11,7 @@
     "dev": "concurrently -k -n bridge,studio,desktop -c yellow,cyan,magenta \"npm run dev -w @tapmakerwork/bridge\" \"npm run dev -w @tapmakerwork/studio\" \"npm run dev -w @tapmakerwork/desktop\"",
     "dev:web": "concurrently -k -n bridge,studio -c yellow,cyan \"npm run dev -w @tapmakerwork/bridge\" \"npm run dev -w @tapmakerwork/studio\"",
     "build": "npm run build -w @tapmakerwork/protocol && npm run build -w @tapmakerwork/bridge && npm run build -w @tapmakerwork/studio && npm run build -w @tapmakerwork/desktop",
-    "test": "npm run test -w @tapmakerwork/protocol && npm run test -w @tapmakerwork/bridge",
+    "test": "npm run test -w @tapmakerwork/protocol && npm run test -w @tapmakerwork/bridge && npm run test -w @tapmakerwork/studio && npm run test -w @tapmakerwork/desktop",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {

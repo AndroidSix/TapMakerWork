@@ -6,6 +6,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import {
   PROTOCOL_VERSION,
   applyUiTreeOp,
+  findParentInfo,
   findUiNode,
   type BridgeCapabilities,
   type BridgeEvent,
@@ -17,13 +18,35 @@ import {
   type UiSnapshot,
   type UiTreeOp
 } from "@tapmakerwork/protocol";
-import { discoverMakerRuntime, readMakerProjectMeta, runMakerBuild, runMakerCommand, runMakerDoctor, runMakerQrcode, runMakerReadOnly } from "./maker.js";
+import {
+  checkNodeRuntimeUpdates,
+  checkMakerRuntimeUpdates,
+  compareMakerVersions,
+  discoverNodeRuntime,
+  discoverMakerRuntime,
+  installNodeRuntimeVersion,
+  installMakerRuntimeVersion,
+  listInstalledNodeRuntimes,
+  listInstalledMakerRuntimes,
+  readMakerProjectMeta,
+  readMakerRuntimePreference,
+  runMakerBuild,
+  runMakerCommand,
+  runMakerDoctor,
+  runMakerQrcode,
+  runMakerReadOnly,
+  writeMakerRuntimePreference,
+  type MakerRemoteVersions,
+  type NodeRemoteVersion,
+  type MakerRuntimeMode
+} from "./maker.js";
+import { scanUiScreens, uiNodeCount, type UiScreenSummary } from "./ui-screens.js";
 import { listProjectEntries, readProjectText, resolveInsideProject, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
-import { convertLuaUiFile, loadProjectPreviewConstants, snapshotFromConversion } from "./lua-converter.js";
+import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
 import { listProjectAssets, projectHasRuntimeAdapter, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
-import { exportRuntimeAdapterPackage } from "./adapter-pack.js";
+import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
 import { findRuntimeFileStatus, normalizeUiTree, writeIdeCommandsFile } from "./runtime-file-channel.js";
 import { findUiNodePath, readUiSidecar, sidecarExists, sidecarRelativePath, snapshotFromSidecar, uiNodeAtLine, writeUiSidecar } from "./ui-sidecar.js";
 import {
@@ -34,14 +57,27 @@ import {
   savePreviewShot,
   type PreviewPanelFile
 } from "./preview-panel.js";
+import { buildProjectWorkflowOverview, saveProjectWorkflow } from "./project-workflow.js";
 
 let lastAppliedRuntimeRevision = -1;
 let snapshotSource: SnapshotSource = "empty";
+let runtimeFileSessionId: string | undefined;
 
 function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
   const status = findRuntimeFileStatus();
   if (!status) return undefined;
   if (status.sessionId) {
+    if (runtimeFileSessionId && runtimeFileSessionId !== status.sessionId) {
+      runtimeCommands.splice(0, runtimeCommands.length);
+      nextRuntimeCommandId = Number(status.cursor || 0) + 1;
+      lastAppliedRuntimeRevision = -1;
+    } else if (!runtimeFileSessionId && runtimeCommands.length === 0) {
+      // The Bridge dev process can restart while the Maker Runtime remains
+      // alive. Continue after its acknowledged cursor instead of issuing IDs
+      // that the adapter correctly treats as already applied.
+      nextRuntimeCommandId = Math.max(nextRuntimeCommandId, Number(status.cursor || 0) + 1);
+    }
+    runtimeFileSessionId = status.sessionId;
     runtimeSessionId = status.sessionId;
     runtimeConnectedAt = new Date().toISOString();
   }
@@ -107,7 +143,9 @@ function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
 
 const host = "127.0.0.1";
 const port = Number(process.env.TAPMAKERWORK_BRIDGE_PORT || 43121);
-const makerRuntime = discoverMakerRuntime();
+let makerRuntime = discoverMakerRuntime();
+let makerRemoteVersions: MakerRemoteVersions | undefined;
+let nodeRemoteVersion: NodeRemoteVersion | undefined;
 const sandbox = sandboxStatus();
 let project: ProjectBinding | undefined;
 
@@ -124,52 +162,6 @@ function pickInitialConversion(screens: ReturnType<typeof scanUiScreens>, fallba
   return preferred.map((p) => screens.documents.get(p)).find(Boolean)
     ?? [...screens.documents.values()].find((doc) => doc.confidence !== "module")
     ?? screens.documents.values().next().value;
-}
-
-interface UiScreenSummary {
-  path: string;
-  name: string;
-  confidence?: UiConversionDocument["confidence"];
-  nodeCount?: number;
-  error?: string;
-}
-
-function uiNodeCount(node: UiNode): number {
-  return 1 + node.children.reduce((total, child) => total + uiNodeCount(child), 0);
-}
-
-function scanUiScreens(projectRoot: string): { summaries: UiScreenSummary[]; documents: Map<string, UiConversionDocument> } {
-  const uiRoot = path.join(projectRoot, "scripts", "ui");
-  const documents = new Map<string, UiConversionDocument>();
-  const summaries: UiScreenSummary[] = [];
-  if (!fs.existsSync(uiRoot)) return { summaries, documents };
-  const constants = loadProjectPreviewConstants(projectRoot);
-  const pending = [uiRoot];
-  while (pending.length) {
-    const directory = pending.pop()!;
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (entry.name.startsWith(".")) continue;
-      const filename = path.join(directory, entry.name);
-      if (entry.isDirectory()) { pending.push(filename); continue; }
-      if (!entry.isFile() || !entry.name.endsWith(".lua")) continue;
-      const relativePath = path.relative(projectRoot, filename).split(path.sep).join("/");
-      try {
-        const document = convertLuaUiFile(projectRoot, relativePath, constants);
-        documents.set(relativePath, document);
-        summaries.push({
-          path: relativePath,
-          name: path.basename(entry.name, ".lua"),
-          confidence: document.confidence,
-          nodeCount: uiNodeCount(document.root),
-          ...(document.confidence === "module" ? { error: "module_only" as const } : {})
-        });
-      } catch (error) {
-        summaries.push({ path: relativePath, name: path.basename(entry.name, ".lua"), error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-  }
-  summaries.sort((a, b) => a.name.localeCompare(b.name));
-  return { summaries, documents };
 }
 
 const defaultUiEntry = process.env.TAPMAKERWORK_UI_ENTRY || "scripts/ui/HomePage.lua";
@@ -203,6 +195,53 @@ const capabilities: BridgeCapabilities = {
   luaRepl: false,
   platform: process.platform
 };
+
+function makerVersionsPayload() {
+  const installed = listInstalledMakerRuntimes();
+  const preference = readMakerRuntimePreference();
+  const stableInstalled = installed.find((runtime) => !runtime.version.includes("-"));
+  const betaInstalled = installed.find((runtime) => runtime.version.includes("-"));
+  return {
+    preference,
+    active: makerRuntime,
+    installed,
+    channels: {
+      stable: {
+        installed: stableInstalled?.version,
+        latest: makerRemoteVersions?.stable,
+        updateAvailable: Boolean(makerRemoteVersions?.stable && (!stableInstalled || compareMakerVersions(makerRemoteVersions.stable, stableInstalled.version) > 0))
+      },
+      beta: {
+        installed: betaInstalled?.version,
+        latest: makerRemoteVersions?.beta,
+        updateAvailable: Boolean(makerRemoteVersions?.beta && (!betaInstalled || compareMakerVersions(makerRemoteVersions.beta, betaInstalled.version) > 0))
+      }
+    },
+    checkedAt: makerRemoteVersions?.checkedAt
+  };
+}
+
+function nodeVersionsPayload() {
+  const installed = listInstalledNodeRuntimes();
+  const active = discoverNodeRuntime();
+  const latest = nodeRemoteVersion?.stable;
+  return {
+    device: { version: process.version.replace(/^v/, ""), executable: process.execPath },
+    active,
+    installed,
+    stable: {
+      installed: installed[0]?.version,
+      latest,
+      updateAvailable: Boolean(latest && (!installed[0] || compareMakerVersions(latest, installed[0].version) > 0))
+    },
+    checkedAt: nodeRemoteVersion?.checkedAt
+  };
+}
+
+function refreshSelectedMakerRuntime(): void {
+  makerRuntime = discoverMakerRuntime();
+  capabilities.makerCli = Boolean(makerRuntime);
+}
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
@@ -278,8 +317,8 @@ const server = http.createServer(async (request, response) => {
         capabilities: {
           ...capabilities,
           runtimeBridge: adapter.installed || Boolean(runtimeSessionId),
-          makerBuild: Boolean(makerRuntime && /0\.0\.34|beta/i.test(makerRuntime.version)),
-          makerQrcode: Boolean(makerRuntime && /0\.0\.34|beta/i.test(makerRuntime.version))
+          makerBuild: Boolean(makerRuntime),
+          makerQrcode: Boolean(makerRuntime)
         },
         makerVersion: makerRuntime?.version,
         makerProjectMeta: project ? readMakerProjectMeta(project.root) : null,
@@ -309,6 +348,41 @@ const server = http.createServer(async (request, response) => {
       if (!project) throw new Error("project_not_open");
       const query = url.searchParams.get("q") || "";
       sendJson(response, 200, { query, hits: searchProject(project.root, query, Number(url.searchParams.get("limit") || 50)) });
+    } else if (request.method === "GET" && url.pathname === "/api/workflow/overview") {
+      if (!project) throw new Error("project_not_open");
+      let git;
+      let gitError: string | undefined;
+      try {
+        git = await readGitStatus(project.root);
+      } catch (error) {
+        gitError = error instanceof Error ? error.message : String(error);
+      }
+      const makerMeta = readMakerProjectMeta(project.root);
+      const panel = resolvePreviewPanel(project.root, makerMeta);
+      const fileStatus = syncRuntimeFileChannel();
+      const ideRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
+      sendJson(response, 200, buildProjectWorkflowOverview({
+        projectRoot: project.root,
+        projectName: project.name,
+        makerBound: project.makerBound,
+        makerCli: Boolean(makerRuntime),
+        makerVersion: makerRuntime?.version,
+        uiScreenCount: uiScreens.summaries.length,
+        runtimeSessionId,
+        runtimeScene,
+        runtimeSnapshotPath: fileStatus?.snapshotPath,
+        previewPanel: panel,
+        qrcodeUrl: makerMeta.qrcodeUrl,
+        git,
+        gitError,
+        assets: listProjectAssets(project.root),
+        shots: listPreviewShots(ideRoot, project.name)
+      }));
+    } else if (request.method === "POST" && url.pathname === "/api/workflow/state") {
+      if (!project) throw new Error("project_not_open");
+      const body = await readJson(request) as { objective?: string };
+      const state = saveProjectWorkflow(project.root, body.objective !== undefined ? { objective: body.objective } : {});
+      sendJson(response, 200, { ok: true, state });
     } else if (request.method === "GET" && url.pathname === "/api/project/assets") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, { assets: listProjectAssets(project.root) });
@@ -325,6 +399,13 @@ const server = http.createServer(async (request, response) => {
         bridgePackageRoot: fileURLToPath(new URL(".", import.meta.url)),
         projectName,
         projectRoot: project?.root
+      });
+      sendJson(response, 200, result);
+    } else if (request.method === "POST" && url.pathname === "/api/runtime/adapter/install") {
+      if (!project) throw new Error("project_not_open");
+      const result = installRuntimeAdapter({
+        bridgePackageRoot: fileURLToPath(new URL(".", import.meta.url)),
+        projectRoot: project.root
       });
       sendJson(response, 200, result);
     } else if (request.method === "GET" && url.pathname === "/api/system/info") {
@@ -396,6 +477,14 @@ const server = http.createServer(async (request, response) => {
       sendProjectAsset(response, resolveProjectAsset(project.root, assetPath));
     } else if (request.method === "GET" && url.pathname === "/api/ui/snapshot") {
       sendJson(response, 200, editor.getSnapshot());
+    } else if (request.method === "POST" && url.pathname === "/api/ui/screens/rescan") {
+      if (!project) throw new Error("project_not_open");
+      uiScreens = scanUiScreens(project.root);
+      if (!uiScreens.documents.has(activeUiEntry)) {
+        conversion = pickInitialConversion(uiScreens, defaultUiEntry);
+        if (conversion) activeUiEntry = conversion.sourceFile;
+      }
+      sendJson(response, 200, { screens: uiScreens.summaries, activePath: activeUiEntry });
     } else if (request.method === "GET" && url.pathname === "/api/ui/screens") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, { screens: uiScreens.summaries, activePath: activeUiEntry });
@@ -573,21 +662,51 @@ const server = http.createServer(async (request, response) => {
         });
       } else if (body.op.type === "delete") {
         enqueueRuntimeCommand({
+          type: "ui.tree",
+          mutation: { action: "delete", nodeId: body.op.nodeId }
+        });
+      } else if (body.op.type === "rename") {
+        enqueueRuntimeCommand({
           type: "ui.patch",
           patch: {
             requestId: crypto.randomUUID(),
             baseRevision: snapshot.revision - 1,
             nodeId: body.op.nodeId,
-            props: { visible: false },
-            source: undefined
+            props: { id: body.op.name },
+            source: findUiNode(snapshot.root, body.op.nodeId)?.source
           }
         });
+      } else if (body.op.type === "insert-child" || body.op.type === "insert-sibling" || body.op.type === "duplicate") {
+        const node = snapshot.selectedId ? findUiNode(snapshot.root, snapshot.selectedId) : undefined;
+        const parent = node ? findParentInfo(snapshot.root, node.id) : null;
+        if (node && parent) {
+          enqueueRuntimeCommand({
+            type: "ui.tree",
+            mutation: { action: "create", parentId: parent.parentId, index: parent.index, node }
+          });
+        }
+      } else if (body.op.type === "move" || body.op.type === "relocate") {
+        const parent = findParentInfo(snapshot.root, body.op.nodeId);
+        if (parent) {
+          enqueueRuntimeCommand({
+            type: "ui.tree",
+            mutation: { action: "move", nodeId: body.op.nodeId, parentId: parent.parentId, index: parent.index }
+          });
+        }
       }
       broadcast({ type: "ui.snapshot", snapshot });
       syncRuntimeFileChannel();
       sendJson(response, 200, snapshot);
     } else if (request.method === "POST" && url.pathname === "/api/ui/patch") {
-      const patch = await readJson(request) as UiPatch;
+      const requestedPatch = await readJson(request) as UiPatch;
+      const current = editor.getSnapshot();
+      // Runtime keeps publishing layout snapshots while the editor deliberately
+      // freezes the visible frame for stable manipulation. Rebase a property
+      // edit onto the newest live revision; node identity is the conflict unit,
+      // so an unrelated runtime tick must not reject the user's drag or input.
+      const patch = snapshotSource === "runtime" && requestedPatch.baseRevision !== current.revision
+        ? { ...requestedPatch, baseRevision: current.revision }
+        : requestedPatch;
       const snapshot = editor.apply(patch);
       const node = findUiNode(snapshot.root, patch.nodeId);
       enqueueRuntimeCommand({
@@ -606,11 +725,13 @@ const server = http.createServer(async (request, response) => {
       const snapshot = editor.undo();
       enqueueRuntimeCommand({ type: "ui.replace", snapshot });
       broadcast({ type: "ui.snapshot", snapshot });
+      syncRuntimeFileChannel();
       sendJson(response, 200, snapshot);
     } else if (request.method === "POST" && url.pathname === "/api/ui/redo") {
       const snapshot = editor.redo();
       enqueueRuntimeCommand({ type: "ui.replace", snapshot });
       broadcast({ type: "ui.snapshot", snapshot });
+      syncRuntimeFileChannel();
       sendJson(response, 200, snapshot);
     } else if (request.method === "POST" && url.pathname === "/api/runtime/hello") {
       const body = await readJson(request) as { sessionId?: string; frames?: boolean };
@@ -638,6 +759,45 @@ const server = http.createServer(async (request, response) => {
       const lines = Array.isArray(body.lines) ? body.lines.map(String).slice(0, 500) : [];
       if (lines.length) broadcast({ type: "log.append", channel, lines });
       sendJson(response, 200, { ok: true });
+    } else if (request.method === "GET" && url.pathname === "/api/maker/versions") {
+      if (url.searchParams.get("refresh") === "1") makerRemoteVersions = await checkMakerRuntimeUpdates();
+      sendJson(response, 200, makerVersionsPayload());
+    } else if (request.method === "GET" && url.pathname === "/api/node/versions") {
+      if (url.searchParams.get("refresh") === "1") nodeRemoteVersion = await checkNodeRuntimeUpdates();
+      sendJson(response, 200, nodeVersionsPayload());
+    } else if (request.method === "POST" && url.pathname === "/api/maker/version/select") {
+      const body = await readJson(request) as { mode?: MakerRuntimeMode; version?: string };
+      if (!body.mode || !["device", "stable", "beta", "version"].includes(body.mode)) throw new Error("invalid_maker_runtime_mode");
+      const installed = listInstalledMakerRuntimes();
+      if (body.mode === "version" && !installed.some((runtime) => runtime.version === body.version)) throw new Error("maker_version_not_installed");
+      if (body.mode === "stable" && !installed.some((runtime) => !runtime.version.includes("-"))) throw new Error("maker_stable_not_installed");
+      if (body.mode === "beta" && !installed.some((runtime) => runtime.version.includes("-"))) throw new Error("maker_beta_not_installed");
+      writeMakerRuntimePreference({ mode: body.mode, version: body.mode === "version" ? body.version : undefined });
+      refreshSelectedMakerRuntime();
+      broadcast({ type: "log.append", channel: "agent", lines: [`Maker MCP 已切换为 ${body.mode === "device" ? "设备自动" : makerRuntime?.version ?? body.mode}`] });
+      sendJson(response, 200, { ok: true, ...makerVersionsPayload() });
+    } else if (request.method === "POST" && url.pathname === "/api/maker/version/install") {
+      const body = await readJson(request) as { channel?: "stable" | "beta" };
+      if (body.channel !== "stable" && body.channel !== "beta") throw new Error("invalid_maker_update_channel");
+      makerRemoteVersions = await checkMakerRuntimeUpdates();
+      const target = makerRemoteVersions[body.channel];
+      if (!target) throw new Error(`maker_${body.channel}_version_unavailable`);
+      broadcast({ type: "log.append", channel: "build", lines: [`正在安装 Maker MCP ${target}（${body.channel === "stable" ? "稳定版" : "Beta"}）…`] });
+      const result = await installMakerRuntimeVersion(target);
+      if (!listInstalledMakerRuntimes().some((runtime) => runtime.version === target)) throw new Error("maker_install_not_found_after_upgrade");
+      writeMakerRuntimePreference({ mode: body.channel });
+      refreshSelectedMakerRuntime();
+      broadcast({ type: "log.append", channel: "build", lines: [`Maker MCP ${target} 安装完成，TapMakerWork 已切换。其他 AI 客户端可能需要重新连接 MCP。`] });
+      sendJson(response, 200, { ok: true, result, ...makerVersionsPayload() });
+    } else if (request.method === "POST" && url.pathname === "/api/node/version/install") {
+      nodeRemoteVersion = await checkNodeRuntimeUpdates();
+      const target = nodeRemoteVersion.stable;
+      if (!target) throw new Error("node_stable_version_unavailable");
+      broadcast({ type: "log.append", channel: "build", lines: [`正在安装 Node.js ${target}（稳定 LTS）到 TapMakerWork 托管环境…`] });
+      const result = await installNodeRuntimeVersion(target);
+      refreshSelectedMakerRuntime();
+      broadcast({ type: "log.append", channel: "build", lines: [`Node.js ${target} 安装完成，后续 Maker MCP 进程将使用该版本。`] });
+      sendJson(response, 200, { ok: true, result, ...nodeVersionsPayload(), maker: makerVersionsPayload() });
     } else if (request.method === "GET" && url.pathname === "/api/maker/project-meta") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, {

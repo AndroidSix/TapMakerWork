@@ -42,6 +42,13 @@ export interface UiSnapshot {
   revision: number;
   root: UiNode;
   selectedId?: string;
+  viewport?: {
+    width: number;
+    height: number;
+    scale?: number;
+    physicalWidth?: number;
+    physicalHeight?: number;
+  };
 }
 
 export interface UiConversionDiagnostic {
@@ -65,6 +72,8 @@ export interface UiPatch {
   nodeId: string;
   props: Record<string, UiValue | undefined>;
   source?: UiSourceLocation | undefined;
+  /** Consecutive patches with the same group collapse into one undo step. */
+  historyGroup?: string | undefined;
 }
 
 export interface BridgeCapabilities {
@@ -90,6 +99,67 @@ export interface PreviewPanelState {
   reloadToken: number;
 }
 
+export type ProjectWorkflowStatus = "pass" | "warning" | "blocked" | "pending";
+
+export type ProjectWorkflowAction =
+  | "doctor"
+  | "open-design"
+  | "open-code"
+  | "start-preview"
+  | "open-preview"
+  | "capture-evidence"
+  | "generate-qrcode"
+  | "build";
+
+export interface ProjectWorkflowCheck {
+  id: string;
+  label: string;
+  status: ProjectWorkflowStatus;
+  detail: string;
+  action?: ProjectWorkflowAction | undefined;
+  actionLabel?: string | undefined;
+}
+
+export interface ProjectWorkflowStage {
+  id: "environment" | "project" | "content" | "runtime" | "evidence" | "delivery";
+  label: string;
+  description: string;
+  status: ProjectWorkflowStatus;
+  checks: ProjectWorkflowCheck[];
+}
+
+export interface ProjectWorkflowEvidence {
+  id: string;
+  kind: "preview-shot" | "ui-sidecar" | "runtime-snapshot" | "qrcode";
+  label: string;
+  detail: string;
+  path?: string | undefined;
+  capturedAt?: string | undefined;
+}
+
+export interface ProjectAssetSummary {
+  total: number;
+  referenced: number;
+  unreferenced: number;
+  bytes: number;
+  byKind: Record<"image" | "audio" | "video" | "model" | "font" | "other", number>;
+}
+
+export interface ProjectWorkflowOverview {
+  generatedAt: string;
+  score: number;
+  status: ProjectWorkflowStatus;
+  objective: string;
+  stages: ProjectWorkflowStage[];
+  evidence: ProjectWorkflowEvidence[];
+  assets: ProjectAssetSummary;
+  nextAction?: {
+    action: ProjectWorkflowAction;
+    label: string;
+    reason: string;
+  } | undefined;
+}
+
 export type SnapshotSource = "conversion" | "sidecar" | "runtime" | "empty";
 
 export type BridgeEvent =
@@ -103,8 +173,14 @@ export type BridgeEvent =
 
 export type RuntimeCommand =
   | { id: number; type: "ui.patch"; patch: UiPatch }
+  | { id: number; type: "ui.tree"; mutation: RuntimeTreeMutation }
   | { id: number; type: "ui.replace"; snapshot: UiSnapshot }
   | { id: number; type: "runtime.pause"; paused: boolean };
+
+export type RuntimeTreeMutation =
+  | { action: "create"; parentId: string; index: number; node: UiNode }
+  | { action: "delete"; nodeId: string }
+  | { action: "move"; nodeId: string; parentId: string; index: number };
 
 function nodeChildren(node: UiNode): UiNode[] {
   return Array.isArray(node.children) ? node.children : [];
@@ -156,7 +232,7 @@ export function applyUiPatch(snapshot: UiSnapshot, patch: UiPatch): UiSnapshot {
   return { ...snapshot, revision: snapshot.revision + 1, root, selectedId: patch.nodeId };
 }
 
-export type UiNodeType = "Panel" | "Label" | "Button" | "Image";
+export type UiNodeType = "Node" | "Panel" | "Label" | "Button" | "Image";
 
 export type UiTreeOp =
   | { type: "toggle-visible"; nodeId: string }
@@ -184,7 +260,16 @@ function defaultNode(type: UiNodeType, name: string, id: string): UiNode {
     props: { id: name },
     children: []
   };
-  if (type === "Panel") {
+  if (type === "Node") {
+    base.props = {
+      id: name,
+      position: "absolute",
+      left: 0,
+      top: 0,
+      width: 100,
+      height: 100
+    };
+  } else if (type === "Panel") {
     base.props = {
       id: name,
       width: "100%",
@@ -297,6 +382,7 @@ export function applyUiTreeOp(snapshot: UiSnapshot, op: UiTreeOp): UiSnapshot {
     const childIndex = children.findIndex((child) => child.id === op.nodeId);
     if (childIndex >= 0 && (op.type === "delete" || op.type === "move" || op.type === "insert-sibling" || op.type === "duplicate")) {
       if (op.type === "delete") {
+        selectedId = node.id;
         return { ...cloneNode(node), children: children.filter((_, index) => index !== childIndex).map(cloneNode) };
       }
       if (op.type === "move") {

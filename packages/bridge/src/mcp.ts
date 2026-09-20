@@ -34,7 +34,8 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     { uri: "tapmakerwork://runtime/logs", name: "Official Maker Runtime logs", mimeType: "application/json" },
     { uri: "tapmakerwork://system/info", name: "Bridge system info", mimeType: "application/json" },
     { uri: "tapmakerwork://runtime/adapter", name: "Runtime adapter install status", mimeType: "application/json" },
-    { uri: "tapmakerwork://maker/project-meta", name: "Maker project metadata and test QR URL", mimeType: "application/json" }
+    { uri: "tapmakerwork://maker/project-meta", name: "Maker project metadata and test QR URL", mimeType: "application/json" },
+    { uri: "tapmakerwork://workflow/overview", name: "Delivery workflow, asset binding and evidence overview", mimeType: "application/json" }
   ]
 }));
 
@@ -46,7 +47,8 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     "tapmakerwork://runtime/logs": "/api/maker/preview/logs",
     "tapmakerwork://system/info": "/api/system/info",
     "tapmakerwork://runtime/adapter": "/api/runtime/adapter",
-    "tapmakerwork://maker/project-meta": "/api/maker/project-meta"
+    "tapmakerwork://maker/project-meta": "/api/maker/project-meta",
+    "tapmakerwork://workflow/overview": "/api/workflow/overview"
   };
   const route = routes[request.params.uri];
   if (!route) throw new Error("resource_not_found");
@@ -124,7 +126,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         additionalProperties: false
       }
     },
-    { name: "runtime_adapter_status", description: "Whether TapMakerWorkBridge.lua is installed in the bound Maker project.", inputSchema: { type: "object", properties: {}, additionalProperties: false } }
+    { name: "runtime_adapter_status", description: "Whether TapMakerWorkBridge.lua is installed in the bound Maker project.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    {
+      name: "workflow_set_objective",
+      description: "Set the current delivery objective shown in TapMakerWork. This writes only .tapmakerwork/workflow.json in the bound project.",
+      inputSchema: {
+        type: "object",
+        properties: { objective: { type: "string", minLength: 1, maxLength: 500 } },
+        required: ["objective"],
+        additionalProperties: false
+      }
+    }
   ]
 }));
 
@@ -189,6 +201,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }));
     }
     case "runtime_adapter_status": return jsonText(await bridge("/api/runtime/adapter"));
+    case "workflow_set_objective": {
+      return jsonText(await bridge("/api/workflow/state", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ objective: String(args.objective || "") })
+      }));
+    }
     default: throw new Error(`unknown_tool:${request.params.name}`);
   }
 });

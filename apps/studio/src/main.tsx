@@ -1,7 +1,24 @@
 import React, { StrictMode, Component, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { loader } from "@monaco-editor/react";
+import * as monaco from "monaco-editor/editor/editor.api";
+import "monaco-editor/languages/definitions/lua/register";
+import "monaco-editor/language/json/monaco.contribution";
+import "monaco-editor/language/typescript/monaco.contribution";
+import EditorWorker from "monaco-editor/editor/editor.worker?worker";
+import JsonWorker from "monaco-editor/language/json/json.worker?worker";
+import TsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 import { App } from "./App";
 import "./styles.css";
+
+self.MonacoEnvironment = {
+  getWorker(_moduleId: string, label: string) {
+    if (label === "json") return new JsonWorker();
+    if (label === "typescript" || label === "javascript") return new TsWorker();
+    return new EditorWorker();
+  }
+};
+loader.config({ monaco });
 
 declare global {
   interface Window {
@@ -10,11 +27,37 @@ declare global {
       desktop: boolean;
       chooseProject?: () => Promise<string | undefined>;
       onOpenProject?: (listener: (projectPath: string) => void) => () => void;
+      onHistoryAction?: (listener: (action: "undo" | "redo") => void) => () => void;
+      captureRuntime?: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) => Promise<{
+        ok: boolean;
+        dataUrl?: string;
+        sourceId?: string;
+        sourceName?: string;
+        width?: number;
+        height?: number;
+        permission?: string;
+        error?: string;
+        candidates?: Array<{ id: string; name: string }>;
+      }>;
       preview?: {
         mount: (opts: { url: string; x: number; y: number; width: number; height: number; orientation: string }) => Promise<{ ok: boolean; error?: string }>;
         reload: () => Promise<{ ok: boolean }>;
         unmount: () => Promise<{ ok: boolean }>;
         capture: () => Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
+      };
+      runtime?: {
+        capture: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) => Promise<{
+          ok: boolean;
+          dataUrl?: string;
+          sourceId?: string;
+          sourceName?: string;
+          width?: number;
+          height?: number;
+          permission?: string;
+          error?: string;
+          candidates?: Array<{ id: string; name: string }>;
+        }>;
+        interact: (opts: { sourceName: string; sourceId: string; normalizedX: number; normalizedY: number; viewportWidth: number; viewportHeight: number }) => Promise<{ ok: boolean; error?: string }>;
       };
     };
   }

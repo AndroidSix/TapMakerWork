@@ -73,6 +73,7 @@ export class EditorState {
   private snapshot: UiSnapshot;
   private undoStack: UiSnapshot[] = [];
   private redoStack: UiSnapshot[] = [];
+  private activeHistoryGroup: string | undefined;
 
   constructor(snapshot: UiSnapshot = initialUiSnapshot()) {
     this.snapshot = snapshot;
@@ -86,17 +87,25 @@ export class EditorState {
     this.snapshot = { ...snapshot, revision: this.snapshot.revision + 1 };
     this.undoStack = [];
     this.redoStack = [];
+    this.activeHistoryGroup = undefined;
     return this.snapshot;
   }
 
   replaceFromRuntime(snapshot: UiSnapshot): UiSnapshot {
-    this.snapshot = { ...snapshot, revision: this.snapshot.revision + 1 };
+    this.snapshot = {
+      ...snapshot,
+      revision: this.snapshot.revision + 1,
+      ...(snapshot.selectedId || !this.snapshot.selectedId ? {} : { selectedId: this.snapshot.selectedId })
+    };
     return this.snapshot;
   }
 
   apply(patch: UiPatch): UiSnapshot {
-    this.undoStack.push(this.snapshot);
-    this.redoStack = [];
+    if (!patch.historyGroup || patch.historyGroup !== this.activeHistoryGroup) {
+      this.undoStack.push(this.snapshot);
+      this.redoStack = [];
+    }
+    this.activeHistoryGroup = patch.historyGroup;
     this.snapshot = applyUiPatch(this.snapshot, patch);
     return this.snapshot;
   }
@@ -104,11 +113,13 @@ export class EditorState {
   applyTreeOp(op: UiTreeOp): UiSnapshot {
     this.undoStack.push(this.snapshot);
     this.redoStack = [];
+    this.activeHistoryGroup = undefined;
     this.snapshot = applyUiTreeOp(this.snapshot, op);
     return this.snapshot;
   }
 
   undo(): UiSnapshot {
+    this.activeHistoryGroup = undefined;
     const previous = this.undoStack.pop();
     if (!previous) return this.snapshot;
     this.redoStack.push(this.snapshot);
@@ -117,6 +128,7 @@ export class EditorState {
   }
 
   redo(): UiSnapshot {
+    this.activeHistoryGroup = undefined;
     const next = this.redoStack.pop();
     if (!next) return this.snapshot;
     this.undoStack.push(this.snapshot);

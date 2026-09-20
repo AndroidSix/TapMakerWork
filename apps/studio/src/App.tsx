@@ -42,7 +42,19 @@ import {
   Plus,
   Trash2,
   MoreHorizontal,
-  Columns2
+  Columns2,
+  LayoutDashboard,
+  Music2,
+  Video,
+  Rocket,
+  Download,
+  CheckCircle2,
+  Pipette,
+  Maximize2,
+  ZoomIn,
+  ZoomOut,
+  GripVertical,
+  PanelTop
 } from "lucide-react";
 import {
   DEFAULT_DEVICE_PROFILES,
@@ -53,14 +65,20 @@ import {
   type DeviceProfile,
   type LogChannel,
   type UiNode,
+  type UiNodeType,
   type UiPatch,
   type UiSnapshot,
   type UiTreeOp,
   type UiValue,
   type PreviewPanelState,
+  type ProjectWorkflowAction,
+  type ProjectWorkflowOverview,
   type WorkspaceMode
 } from "@tapmakerwork/protocol";
 import { PreviewDock } from "./PreviewDock";
+import { ProjectCockpit } from "./ProjectCockpit";
+import { RuntimeMirror } from "./RuntimeMirror";
+import { rgbaCss, rgbaFromHex, rgbaFromValue, rgbaToHex, type RgbaColor } from "./color-utils";
 
 const API = "http://127.0.0.1:43121";
 
@@ -85,6 +103,34 @@ interface MakerProjectMeta {
   publishStatus?: number | undefined;
   qrcodeUrl?: string | undefined;
   qrcodeGeneratedAt?: string | undefined;
+}
+
+interface MakerPreviewStatus {
+  state?: string;
+  process_alive?: boolean | null;
+  runtime_pid?: number;
+  error?: string;
+}
+
+type MakerRuntimeMode = "device" | "stable" | "beta" | "version";
+
+interface MakerVersionState {
+  preference: { mode: MakerRuntimeMode; version?: string };
+  active?: { version: string; entry: string };
+  installed: Array<{ version: string; entry: string }>;
+  channels: {
+    stable: { installed?: string; latest?: string; updateAvailable: boolean };
+    beta: { installed?: string; latest?: string; updateAvailable: boolean };
+  };
+  checkedAt?: string;
+}
+
+interface NodeVersionState {
+  device: { version: string; executable: string };
+  active: { version: string; executable: string; source: "device" | "managed" };
+  installed: Array<{ version: string; executable: string; source: "managed" }>;
+  stable: { installed?: string; latest?: string; updateAvailable: boolean };
+  checkedAt?: string;
 }
 
 interface ProjectState {
@@ -119,6 +165,10 @@ interface AssetEntry {
   name: string;
   path: string;
   bytes: number;
+  extension?: string;
+  kind?: "image" | "audio" | "video" | "model" | "font" | "other";
+  referencedBy?: string[];
+  status?: "referenced" | "unreferenced";
 }
 
 interface GitStatusState {
@@ -152,6 +202,8 @@ const initialLogs: Record<LogChannel, string[]> = {
 function iconForType(type: string): ReactNode {
   if (type === "Button") return <Box size={14} />;
   if (type === "Label") return <Code2 size={14} />;
+  if (type === "Image") return <Image size={14} />;
+  if (type === "Node") return <Box size={14} />;
   return <Boxes size={14} />;
 }
 
@@ -159,6 +211,7 @@ function labelForType(type: string): string {
   if (type === "Button") return "按钮";
   if (type === "Label") return "文字";
   if (type === "Panel") return "容器";
+  if (type === "Node") return "空节点";
   return type;
 }
 
@@ -265,6 +318,8 @@ function runtimeStyle(node: UiNode): CSSProperties {
     marginBottom: typeof props.marginBottom === "number" ? props.marginBottom : undefined,
     background: rgba(props.backgroundColor, isEmptyFactory ? "#1a2233cc" : "transparent"),
     backgroundImage: typeof backgroundImage === "string" ? `url("${API}/api/project/asset?path=${encodeURIComponent(backgroundImage)}")` : undefined,
+    backgroundBlendMode: typeof backgroundImage === "string" && props.color != null ? "multiply" : undefined,
+    ...(typeof backgroundImage === "string" && props.color != null ? { backgroundColor: rgba(props.color, "#fff") } : {}),
     backgroundSize: props.backgroundFit === "cover" ? "cover" : props.backgroundFit === "contain" ? "contain" : undefined,
     backgroundPosition: "center",
     borderRadius: typeof props.borderRadius === "number" ? props.borderRadius : undefined,
@@ -347,7 +402,23 @@ const DEFAULT_LAYOUT = {
 };
 
 type WorkspaceLayout = { left: number; right: number; previewDock: number; terminal: number };
+type CenterTab = "workflow" | "visual" | "runtime" | "code";
+type DocumentTab = CenterTab | "preview";
+type FloatingWorkspace = { x: number; y: number; width: number; height: number };
 const LAYOUT_STORAGE_KEY = "tapmakerwork.workspaceLayout";
+const DOCUMENT_TABS_STORAGE_KEY = "tapmakerwork.documentTabs";
+const DEFAULT_DOCUMENT_TABS: DocumentTab[] = ["workflow", "visual", "runtime", "code", "preview"];
+
+function loadDocumentTabs(): DocumentTab[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(DOCUMENT_TABS_STORAGE_KEY) || "[]") as unknown;
+    if (!Array.isArray(value)) return [...DEFAULT_DOCUMENT_TABS];
+    const valid = value.filter((item): item is DocumentTab => DEFAULT_DOCUMENT_TABS.includes(item as DocumentTab));
+    return [...new Set([...valid, ...DEFAULT_DOCUMENT_TABS])];
+  } catch {
+    return [...DEFAULT_DOCUMENT_TABS];
+  }
+}
 
 function loadWorkspaceLayout(): WorkspaceLayout {
   try {
@@ -358,11 +429,15 @@ function loadWorkspaceLayout(): WorkspaceLayout {
       left: clamp(parsed.left ?? DEFAULT_LAYOUT.left, 160, 420),
       right: clamp(parsed.right ?? DEFAULT_LAYOUT.right, 200, 480),
       previewDock: clamp(parsed.previewDock ?? DEFAULT_LAYOUT.previewDock, 220, 520),
-      terminal: clamp(parsed.terminal ?? DEFAULT_LAYOUT.terminal, 72, 360)
+      terminal: clamp(parsed.terminal ?? DEFAULT_LAYOUT.terminal, 40, terminalMaxHeight())
     };
   } catch {
     return { ...DEFAULT_LAYOUT };
   }
+}
+
+function terminalMaxHeight(): number {
+  return Math.max(120, (typeof window === "undefined" ? 800 : window.innerHeight) - 48 - 40 - 22 - 96);
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -381,6 +456,7 @@ function PanelResizer({ orientation, onPointerDown, label }: {
       aria-label={label}
       aria-orientation={orientation === "col" ? "vertical" : "horizontal"}
       onPointerDown={onPointerDown}
+      title={orientation === "row" ? "拖动调整高度" : "拖动调整宽度"}
     />
   );
 }
@@ -394,10 +470,11 @@ function imagePathFromProps(props: Record<string, UiValue>): string | undefined 
   return undefined;
 }
 
-function RuntimeNode({ node, selectedId, onSelect, onDragStart, onPlayClick, mode }: {
+function RuntimeNode({ node, selectedId, selectedIds, onSelect, onDragStart, onPlayClick, mode }: {
   node: UiNode;
   selectedId: string | undefined;
-  onSelect: (id: string) => void;
+  selectedIds: string[];
+  onSelect: (id: string, additive?: boolean) => void;
   onDragStart?: ((id: string, event: React.PointerEvent) => void) | undefined;
   onPlayClick?: ((node: UiNode) => void) | undefined;
   mode: WorkspaceMode;
@@ -409,7 +486,7 @@ function RuntimeNode({ node, selectedId, onSelect, onDragStart, onPlayClick, mod
   const className = [
     "runtime-node",
     `runtime-${(node.type || "widget").toLowerCase()}`,
-    selectedId === node.id ? "selected" : "",
+    selectedIds.includes(node.id) ? "selected" : "",
     isSlot ? "runtime-slot" : "",
     isEmptyFactory ? "runtime-factory" : "",
     mode === "play" ? "local-runtime" : ""
@@ -422,8 +499,8 @@ function RuntimeNode({ node, selectedId, onSelect, onDragStart, onPlayClick, mod
       data-node-id={node.id}
       onPointerDown={(event) => {
         event.stopPropagation();
-        onSelect(node.id);
-        if (mode === "live-edit" && onDragStart) onDragStart(node.id, event);
+        onSelect(node.id, event.shiftKey);
+        if (mode === "live-edit" && onDragStart && !event.shiftKey) onDragStart(node.id, event);
         if (mode === "play" && node.type === "Button" && onPlayClick) onPlayClick(node);
       }}
     >
@@ -440,17 +517,19 @@ function RuntimeNode({ node, selectedId, onSelect, onDragStart, onPlayClick, mod
         <span className="panel-name">{node.name}</span>
       )}
       {uiChildren(node).map((child) => (
-        <RuntimeNode key={child.id} node={child} selectedId={selectedId} onSelect={onSelect} onDragStart={onDragStart} onPlayClick={onPlayClick} mode={mode} />
+        <RuntimeNode key={child.id} node={child} selectedId={selectedId} selectedIds={selectedIds} onSelect={onSelect} onDragStart={onDragStart} onPlayClick={onPlayClick} mode={mode} />
       ))}
       {selectedId === node.id && mode !== "play" && <span className="node-badge">{labelForType(node.type)}{node.source?.line ? ` :${node.source.line}` : ""}</span>}
     </div>
   );
 }
 
-function HierarchyNode({ node, selectedId, onSelect, depth = 0, renamingId, renameDraft, onRenameDraft, onCommitRename, onCancelRename, dragId, dropHint, onDragStartId, onDragOverId, onDropId }: {
+function HierarchyNode({ node, selectedId, selectedIds, onSelect, onContextMenuId, depth = 0, renamingId, renameDraft, onRenameDraft, onCommitRename, onCancelRename, dragId, dropHint, onDragStartId, onDragOverId, onDropId }: {
   node: UiNode;
   selectedId: string | undefined;
-  onSelect: (id: string) => void;
+  selectedIds: string[];
+  onSelect: (id: string, additive?: boolean) => void;
+  onContextMenuId: (id: string, x: number, y: number) => void;
   depth?: number;
   renamingId: string | null;
   renameDraft: string;
@@ -469,7 +548,7 @@ function HierarchyNode({ node, selectedId, onSelect, depth = 0, renamingId, rena
   return (
     <>
       <div
-        className={`tree-row ${selectedId === node.id ? "active" : ""} ${dropClass} ${dragId === node.id ? "dragging" : ""} ${node.props.visible === false ? "is-hidden" : ""}`}
+        className={`tree-row ${selectedIds.includes(node.id) ? "active" : ""} ${selectedId === node.id ? "primary" : ""} ${dropClass} ${dragId === node.id ? "dragging" : ""} ${node.props.visible === false ? "is-hidden" : ""}`}
         style={{ paddingLeft: 8 + depth * 14 }}
         draggable={renamingId !== node.id}
         onDragStart={(event) => {
@@ -479,6 +558,12 @@ function HierarchyNode({ node, selectedId, onSelect, depth = 0, renamingId, rena
         }}
         onDragOver={(event) => onDragOverId(node.id, event)}
         onDrop={(event) => onDropId(node.id, event)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onSelect(node.id);
+          onContextMenuId(node.id, event.clientX, event.clientY);
+        }}
       >
         <button className="tree-expand" aria-label={expanded ? "折叠" : "展开"} onClick={() => setExpanded(!expanded)} disabled={!kids.length}>
           {kids.length ? expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : <span className="tree-spacer" />}
@@ -498,7 +583,7 @@ function HierarchyNode({ node, selectedId, onSelect, depth = 0, renamingId, rena
         ) : (
           <button
             className="tree-label"
-            onClick={() => onSelect(node.id)}
+            onClick={(event) => onSelect(node.id, event.shiftKey)}
             onDoubleClick={() => {
               onSelect(node.id);
               // parent will wire rename via selected; trigger custom event
@@ -517,7 +602,9 @@ function HierarchyNode({ node, selectedId, onSelect, depth = 0, renamingId, rena
           key={child.id}
           node={child}
           selectedId={selectedId}
+          selectedIds={selectedIds}
           onSelect={onSelect}
+          onContextMenuId={onContextMenuId}
           depth={depth + 1}
           renamingId={renamingId}
           renameDraft={renameDraft}
@@ -573,28 +660,162 @@ function FileTreeEntry({ entry, depth, selectedPath, onOpen }: {
   </>;
 }
 
-function InspectorField({ label, property, value, onCommit }: {
+function InspectorField({ label, property, value, onCommit, live = false }: {
+  label: string;
+  property: string;
+  value: UiValue | undefined;
+  onCommit: (property: string, value: UiValue) => void;
+  live?: boolean;
+}) {
+  const display = Array.isArray(value) ? value.join(", ") : value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+  const [draft, setDraft] = useState(display);
+  const focusedRef = useRef(false);
+  const liveTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focusedRef.current) setDraft(display);
+  }, [display]);
+  useEffect(() => () => {
+    if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
+  }, []);
+  const parsedValue = (raw: string): UiValue => {
+    if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
+    if (raw.includes(",") && raw.split(",").every((part) => /^\s*\d+\s*$/.test(part))) return raw.split(",").map(Number);
+    return raw;
+  };
+  const commit = () => {
+    if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
+    if (draft === display) return;
+    onCommit(property, parsedValue(draft));
+  };
+  return (
+    <label className="property-row">
+      <span>{label}</span>
+      <input
+        value={draft}
+        onFocus={() => { focusedRef.current = true; }}
+        onChange={(event) => {
+          const next = event.target.value;
+          setDraft(next);
+          if (live) {
+            if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
+            liveTimerRef.current = window.setTimeout(() => onCommit(property, parsedValue(next)), 120);
+          }
+        }}
+        onBlur={() => {
+          focusedRef.current = false;
+          commit();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+          if (event.key === "Escape") {
+            setDraft(display);
+            event.currentTarget.blur();
+          }
+        }}
+      />
+    </label>
+  );
+}
+
+function InspectorColorField({ label, property, value, onCommit }: {
   label: string;
   property: string;
   value: UiValue | undefined;
   onCommit: (property: string, value: UiValue) => void;
 }) {
-  const display = Array.isArray(value) ? value.join(", ") : value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
-  const [draft, setDraft] = useState(display);
-  useEffect(() => setDraft(display), [display]);
-  const commit = () => {
-    if (draft === display) return;
-    let next: UiValue = draft;
-    if (/^-?\d+(\.\d+)?$/.test(draft)) next = Number(draft);
-    else if (draft.includes(",") && draft.split(",").every((part) => /^\s*\d+\s*$/.test(part))) next = draft.split(",").map(Number);
+  const parsed = useMemo(() => rgbaFromValue(value), [value]);
+  const [draft, setDraft] = useState<RgbaColor>(parsed);
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => setDraft(parsed), [parsed[0], parsed[1], parsed[2], parsed[3]]);
+  const update = (next: RgbaColor) => {
+    setDraft(next);
     onCommit(property, next);
   };
+  const updateChannel = (index: number, raw: string) => {
+    const next = [...draft] as RgbaColor;
+    next[index] = Math.max(0, Math.min(255, Math.round(Number(raw) || 0)));
+    update(next);
+  };
+  return (
+    <div className={`property-color ${expanded ? "expanded" : ""}`}>
+      <span className="property-color-label">{label}</span>
+      <button
+        type="button"
+        className="property-color-summary"
+        aria-expanded={expanded}
+        aria-label={`${label} ${rgbaToHex(draft, true)}，点击${expanded ? "收起" : "展开"}颜色编辑器`}
+        onClick={() => setExpanded((open) => !open)}
+      >
+        <i className="property-color-swatch" style={{ "--swatch": rgbaCss(draft) } as CSSProperties} />
+        <code>{rgbaToHex(draft, true)}</code>
+        <ChevronDown size={13} aria-hidden="true" />
+      </button>
+      {expanded && (
+        <div className="property-color-editor">
+          <label className="property-color-native">
+            <span><Pipette size={13} aria-hidden="true" />颜色</span>
+            <input
+              type="color"
+              value={rgbaToHex(draft)}
+              aria-label={`${label}系统颜色选择器`}
+              onChange={(event) => update(rgbaFromHex(event.target.value, draft))}
+            />
+          </label>
+          {(["R", "G", "B", "A"] as const).map((channel, index) => (
+            <label key={channel} className="property-color-channel">
+              <span>{channel}</span>
+              <input type="range" min="0" max="255" value={draft[index]} aria-label={`${label} ${channel}`} onChange={(event) => updateChannel(index, event.target.value)} />
+              <input type="number" min="0" max="255" value={draft[index]} aria-label={`${label} ${channel} 数值`} onChange={(event) => updateChannel(index, event.target.value)} />
+            </label>
+          ))}
+          <label className="property-color-hex">
+            <span>Hexadecimal</span>
+            <input
+              key={rgbaToHex(draft, true)}
+              defaultValue={rgbaToHex(draft, true)}
+              aria-label={`${label}十六进制 RGBA`}
+              onBlur={(event) => update(rgbaFromHex(event.target.value, draft))}
+              onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+            />
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InspectorAssetField({ value, assets, onCommit }: {
+  value: UiValue | undefined;
+  assets: AssetEntry[];
+  onCommit: (property: string, value: UiValue) => void;
+}) {
+  const current = typeof value === "string" ? value : "";
+  const options = assets
+    .filter((asset) => asset.kind === "image")
+    .map((asset) => ({ label: asset.name, value: asset.path.replace(/^assets\//i, "") }));
   return (
     <label className="property-row">
-      <span>{label}</span>
-      <input value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} onKeyDown={(event) => event.key === "Enter" && commit()} />
+      <span>图片资源</span>
+      <select value={current} onChange={(event) => onCommit("backgroundImage", event.target.value)}>
+        <option value="">无图片</option>
+        {current && !options.some((option) => option.value === current) && <option value={current}>{current}</option>}
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label} · {option.value}</option>)}
+      </select>
     </label>
   );
+}
+
+function keepValidSelection(current: UiSnapshot | undefined, incoming: UiSnapshot, preferredId?: string): UiSnapshot {
+  // Runtime layout snapshots are authoritative for geometry, but selection is
+  // editor-owned interaction state. Keep the local selection across frequent
+  // engine ticks, and only fall back when that node was actually destroyed.
+  const localId = preferredId || current?.selectedId;
+  if (localId && findUiNode(incoming.root, localId)) {
+    return { ...incoming, selectedId: localId };
+  }
+  if (incoming.selectedId && findUiNode(incoming.root, incoming.selectedId)) return incoming;
+  const { selectedId: _selectedId, ...withoutSelection } = incoming;
+  return withoutSelection;
 }
 
 export function App() {
@@ -613,9 +834,11 @@ export function App() {
   });
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [screens, setScreens] = useState<UiScreenSummary[]>([]);
+  const [screensBusy, setScreensBusy] = useState(false);
   const [activeUiPath, setActiveUiPath] = useState("scripts/ui/HomePage.lua");
   const [selectedFile, setSelectedFile] = useState("scripts/ui/HomePage.lua");
   const [snapshot, setSnapshot] = useState<UiSnapshot>();
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [snapshotSource, setSnapshotSource] = useState<"conversion" | "sidecar" | "runtime" | "empty" | undefined>();
   const [mode, setMode] = useState<WorkspaceMode>("inspect");
   const [device, setDevice] = useState<DeviceProfile>(DEFAULT_DEVICE_PROFILES[0]!);
@@ -623,7 +846,10 @@ export function App() {
   const [activeTerminal, setActiveTerminal] = useState<LogChannel>("runtime");
   const [logs, setLogs] = useState(initialLogs);
   const [leftTab, setLeftTab] = useState<"files" | "screens" | "hierarchy" | "assets">("screens");
-  const [centerTab, setCenterTab] = useState<"visual" | "code">("visual");
+  const [centerTab, setCenterTab] = useState<CenterTab>("workflow");
+  const [documentTabs, setDocumentTabs] = useState<DocumentTab[]>(loadDocumentTabs);
+  const [draggedDocumentTab, setDraggedDocumentTab] = useState<DocumentTab | null>(null);
+  const [floatingWorkspace, setFloatingWorkspace] = useState<FloatingWorkspace | null>(null);
   const [previewDockOpen, setPreviewDockOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
   const [previewPanel, setPreviewPanel] = useState<PreviewPanelState>();
@@ -632,6 +858,8 @@ export function App() {
   const [codeDirty, setCodeDirty] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [runtimeBusy, setRuntimeBusy] = useState(false);
+  const [adapterInstallBusy, setAdapterInstallBusy] = useState(false);
+  const [runtimeEditRevision, setRuntimeEditRevision] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -644,15 +872,23 @@ export function App() {
   const [revealLine, setRevealLine] = useState<number | null>(null);
   const [sidecarInfo, setSidecarInfo] = useState<{ path: string; exists: boolean; savedAt?: string | undefined; dirty?: boolean | undefined }>({ path: "", exists: false });
   const [makerMeta, setMakerMeta] = useState<MakerProjectMeta>({});
+  const [makerPreviewStatus, setMakerPreviewStatus] = useState<MakerPreviewStatus>();
   const [makerBusy, setMakerBusy] = useState<"" | "build" | "qrcode" | "doctor">("");
+  const [makerVersions, setMakerVersions] = useState<MakerVersionState>();
+  const [nodeVersions, setNodeVersions] = useState<NodeVersionState>();
+  const [makerVersionBusy, setMakerVersionBusy] = useState<"" | "check" | "switch" | "stable" | "beta" | "node">("");
+  const [workflow, setWorkflow] = useState<ProjectWorkflowOverview>();
+  const [workflowLoading, setWorkflowLoading] = useState(false);
+  const [workflowBusyAction, setWorkflowBusyAction] = useState<ProjectWorkflowAction>();
   const [qrOpen, setQrOpen] = useState(false);
   const [qrMenuOpen, setQrMenuOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
-  const [newNodeType, setNewNodeType] = useState<"Panel" | "Label" | "Button" | "Image">("Panel");
+  const [newNodeType, setNewNodeType] = useState<UiNodeType>("Panel");
   const [hierDragId, setHierDragId] = useState<string | null>(null);
   const [hierDrop, setHierDrop] = useState<{ id: string; pos: "before" | "after" | "inside" } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const toast = useCallback((message: string, kind: ToastKind = "info") => {
     const id = Date.now() + Math.random();
     setToasts((list) => [...list, { id, kind, message }]);
@@ -661,12 +897,174 @@ export function App() {
   const qrCloseTimer = useRef<number | null>(null);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const modeRef = useRef<WorkspaceMode>(mode);
+  const selectedNodeIdRef = useRef<string | undefined>(undefined);
+  const runtimeEditSyncTimerRef = useRef<number | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [stageScale, setStageScale] = useState(1);
+  const [canvasAutoFit, setCanvasAutoFit] = useState(true);
+  const canvasViewportRef = useRef<HTMLDivElement | null>(null);
+  const documentTabsRef = useRef<HTMLElement | null>(null);
+  const floatingWorkspaceDragRef = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null);
+  const floatingWorkspaceResizeRef = useRef<{ startX: number; startY: number; width: number; height: number } | null>(null);
   const [layout, setLayout] = useState<WorkspaceLayout>(() => loadWorkspaceLayout());
   const layoutDragRef = useRef<{ key: keyof WorkspaceLayout; base: number; originX: number; originY: number } | null>(null);
-  const previewWidth = typeof snapshot?.root.props.$previewDesignWidth === "number" ? snapshot.root.props.$previewDesignWidth : device.width;
-  const previewHeight = device.height / device.width * previewWidth;
+  const rootLayout = snapshot ? runtimeLayoutBox(snapshot.root.props) : {};
+  const previewWidth = snapshot?.viewport?.width && snapshot.viewport.width > 0
+    ? snapshot.viewport.width
+    : typeof snapshot?.root.props.$previewDesignWidth === "number"
+      ? snapshot.root.props.$previewDesignWidth
+      : rootLayout.w && rootLayout.w > 0 ? rootLayout.w : device.width;
+  const previewHeight = snapshot?.viewport?.height && snapshot.viewport.height > 0
+    ? snapshot.viewport.height
+    : rootLayout.h && rootLayout.h > 0
+      ? rootLayout.h
+      : device.height / device.width * previewWidth;
+
+  const applyBestCanvasScale = useCallback(() => {
+    const viewport = canvasViewportRef.current;
+    if (!viewport || previewWidth <= 0 || previewHeight <= 0) return;
+    const availableWidth = Math.max(120, viewport.clientWidth - 56);
+    const availableHeight = Math.max(120, viewport.clientHeight - 56);
+    setStageScale(Math.min(4, Math.max(0.1, Math.min(availableWidth / previewWidth, availableHeight / previewHeight))));
+    setCanvasAutoFit(true);
+  }, [previewHeight, previewWidth]);
+
+  const reorderDocumentTab = useCallback((target: DocumentTab) => {
+    if (!draggedDocumentTab || draggedDocumentTab === target) return;
+    setDocumentTabs((current) => {
+      const next = current.filter((item) => item !== draggedDocumentTab);
+      next.splice(Math.max(0, current.indexOf(target)), 0, draggedDocumentTab);
+      try { localStorage.setItem(DOCUMENT_TABS_STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, [draggedDocumentTab]);
+
+  const moveDocumentTab = useCallback((tab: DocumentTab, direction: -1 | 1) => {
+    setDocumentTabs((current) => {
+      const index = current.indexOf(tab);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target]!, next[index]!];
+      try { localStorage.setItem(DOCUMENT_TABS_STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
+  const finishDocumentTabDrag = useCallback((event: React.DragEvent) => {
+    const tabsBounds = documentTabsRef.current?.getBoundingClientRect();
+    const outsideTabStrip = tabsBounds && (
+      event.clientY < tabsBounds.top - 14 || event.clientY > tabsBounds.bottom + 40
+      || event.clientX < tabsBounds.left - 24 || event.clientX > tabsBounds.right + 24
+    );
+    if (!floatingWorkspace && outsideTabStrip && event.clientX > 0 && event.clientY > 0) {
+      const width = Math.min(920, Math.max(560, window.innerWidth * .58));
+      const height = Math.min(720, Math.max(420, window.innerHeight * .62));
+      setFloatingWorkspace({
+        x: clamp(event.clientX - width / 2, 8, Math.max(8, window.innerWidth - width - 8)),
+        y: clamp(event.clientY - 20, 8, Math.max(8, window.innerHeight - height - 8)),
+        width,
+        height
+      });
+      toast("工作区已脱离停靠；拖动标题空白处可移动，右下角可缩放", "success");
+    }
+    setDraggedDocumentTab(null);
+  }, [floatingWorkspace, toast]);
+
+  const beginFloatingWorkspaceMove = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (!floatingWorkspace || (event.target as HTMLElement).closest("button, input, select")) return;
+    event.preventDefault();
+    floatingWorkspaceDragRef.current = { startX: event.clientX, startY: event.clientY, x: floatingWorkspace.x, y: floatingWorkspace.y };
+    const onMove = (moveEvent: PointerEvent) => {
+      const drag = floatingWorkspaceDragRef.current;
+      if (!drag) return;
+      setFloatingWorkspace((current) => current ? {
+        ...current,
+        x: clamp(drag.x + moveEvent.clientX - drag.startX, 8, Math.max(8, window.innerWidth - current.width - 8)),
+        y: clamp(drag.y + moveEvent.clientY - drag.startY, 8, Math.max(8, window.innerHeight - current.height - 8))
+      } : current);
+    };
+    const onUp = (upEvent: PointerEvent) => {
+      floatingWorkspaceDragRef.current = null;
+      document.body.classList.remove("moving-workspace");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      const dockLeft = layout.left + 5;
+      const dockRight = window.innerWidth - layout.right - 5;
+      if (upEvent.clientX >= dockLeft && upEvent.clientX <= dockRight && upEvent.clientY >= 82 && upEvent.clientY <= 150) {
+        setFloatingWorkspace(null);
+        toast("工作区已重新停靠", "success");
+      }
+    };
+    document.body.classList.add("moving-workspace");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [floatingWorkspace, layout.left, layout.right, toast]);
+
+  const beginFloatingWorkspaceResize = useCallback((event: React.PointerEvent) => {
+    if (!floatingWorkspace) return;
+    event.preventDefault();
+    event.stopPropagation();
+    floatingWorkspaceResizeRef.current = { startX: event.clientX, startY: event.clientY, width: floatingWorkspace.width, height: floatingWorkspace.height };
+    const onMove = (moveEvent: PointerEvent) => {
+      const drag = floatingWorkspaceResizeRef.current;
+      if (!drag) return;
+      setFloatingWorkspace((current) => current ? {
+        ...current,
+        width: clamp(drag.width + moveEvent.clientX - drag.startX, 480, Math.max(480, window.innerWidth - current.x - 8)),
+        height: clamp(drag.height + moveEvent.clientY - drag.startY, 340, Math.max(340, window.innerHeight - current.y - 8))
+      } : current);
+    };
+    const onUp = () => {
+      floatingWorkspaceResizeRef.current = null;
+      document.body.classList.remove("resizing-workspace");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    document.body.classList.add("resizing-workspace");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [floatingWorkspace]);
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
+  useEffect(() => {
+    if (snapshot?.selectedId) selectedNodeIdRef.current = snapshot.selectedId;
+  }, [snapshot?.selectedId]);
+
+  useEffect(() => {
+    setSelectedNodeIds((current) => {
+      if (!snapshot) return [];
+      const valid = current.filter((id) => Boolean(findUiNode(snapshot.root, id)));
+      if (valid.length) return valid;
+      return snapshot.selectedId && findUiNode(snapshot.root, snapshot.selectedId) ? [snapshot.selectedId] : [];
+    });
+  }, [snapshot?.revision, snapshot?.root, snapshot?.selectedId]);
+
+  useEffect(() => () => {
+    if (runtimeEditSyncTimerRef.current) window.clearTimeout(runtimeEditSyncTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!nodeContextMenu) return;
+    const close = () => setNodeContextMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [nodeContextMenu]);
 
   const persistLayout = useCallback((next: WorkspaceLayout) => {
     setLayout(next);
@@ -686,6 +1084,7 @@ export function App() {
       originX: event.clientX,
       originY: event.clientY
     };
+    document.body.classList.add(key === "terminal" ? "resizing-row" : "resizing-col");
     const onMove = (moveEvent: PointerEvent) => {
       const drag = layoutDragRef.current;
       if (!drag) return;
@@ -695,13 +1094,14 @@ export function App() {
       const signed = (invertX || invertY) ? -delta : delta;
       setLayout((current) => {
         const raw = drag.base + signed;
-        const next = { ...current, [key]: clamp(raw, key === "terminal" ? 72 : key === "previewDock" ? 220 : key === "right" ? 200 : 160, key === "terminal" ? 360 : key === "previewDock" ? 520 : key === "right" ? 480 : 420) };
+        const next = { ...current, [key]: clamp(raw, key === "terminal" ? 40 : key === "previewDock" ? 220 : key === "right" ? 200 : 160, key === "terminal" ? terminalMaxHeight() : key === "previewDock" ? 520 : key === "right" ? 480 : 420) };
         try { localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
         return next;
       });
     };
     const onUp = () => {
       layoutDragRef.current = null;
+      document.body.classList.remove("resizing-row", "resizing-col");
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
@@ -722,7 +1122,6 @@ export function App() {
 
   useEffect(() => {
     if (mode !== "live-edit") return;
-    setCenterTab("visual");
     // 仅当存在可嵌入的游戏预览 URL 时才自动打开右侧预览，避免二维码卡片抢版面
     if (previewPanel?.url && isEmbeddablePreviewUrl(previewPanel.url)) setPreviewDockOpen(true);
   }, [mode, previewPanel?.url]);
@@ -790,6 +1189,22 @@ export function App() {
       // keep file tree even if UI open fails
     }
   }, [readFile]);
+
+  const rescanUiScreens = useCallback(async () => {
+    setScreensBusy(true);
+    try {
+      const response = await fetch(`${API}/api/ui/screens/rescan`, { method: "POST" });
+      const result = await response.json() as { screens?: UiScreenSummary[]; error?: string };
+      if (!response.ok) throw new Error(result.error || "重新扫描失败");
+      const next = result.screens ?? [];
+      setScreens(next);
+      toast(`已扫描整个 scripts 目录，发现 ${next.length} 个 UI 入口`, "success");
+    } catch (error) {
+      toast(`扫描界面失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setScreensBusy(false);
+    }
+  }, [toast]);
 
   const saveFile = useCallback(async () => {
     if (!selectedFile || !codeDirty) return;
@@ -884,26 +1299,61 @@ export function App() {
     setCenterTab("visual");
   }, [readFile, screens, toast]);
 
-  const selectNodeAndLocate = useCallback((nodeId: string) => {
-    setSnapshot((current) => {
-      if (!current) return current;
-      return { ...current, selectedId: nodeId };
+  const selectNode = useCallback((nodeId: string, additive = false) => {
+    setSelectedNodeIds((currentIds) => {
+      const nextIds = additive
+        ? currentIds.includes(nodeId) ? currentIds.filter((id) => id !== nodeId) : [...currentIds, nodeId]
+        : [nodeId];
+      const primaryId = nextIds.includes(nodeId) ? nodeId : nextIds.at(-1);
+      selectedNodeIdRef.current = primaryId;
+      setSnapshot((current) => {
+        if (!current) return current;
+        if (primaryId) return { ...current, selectedId: primaryId };
+        const { selectedId: _selectedId, ...withoutSelection } = current;
+        return withoutSelection;
+      });
+      return nextIds;
     });
-    const node = snapshot ? findUiNode(snapshot.root, nodeId) : undefined;
-    if (node) void jumpToSource(node);
-  }, [snapshot, jumpToSource]);
+  }, []);
 
-  const patchNode = async (property: string, value: UiValue) => {
-    await patchNodeProps({ [property]: value });
-  };
+  const openNodeContextMenu = useCallback((nodeId: string, x: number, y: number) => {
+    const width = 232;
+    const height = 390;
+    setNodeContextMenu({
+      nodeId,
+      x: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+      y: Math.max(8, Math.min(y, window.innerHeight - height - 8))
+    });
+  }, []);
 
-  const patchNodeProps = async (props: Record<string, UiValue>) => {
-    if (!snapshot || !snapshot.selectedId) return;
+  const scheduleRuntimeEditSync = useCallback((delay = 120) => {
+    if (snapshotSource !== "runtime" && health?.snapshotSource !== "runtime") return;
+    if (runtimeEditSyncTimerRef.current) window.clearTimeout(runtimeEditSyncTimerRef.current);
+    runtimeEditSyncTimerRef.current = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await fetch(`${API}/api/health`);
+          const snapshotResponse = await fetch(`${API}/api/ui/snapshot`);
+          if (snapshotResponse.ok) {
+            const incoming = await snapshotResponse.json() as UiSnapshot;
+            setSnapshot((current) => keepValidSelection(current, incoming, selectedNodeIdRef.current));
+          }
+          setRuntimeEditRevision((revision) => revision + 1);
+        } catch {
+          // Keep the last synchronized frame; the periodic capture loop retries.
+        }
+      })();
+    }, delay);
+  }, [health?.snapshotSource, snapshotSource]);
+
+  const patchNodeById = async (nodeId: string, props: Record<string, UiValue>, options?: { historyGroup?: string }) => {
+    if (!snapshot) return;
     const patch: UiPatch = {
       requestId: crypto.randomUUID(),
       baseRevision: snapshot.revision,
-      nodeId: snapshot.selectedId,
-      props
+      nodeId,
+      props,
+      ...(options?.historyGroup ? { historyGroup: options.historyGroup } : {})
     };
     const response = await fetch(`${API}/api/ui/patch`, {
       method: "POST",
@@ -912,15 +1362,42 @@ export function App() {
     });
     const result = await response.json() as UiSnapshot | { error: string };
     if (response.ok) {
-      const next = result as UiSnapshot;
+      const next = { ...(result as UiSnapshot), selectedId: nodeId };
       setSnapshot(next);
       if (mode === "live-edit") {
         setSidecarInfo((current) => ({ ...current, dirty: true }));
       }
+      scheduleRuntimeEditSync(120);
     } else {
-      setLogs((current) => ({ ...current, agent: [...current.agent, `补丁失败：${(result as { error: string }).error}`] }));
+      const message = (result as { error: string }).error;
+      setLogs((current) => ({ ...current, agent: [...current.agent, `补丁失败：${message}`] }));
+      throw new Error(message);
     }
   };
+
+  const patchNodeProps = async (props: Record<string, UiValue>) => {
+    if (!snapshot?.selectedId) return;
+    await patchNodeById(snapshot.selectedId, props);
+  };
+
+  const patchNode = async (property: string, value: UiValue) => {
+    await patchNodeProps({ [property]: value });
+  };
+
+  const loadWorkflow = useCallback(async () => {
+    setWorkflowLoading(true);
+    try {
+      const response = await fetch(`${API}/api/workflow/overview`);
+      const result = await response.json() as ProjectWorkflowOverview | { error?: string };
+      if (!response.ok || !("stages" in result)) throw new Error((result as { error?: string }).error || "项目检查失败");
+      setWorkflow(result as ProjectWorkflowOverview);
+    } catch (error) {
+      setWorkflow(undefined);
+      setLogs((current) => ({ ...current, agent: [...current.agent, `交付检查失败：${error instanceof Error ? error.message : String(error)}`] }));
+    } finally {
+      setWorkflowLoading(false);
+    }
+  }, []);
 
   const openProjectPath = useCallback(async (projectPath: string) => {
     setProjectOpening(true);
@@ -941,6 +1418,8 @@ export function App() {
       void loadGitStatus();
       void loadMakerMeta();
       void loadPreviewPanel();
+      void loadWorkflow();
+      setCenterTab("workflow");
       setRecentProjects((current) => {
         const next = [{ root: result.project!.root, name: result.project!.name }, ...current.filter((item) => item.root !== result.project!.root)].slice(0, 8);
         localStorage.setItem("tapmakerwork.recentProjects", JSON.stringify(next));
@@ -952,7 +1431,7 @@ export function App() {
       setProjectLoaded(true);
       setProjectOpening(false);
     }
-  }, [loadProjectContents]);
+  }, [loadProjectContents, loadWorkflow]);
 
   const chooseProject = useCallback(async () => {
     if (window.tapMakerWork?.chooseProject) {
@@ -965,8 +1444,12 @@ export function App() {
 
   const refreshRuntimeLogs = useCallback(async () => {
     try {
-      const response = await fetch(`${API}/api/maker/preview/logs`);
-      const result = await response.json() as { lines?: string[]; error?: string };
+      const [logsResponse, statusResponse] = await Promise.all([
+        fetch(`${API}/api/maker/preview/logs`),
+        fetch(`${API}/api/maker/preview/status`)
+      ]);
+      const result = await logsResponse.json() as { lines?: string[]; error?: string };
+      if (statusResponse.ok) setMakerPreviewStatus(await statusResponse.json() as MakerPreviewStatus);
       const lines = result.lines?.length ? result.lines : result.error ? [`日志：${result.error}`] : ["暂无 Runtime 日志。"];
       setLogs((current) => ({ ...current, runtime: lines.slice(-200) }));
     } catch (error) {
@@ -1011,10 +1494,12 @@ export function App() {
 
   const loadSystemInfo = useCallback(async () => {
     try {
-      const [healthRes, infoRes, adapterRes] = await Promise.all([
+      const [healthRes, infoRes, adapterRes, makerVersionsRes, nodeVersionsRes] = await Promise.all([
         fetch(`${API}/api/health`),
         fetch(`${API}/api/system/info`),
-        fetch(`${API}/api/runtime/adapter`)
+        fetch(`${API}/api/runtime/adapter`),
+        fetch(`${API}/api/maker/versions`),
+        fetch(`${API}/api/node/versions`)
       ]);
       if (healthRes.ok) setHealth(await healthRes.json() as Health);
       if (infoRes.ok) setSystemInfo(await infoRes.json() as Record<string, unknown>);
@@ -1022,10 +1507,109 @@ export function App() {
         const adapter = await adapterRes.json() as { installed: boolean; paths: string[] };
         setAdapterExport(adapter.installed ? `项目内已安装：${adapter.paths.join(", ")}` : "项目内未安装 Runtime 适配器");
       }
+      if (makerVersionsRes.ok) setMakerVersions(await makerVersionsRes.json() as MakerVersionState);
+      if (nodeVersionsRes.ok) setNodeVersions(await nodeVersionsRes.json() as NodeVersionState);
     } catch {
       // ignore settings load errors
     }
   }, []);
+
+  const refreshMakerHealth = useCallback(async () => {
+    const response = await fetch(`${API}/api/health`);
+    if (response.ok) setHealth(await response.json() as Health);
+  }, []);
+
+  const checkMakerUpdates = useCallback(async () => {
+    setMakerVersionBusy("check");
+    try {
+      const [makerResponse, nodeResponse] = await Promise.all([
+        fetch(`${API}/api/maker/versions?refresh=1`),
+        fetch(`${API}/api/node/versions?refresh=1`)
+      ]);
+      const makerResult = await makerResponse.json() as MakerVersionState & { error?: string };
+      const nodeResult = await nodeResponse.json() as NodeVersionState & { error?: string };
+      if (!makerResponse.ok) throw new Error(makerResult.error || "无法连接 Maker 版本服务");
+      if (!nodeResponse.ok) throw new Error(nodeResult.error || "无法连接 Node.js 版本服务");
+      setMakerVersions(makerResult);
+      setNodeVersions(nodeResult);
+      toast("Maker MCP 与 Node.js 更新检查完成", "success");
+    } catch (error) {
+      toast(`检查更新失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setMakerVersionBusy("");
+    }
+  }, [toast]);
+
+  const selectMakerVersion = useCallback(async (mode: MakerRuntimeMode, version?: string) => {
+    setMakerVersionBusy("switch");
+    try {
+      const response = await fetch(`${API}/api/maker/version/select`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode, version })
+      });
+      const result = await response.json() as MakerVersionState & { error?: string };
+      if (!response.ok) throw new Error(result.error || "切换失败");
+      setMakerVersions(result);
+      await refreshMakerHealth();
+      const selected = mode === "device" ? "设备自动" : result.active?.version || version || mode;
+      toast(`Maker MCP 已切换为 ${selected}`, "success");
+    } catch (error) {
+      toast(`切换 Maker MCP 失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setMakerVersionBusy("");
+    }
+  }, [refreshMakerHealth, toast]);
+
+  const installMakerChannel = useCallback(async (channel: "stable" | "beta") => {
+    const target = makerVersions?.channels[channel].latest;
+    if (!target) {
+      toast("请先检查更新，获取可安装版本", "warn");
+      return;
+    }
+    const label = channel === "stable" ? "稳定版" : "Beta 版";
+    if (!window.confirm(`安装 Maker MCP ${target}（${label}）并立即切换？`)) return;
+    setMakerVersionBusy(channel);
+    try {
+      const response = await fetch(`${API}/api/maker/version/install`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ channel })
+      });
+      const result = await response.json() as MakerVersionState & { error?: string };
+      if (!response.ok) throw new Error(result.error || "安装失败");
+      setMakerVersions(result);
+      await refreshMakerHealth();
+      toast(`Maker MCP ${target} 安装完成并已切换`, "success");
+    } catch (error) {
+      toast(`安装 Maker MCP 失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setMakerVersionBusy("");
+    }
+  }, [makerVersions, refreshMakerHealth, toast]);
+
+  const installNodeStable = useCallback(async () => {
+    const target = nodeVersions?.stable.latest;
+    if (!target) {
+      toast("请先检查更新，获取 Node.js 稳定版", "warn");
+      return;
+    }
+    if (!window.confirm(`安装 Node.js ${target}（稳定 LTS）到 TapMakerWork 托管环境？\n不会覆盖设备上的系统 Node.js。`)) return;
+    setMakerVersionBusy("node");
+    try {
+      const response = await fetch(`${API}/api/node/version/install`, { method: "POST" });
+      const result = await response.json() as NodeVersionState & { error?: string; maker?: MakerVersionState };
+      if (!response.ok) throw new Error(result.error || "Node.js 安装失败");
+      setNodeVersions(result);
+      if (result.maker) setMakerVersions(result.maker);
+      await refreshMakerHealth();
+      toast(`Node.js ${target} 已安装，Maker MCP 将使用该稳定版`, "success");
+    } catch (error) {
+      toast(`安装 Node.js 失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setMakerVersionBusy("");
+    }
+  }, [nodeVersions, refreshMakerHealth, toast]);
 
   const exportRuntimeAdapter = useCallback(async () => {
     try {
@@ -1214,12 +1798,13 @@ export function App() {
       }
       setSnapshot(result as UiSnapshot);
       if (mode === "live-edit") setSidecarInfo((current) => ({ ...current, dirty: true }));
+      scheduleRuntimeEditSync(140);
       toast(`${label}成功`, "success");
       setLeftTab("hierarchy");
     } catch (error) {
       toast(`${label}失败：${error instanceof Error ? error.message : String(error)}`, "error");
     }
-  }, [snapshot, mode, toast]);
+  }, [snapshot, mode, scheduleRuntimeEditSync, toast]);
 
   const beginRenameSelected = useCallback(() => {
     const node = snapshot?.selectedId ? findUiNode(snapshot.root, snapshot.selectedId) : undefined;
@@ -1301,9 +1886,11 @@ export function App() {
   }, [hierDragId, hierDrop, snapshot, runTreeOp, toast]);
 
   const screenLabel = (screen: UiScreenSummary): string => {
-    if (screen.confidence === "module" || screen.error === "module_only") return "逻辑模块 · 非界面";
-    if (screen.error) return "仅代码 · 无法静态预览";
-    return `${screen.nodeCount ?? 0} 个节点 · ${screen.confidence === "static" ? "完整" : "混合"}`;
+    const directory = screen.path.split("/").slice(1, -1).join("/");
+    const location = directory && directory !== "ui" ? `${directory} · ` : "";
+    if (screen.confidence === "module" || screen.error === "module_only") return `${location}逻辑模块 · 非界面`;
+    if (screen.error) return `${location}仅代码 · 无法静态预览`;
+    return `${location}${screen.nodeCount ?? 0} 个节点 · ${screen.confidence === "static" ? "完整" : "混合"}`;
   };
 
   const saveUiSidecar = useCallback(async (snapshotOverride?: UiSnapshot) => {
@@ -1373,6 +1960,7 @@ export function App() {
         void refreshRuntimeLogs();
         void loadMakerMeta();
         void loadPreviewPanel();
+        void loadWorkflow();
       }
       setProjectLoaded(true);
     }).catch(() => {
@@ -1393,7 +1981,11 @@ export function App() {
       socket.onmessage = (message) => {
         const event = JSON.parse(String(message.data)) as BridgeEvent;
         if (event.type === "ui.snapshot" || event.type === "ui.patch.applied" || event.type === "ui.patch.rejected") {
-          setSnapshot(event.snapshot);
+          if (event.type === "ui.snapshot" && event.source === "runtime" && modeRef.current === "live-edit") {
+            setSnapshotSource("runtime");
+            return;
+          }
+          setSnapshot((current) => keepValidSelection(current, event.snapshot, selectedNodeIdRef.current));
           if (event.type === "ui.snapshot" || event.type === "ui.patch.applied") {
             if (event.source) setSnapshotSource(event.source);
           }
@@ -1408,24 +2000,39 @@ export function App() {
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       socketRef.current?.close();
     };
-  }, [loadProjectContents, loadAssets, loadGitStatus, refreshRuntimeLogs, loadMakerMeta, loadPreviewPanel]);
+  }, [loadProjectContents, loadAssets, loadGitStatus, refreshRuntimeLogs, loadMakerMeta, loadPreviewPanel, loadWorkflow]);
 
   useEffect(() => window.tapMakerWork?.onOpenProject?.((projectPath) => { void openProjectPath(projectPath); }), [openProjectPath]);
 
   useEffect(() => {
-    const stage = stageRef.current;
-    if (!stage) return;
-    const updateScale = () => setStageScale(Math.min(stage.clientWidth / previewWidth, stage.clientHeight / previewHeight));
+    const viewport = canvasViewportRef.current;
+    if (!viewport) return;
+    const updateScale = () => {
+      if (!canvasAutoFit) return;
+      const availableWidth = Math.max(120, viewport.clientWidth - 56);
+      const availableHeight = Math.max(120, viewport.clientHeight - 56);
+      setStageScale(Math.min(4, Math.max(0.1, Math.min(availableWidth / previewWidth, availableHeight / previewHeight))));
+    };
     updateScale();
     const observer = new ResizeObserver(updateScale);
-    observer.observe(stage);
+    observer.observe(viewport);
     return () => observer.disconnect();
-  }, [previewHeight, previewWidth]);
+  }, [canvasAutoFit, previewHeight, previewWidth]);
 
   const selected = useMemo(() => snapshot?.selectedId ? findUiNode(snapshot.root, snapshot.selectedId) : undefined, [snapshot]);
+  const selectedTransform = useMemo(() => {
+    const value = selected?.props.transform;
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, UiValue> : {};
+  }, [selected]);
+  const selectedTextColorProperty = selected?.props.fontColor !== undefined
+    ? "fontColor"
+    : selected?.props.textColor !== undefined ? "textColor" : "fontColor";
+  const selectedHasText = Boolean(selected && (selected.type === "Label" || selected.type === "Button" || selected.props.text !== undefined));
+  const selectedHasImage = Boolean(selected && (selected.type === "Image" || ["backgroundImage", "path", "sprite", "image", "texture", "fileName", "file"].some((key) => selected.props[key] != null)));
+  const contextNode = useMemo(() => nodeContextMenu && snapshot ? findUiNode(snapshot.root, nodeContextMenu.nodeId) : undefined, [nodeContextMenu, snapshot]);
   const canvasVisualScore = useMemo(() => snapshot ? visualWeight(snapshot.root) : 0, [snapshot]);
   const canvasLooksSparse = canvasVisualScore < 8;
-  const runtimeLive = Boolean(health?.runtimeSessionId);
+  const runtimeLive = Boolean(health?.runtimeSessionId || makerPreviewStatus?.process_alive);
   const runtimeScene = health?.runtimeScene || "idle";
   const effectiveSource = snapshotSource || health?.snapshotSource;
   const canvasSourceLabel = effectiveSource === "runtime"
@@ -1550,9 +2157,9 @@ export function App() {
     const timer = window.setInterval(() => {
       void fetch(`${API}/api/health`).then((res) => res.json()).then((value: Health) => {
         setHealth(value);
-        if (value.runtimeSessionId) {
+        if (value.runtimeSessionId && modeRef.current !== "live-edit") {
           void fetch(`${API}/api/ui/snapshot`).then((r) => r.json()).then((snap) => {
-            setSnapshot(snap as UiSnapshot);
+            setSnapshot((current) => keepValidSelection(current, snap as UiSnapshot, selectedNodeIdRef.current));
           }).catch(() => undefined);
         }
       }).catch(() => undefined);
@@ -1560,14 +2167,38 @@ export function App() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const historyAction = async (action: "undo" | "redo") => {
+  useEffect(() => {
+    if (!project) return;
+    const refreshStatus = () => {
+      void fetch(`${API}/api/maker/preview/status`).then(async (response) => {
+        if (response.ok) setMakerPreviewStatus(await response.json() as MakerPreviewStatus);
+      }).catch(() => undefined);
+    };
+    refreshStatus();
+    const timer = window.setInterval(refreshStatus, 5_000);
+    return () => window.clearInterval(timer);
+  }, [project?.root]);
+
+  const historyAction = useCallback(async (action: "undo" | "redo") => {
     const response = await fetch(`${API}/api/ui/${action}`, { method: "POST" });
     if (response.ok) {
       const next = await response.json() as UiSnapshot;
-      setSnapshot(next);
+      setSnapshot((current) => keepValidSelection(current, next, selectedNodeIdRef.current));
       if (mode === "live-edit") setSidecarInfo((current) => ({ ...current, dirty: true }));
+      scheduleRuntimeEditSync(0);
+      setRuntimeEditRevision((revision) => revision + 1);
+      toast(action === "undo" ? "已撤销上一步编辑" : "已重做编辑", "success");
     }
-  };
+  }, [mode, scheduleRuntimeEditSync, toast]);
+
+  useEffect(() => window.tapMakerWork?.onHistoryAction?.((action) => {
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.matches("input, textarea, [contenteditable='true']")) {
+      document.execCommand(action);
+      return;
+    }
+    void historyAction(action);
+  }), [historyAction]);
 
   const runtimeAction = async (action: "start" | "stop" | "refresh") => {
     setRuntimeBusy(true);
@@ -1580,6 +2211,11 @@ export function App() {
         setLogs((current) => ({ ...current, runtime: [...current.runtime, `Runtime 操作失败：${result.error ?? response.statusText}`] }));
         toast(result.error || "Runtime 操作失败", "error");
       } else {
+        setMakerPreviewStatus((current) => ({
+          ...current,
+          state: result.state || (action === "stop" ? "stopped" : "running"),
+          process_alive: action !== "stop"
+        }));
         setLogs((current) => ({
           ...current,
           runtime: [...current.runtime, `Maker preview ${action} 完成${result.state ? ` · ${result.state}` : ""}${result.message ? ` · ${result.message}` : ""}`]
@@ -1587,11 +2223,12 @@ export function App() {
         void refreshRuntimeLogs();
         void fetch(`${API}/api/health`).then((res) => res.json()).then(setHealth).catch(() => undefined);
         if (action !== "stop") {
-          setMode("live-edit");
-          setCenterTab("visual");
-          setLeftTab("hierarchy");
-          void openUiScreen("scripts/ui/MainShell.lua", { silentModule: true }).catch(() => undefined);
-          toast("Runtime 已启动（独立窗口）。IDE 已打开 MainShell，可在画布点选并改属性。", "success");
+          if (action === "start") {
+            setMode("play");
+            setCenterTab("runtime");
+            setPreviewDockOpen(false);
+          }
+          toast(action === "start" ? "Runtime 已启动；当前显示真实运行器窗口画面。" : "Runtime 已刷新。", "success");
           [1500, 3000, 5000, 8000, 12000].forEach((delay) => {
             window.setTimeout(() => {
               void syncFromRuntime();
@@ -1603,9 +2240,42 @@ export function App() {
         } else {
           toast("Runtime 已停止", "info");
         }
+        window.setTimeout(() => {
+          void fetch(`${API}/api/maker/preview/status`).then(async (statusResponse) => {
+            if (statusResponse.ok) setMakerPreviewStatus(await statusResponse.json() as MakerPreviewStatus);
+          }).catch(() => undefined);
+        }, 600);
       }
     } finally {
       setRuntimeBusy(false);
+    }
+  };
+
+  const installRuntimeEditor = async () => {
+    setAdapterInstallBusy(true);
+    try {
+      const response = await fetch(`${API}/api/runtime/adapter/install`, { method: "POST" });
+      const result = await response.json() as { changed?: boolean; adapterPath?: string; backupPath?: string; error?: string };
+      if (!response.ok) throw new Error(result.error || "运行时编辑桥接入失败");
+      setAdapterExport(`已接入：${result.adapterPath || "scripts/tapmakerwork/TapMakerWorkBridge.lua"}${result.backupPath ? `\n入口备份：${result.backupPath}` : ""}`);
+      setHealth((current) => current ? {
+        ...current,
+        runtimeAdapter: { installed: true, paths: ["scripts/tapmakerwork/TapMakerWorkBridge.lua"] }
+      } : current);
+      setLogs((current) => ({
+        ...current,
+        runtime: [...current.runtime, `实时编辑桥已接入当前项目${result.changed ? "；需要刷新 Runtime" : ""}`]
+      }));
+      toast("实时编辑桥已接入，正在刷新 Runtime…", "success");
+      if (runtimeLive) await runtimeAction("refresh");
+      else await runtimeAction("start");
+      setMode("live-edit");
+      setCenterTab("runtime");
+      window.setTimeout(() => void syncFromRuntime(), 1800);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setAdapterInstallBusy(false);
     }
   };
 
@@ -1620,7 +2290,10 @@ export function App() {
         setHealth(value);
         if (value.snapshotSource) setSnapshotSource(value.snapshotSource);
       }
-      if (snapRes.ok) setSnapshot(await snapRes.json() as UiSnapshot);
+      if (snapRes.ok) {
+        const incoming = await snapRes.json() as UiSnapshot;
+        setSnapshot((current) => keepValidSelection(current, incoming, selectedNodeIdRef.current));
+      }
       setLogs((current) => ({
         ...current,
         runtime: [...current.runtime, "已从 Runtime 文件通道同步 UI 快照"]
@@ -1649,6 +2322,69 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [health?.runtimeSessionId, health?.runtimeScene, syncFromRuntime, toast]);
 
+  const captureWorkflowEvidence = async () => {
+    const captureRuntime = window.tapMakerWork?.captureRuntime || window.tapMakerWork?.runtime?.capture;
+    if (runtimeLive && captureRuntime) {
+      const actual = await captureRuntime({
+        projectName: project?.name || "",
+        orientation: previewPanel?.orientation || (makerMeta.orientation === "landscape" ? "landscape" : "portrait")
+      });
+      if (actual.ok && actual.dataUrl) {
+        const response = await fetch(`${API}/api/preview/panel/shot`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ dataUrl: actual.dataUrl, note: "runtime-evidence" })
+        });
+        const result = await response.json() as { path?: string; error?: string };
+        if (!response.ok || !result.path) throw new Error(result.error || "真实运行截图保存失败");
+        setLogs((current) => ({ ...current, runtime: [...current.runtime, `真实运行证据：${result.path}`] }));
+        toast("真实运行证据已保存", "success");
+        return;
+      }
+    }
+    if (!previewDockOpen || !window.tapMakerWork?.preview) {
+      setPreviewDockOpen(true);
+      await loadPreviewPanel();
+      toast("未能捕获 Runtime 窗口；已打开 Web 预览，请等待加载后再次截图", "warn");
+      return;
+    }
+    const captured = await window.tapMakerWork.preview.capture();
+    if (!captured.ok || !captured.dataUrl) throw new Error(captured.error || "桌面预览尚未挂载");
+    const response = await fetch(`${API}/api/preview/panel/shot`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ dataUrl: captured.dataUrl, note: "workflow-evidence" })
+    });
+    const result = await response.json() as { path?: string; error?: string };
+    if (!response.ok || !result.path) throw new Error(result.error || "截图保存失败");
+    setLogs((current) => ({ ...current, runtime: [...current.runtime, `交付证据：${result.path}`] }));
+    toast("预览证据已保存", "success");
+  };
+
+  const runWorkflowAction = async (action: ProjectWorkflowAction) => {
+    setWorkflowBusyAction(action);
+    try {
+      if (action === "doctor") await runMakerDoctor();
+      else if (action === "open-design") {
+        setMode("live-edit");
+        setCenterTab("visual");
+        setLeftTab("hierarchy");
+      } else if (action === "open-code") setCenterTab("code");
+      else if (action === "start-preview") await runtimeAction("start");
+      else if (action === "open-preview") {
+        setPreviewDockOpen(true);
+        await loadPreviewPanel();
+      } else if (action === "capture-evidence") await captureWorkflowEvidence();
+      else if (action === "generate-qrcode") await runMakerQrcode();
+      else if (action === "build") await runMakerBuild();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setWorkflowBusyAction(undefined);
+      void loadWorkflow();
+    }
+  };
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey)) return;
@@ -1658,6 +2394,7 @@ export function App() {
         return;
       }
       if ((event.target as HTMLElement | null)?.closest(".monaco-editor")) return;
+      if ((event.target as HTMLElement | null)?.matches("input, textarea, select, [contenteditable='true']")) return;
       if (event.key.toLowerCase() === "z") {
         event.preventDefault();
         void historyAction(event.shiftKey ? "redo" : "undo");
@@ -1668,7 +2405,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [saveFile]);
+  }, [historyAction, saveFile]);
 
   const updateDevice = (changes: Partial<DeviceProfile>) => setDevice((current) => ({ ...current, ...changes, id: changes.id ?? "custom", label: changes.label ?? "自定义" }));
   const openShortcut = window.tapMakerWork?.platform === "darwin" ? "⌘ O" : "Ctrl O";
@@ -1711,9 +2448,9 @@ export function App() {
       } as React.CSSProperties}
     >
       <header className="titlebar">
-        <div className="brand"><span className="brand-mark">T</span><strong>TapMakerWork</strong><span className="phase-badge">M0</span></div>
+        <div className="brand"><span className="brand-mark">T</span><strong>TapMakerWork</strong><span className="phase-badge">闭环</span></div>
         <div className="project-chip" title={project.root}><Folder size={14} aria-hidden="true" /><span>{project.name}</span><GitBranch size={13} aria-hidden="true" /><small>{gitStatus?.branch || "—"}</small>{gitStatus?.dirty ? <small className="dirty-branch">•</small> : null}</div>
-        <div className="runtime-status" role="status">{connected ? <Wifi size={14} aria-hidden="true" /> : <WifiOff size={14} aria-hidden="true" />}<span>{connected ? "Bridge 已连接" : "Bridge 断开"}</span>{health?.runtimeSessionId ? <small className="runtime-live">Runtime 已连接</small> : <small>Runtime 未接入</small>}</div>
+        <div className="runtime-status" role="status">{connected ? <Wifi size={14} aria-hidden="true" /> : <WifiOff size={14} aria-hidden="true" />}<span>{connected ? "Bridge 已连接" : "Bridge 断开"}</span>{runtimeLive ? <small className="runtime-live">Runtime 运行中</small> : <small>Runtime 未启动</small>}</div>
         <div className="title-actions">
           <Tip label="在项目文件中全文搜索。输入关键词后回车，点击结果可跳转到源码行。">
             <button aria-label="搜索" onClick={() => { setSettingsOpen(false); setSearchOpen((open) => !open); toast(searchOpen ? "已关闭搜索" : "打开项目搜索", "info"); }}><Search size={15} /></button>
@@ -1726,14 +2463,14 @@ export function App() {
 
       <section className="commandbar">
         <div className="mode-switch" aria-label="工作模式">
-          <Tip label="LocalRuntime：IDE 内渲染，可点按钮">
-            <button aria-pressed={mode === "play"} className={mode === "play" ? "active" : ""} onClick={() => setMode("play")}><Play size={14} />游玩</button>
+          <Tip label="查看 Maker Runtime 的真实窗口画面；以此作为最终效果依据">
+            <button aria-pressed={mode === "play"} className={mode === "play" ? "active" : ""} onClick={() => { setMode("play"); setCenterTab("runtime"); setPreviewDockOpen(false); }}><Play size={14} />游玩</button>
           </Tip>
-          <Tip label="点选控件定位源码，不写真机">
-            <button aria-pressed={mode === "inspect"} className={mode === "inspect" ? "active" : ""} onClick={() => setMode("inspect")}><Pause size={14} />检查</button>
+          <Tip label="在设计画布点选控件；不会自动跳转源码">
+            <button aria-pressed={mode === "inspect"} className={mode === "inspect" ? "active" : ""} onClick={() => { setMode("inspect"); setCenterTab("visual"); }}><Pause size={14} />检查</button>
           </Tip>
-          <Tip label="改属性 → 写 .ui.json → 右侧预览刷新">
-            <button aria-pressed={mode === "live-edit"} className={mode === "live-edit" ? "active" : ""} onClick={() => setMode("live-edit")}><SlidersHorizontal size={14} />实时编辑</button>
+          <Tip label="直接在 Runtime 最终画面上拖动、缩放并回写引擎控件">
+            <button aria-pressed={mode === "live-edit"} className={mode === "live-edit" ? "active" : ""} onClick={() => { setMode("live-edit"); setCenterTab("runtime"); setPreviewDockOpen(false); }}><SlidersHorizontal size={14} />实时编辑</button>
           </Tip>
         </div>
         <button className="icon-command" aria-label="撤销" onClick={() => void historyAction("undo")}><Undo2 size={14} /></button>
@@ -1816,10 +2553,10 @@ export function App() {
         </div>
         <span className="mode-hint">
           {mode === "live-edit"
-            ? "实时编辑：左画布改属性 → 自动写 ui.json → 右预览刷新"
+            ? "实时编辑：编辑视图与实际 Runtime 同步 · Shift 多选 · W/E/R/T 变换"
             : mode === "inspect"
-              ? "检查：点选跳源码"
-              : "LocalRuntime：IDE 内渲染"}
+              ? "检查：单击只选中，源码跳转需显式点击"
+              : "游玩：显示 Maker Runtime 真实画面"}
         </span>
       </section>
 
@@ -1878,11 +2615,130 @@ export function App() {
       )}
 
       {settingsOpen && (
-        <section className="overlay-panel panel" aria-label="设置">
+        <section className="overlay-panel panel settings-panel" aria-label="设置">
           <div className="overlay-heading"><strong>设置 / 系统</strong><button onClick={() => setSettingsOpen(false)}>关闭</button></div>
           <div className="settings-grid">
             <div><h3>连接</h3><p>Bridge：{API}</p><p>协议：{String((systemInfo as { protocolVersion?: number } | undefined)?.protocolVersion ?? health ? 1 : "—")}</p><p>Node：{String((systemInfo as { node?: string } | undefined)?.node ?? "—")}</p><p>平台：{String((systemInfo as { platform?: string } | undefined)?.platform ?? "—")}</p></div>
             <div><h3>Maker</h3><p>版本：{health?.makerVersion || "未发现"}</p><p>项目：{project.root}</p><p>当前 UI：{String((systemInfo as { activeUiEntry?: string } | undefined)?.activeUiEntry ?? activeUiPath)}</p></div>
+            <section className="maker-version-settings" aria-labelledby="maker-version-heading">
+              <div className="maker-version-heading">
+                <div>
+                  <h3 id="maker-version-heading">Maker MCP 版本</h3>
+                  <p>默认跟随本机环境，也可固定稳定版、Beta 或某个已安装版本。</p>
+                </div>
+                <button
+                  className="maker-check-button"
+                  onClick={() => void checkMakerUpdates()}
+                  disabled={Boolean(makerVersionBusy)}
+                  aria-busy={makerVersionBusy === "check"}
+                >
+                  <RefreshCw size={13} className={makerVersionBusy === "check" ? "spin" : ""} aria-hidden="true" />
+                  {makerVersionBusy === "check" ? "检查中…" : "检查更新"}
+                </button>
+              </div>
+
+              <button
+                className={`maker-auto-option ${makerVersions?.preference.mode === "device" ? "active" : ""}`}
+                onClick={() => void selectMakerVersion("device")}
+                disabled={Boolean(makerVersionBusy) || makerVersions?.preference.mode === "device"}
+                aria-pressed={makerVersions?.preference.mode === "device"}
+              >
+                <span><CheckCircle2 size={15} aria-hidden="true" />设备自动</span>
+                <small>自动使用设备中版本最高的 Maker MCP，不锁定版本。</small>
+                <strong>{makerVersions?.active?.version || "未发现本机版本"}</strong>
+              </button>
+
+              <div className="maker-channel-grid">
+                {(["stable", "beta"] as const).map((channel) => {
+                  const channelInfo = makerVersions?.channels[channel];
+                  const active = makerVersions?.preference.mode === channel;
+                  const label = channel === "stable" ? "稳定版" : "Beta 版";
+                  const canInstall = Boolean(channelInfo?.latest && (channelInfo.updateAvailable || !channelInfo.installed));
+                  return (
+                    <article key={channel} className={`maker-channel-card ${active ? "active" : ""}`}>
+                      <div className="maker-channel-title">
+                        <strong>{label}</strong>
+                        {active && <span><CheckCircle2 size={12} aria-hidden="true" />当前通道</span>}
+                      </div>
+                      <dl>
+                        <div><dt>本机</dt><dd>{channelInfo?.installed || "未安装"}</dd></div>
+                        <div><dt>最新</dt><dd>{channelInfo?.latest || "尚未检查"}</dd></div>
+                      </dl>
+                      <div className="maker-channel-actions">
+                        {channelInfo?.installed && (
+                          <button
+                            onClick={() => void selectMakerVersion(channel)}
+                            disabled={Boolean(makerVersionBusy) || active}
+                          >{active ? "正在使用" : `切换到${label}`}</button>
+                        )}
+                        <button
+                          className="primary"
+                          onClick={() => void installMakerChannel(channel)}
+                          disabled={Boolean(makerVersionBusy) || !canInstall}
+                          aria-busy={makerVersionBusy === channel}
+                        >
+                          <Download size={13} aria-hidden="true" />
+                          {makerVersionBusy === channel ? "安装中…" : canInstall ? `${channelInfo?.installed ? "更新" : "安装"} ${channelInfo?.latest}` : channelInfo?.latest ? "已是最新" : "先检查更新"}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+
+              <article className="node-version-card" aria-labelledby="node-version-heading">
+                <div className="node-version-title">
+                  <div>
+                    <strong id="node-version-heading">Node.js 稳定 LTS</strong>
+                    <small>仅检查正式 LTS；安装在 TapMakerWork 托管目录，不覆盖系统 Node.js。</small>
+                  </div>
+                  <span className={nodeVersions?.active.source === "managed" ? "managed" : "device"}>
+                    {nodeVersions?.active.source === "managed" ? "托管运行时" : "设备版本"}
+                  </span>
+                </div>
+                <dl>
+                  <div><dt>设备</dt><dd>{nodeVersions?.device.version || "—"}</dd></div>
+                  <div><dt>当前使用</dt><dd>{nodeVersions?.active.version || "—"}</dd></div>
+                  <div><dt>最新 LTS</dt><dd>{nodeVersions?.stable.latest || "尚未检查"}</dd></div>
+                </dl>
+                <button
+                  className="primary"
+                  onClick={() => void installNodeStable()}
+                  disabled={Boolean(makerVersionBusy) || !nodeVersions?.stable.updateAvailable}
+                  aria-busy={makerVersionBusy === "node"}
+                >
+                  <Download size={13} aria-hidden="true" />
+                  {makerVersionBusy === "node"
+                    ? "安装中…"
+                    : nodeVersions?.stable.updateAvailable
+                      ? `${nodeVersions.stable.installed ? "更新" : "安装"} Node.js ${nodeVersions.stable.latest}`
+                      : nodeVersions?.stable.latest ? "稳定版已就绪" : "先检查更新"}
+                </button>
+              </article>
+
+              <details className="maker-installed-list">
+                <summary>已安装版本（{makerVersions?.installed.length ?? 0}）</summary>
+                <div>
+                  {makerVersions?.installed.length ? makerVersions.installed.map((runtime) => {
+                    const active = makerVersions.active?.version === runtime.version;
+                    const pinned = makerVersions.preference.mode === "version" && makerVersions.preference.version === runtime.version;
+                    return (
+                      <button
+                        key={runtime.version}
+                        onClick={() => void selectMakerVersion("version", runtime.version)}
+                        disabled={Boolean(makerVersionBusy) || pinned}
+                      >
+                        <span>{active && <CheckCircle2 size={13} aria-hidden="true" />}{runtime.version}</span>
+                        <small>{pinned ? "已固定" : active ? "当前生效" : "使用此版本"}</small>
+                      </button>
+                    );
+                  }) : <p>没有发现本机 Maker MCP。</p>}
+                </div>
+              </details>
+              <p className="maker-version-status" role="status" aria-live="polite">
+                {makerVersions?.checkedAt ? `上次检查：${new Date(makerVersions.checkedAt).toLocaleString()}` : "尚未联网检查更新"}
+              </p>
+            </section>
             <div><h3>Runtime 适配器</h3><p>{adapterExport || (health?.runtimeAdapter?.installed ? `已安装：${health.runtimeAdapter.paths.join(", ")}` : "未安装到当前 Maker 项目")}</p><p>Session：{health?.runtimeSessionId || "未连接"}</p><button onClick={() => void exportRuntimeAdapter()}>导出接入包到 outputs/runtime-adapter</button></div>
             <div><h3>能力</h3><p>Maker CLI：{health?.capabilities.makerCli ? "可用" : "不可用"}</p><p>UI Bridge：{health?.capabilities.uiBridge ? "可用" : "不可用"}</p><p>Runtime 帧：{health?.capabilities.runtimeFrames ? "可用" : "未接入"}</p><p>Shell 沙箱：{health?.capabilities.shellSandbox ? "就绪" : "锁定"}</p></div>
           </div>
@@ -1933,6 +2789,7 @@ export function App() {
                     }}><ArrowDown size={13} /></button>
                   </Tip>
                   <select value={newNodeType} onChange={(event) => setNewNodeType(event.target.value as typeof newNodeType)} title="新建节点类型">
+                    <option value="Node">空节点</option>
                     <option value="Panel">Panel</option>
                     <option value="Label">Label</option>
                     <option value="Button">Button</option>
@@ -1950,7 +2807,7 @@ export function App() {
                       void runTreeOp({ type: "insert-sibling", nodeId: selected.id, nodeType: newNodeType }, `添加兄弟节点 ${newNodeType}`);
                     }}><Plus size={13} /><span className="tiny">兄弟</span></button>
                   </Tip>
-                  <Tip label="删除当前节点（根节点不可删）。真机侧会尽量隐藏对应控件。">
+                  <Tip label="删除当前节点（根节点不可删）。已接入 Runtime 时会立即销毁真实控件。">
                     <button className="icon-command danger" aria-label="删除节点" disabled={!snapshot.selectedId} onClick={() => {
                       if (!selected) { toast("请先选择节点", "warn"); return; }
                       void runTreeOp({ type: "delete", nodeId: selected.id }, `删除 ${selected.name}`);
@@ -1966,10 +2823,12 @@ export function App() {
                 <HierarchyNode
                   node={snapshot.root}
                   selectedId={snapshot.selectedId}
-                  onSelect={(id) => {
-                    selectNodeAndLocate(id);
+                  selectedIds={selectedNodeIds}
+                  onSelect={(id, additive) => {
+                    selectNode(id, additive);
                     if (renamingId && renamingId !== id) setRenamingId(null);
                   }}
+                  onContextMenuId={openNodeContextMenu}
                   renamingId={renamingId}
                   renameDraft={renameDraft}
                   onRenameDraft={setRenameDraft}
@@ -1989,16 +2848,18 @@ export function App() {
             )}
             {leftTab === "files" && (files.length ? files.map((entry) => <FileTreeEntry key={entry.path} entry={entry} depth={0} selectedPath={selectedFile} onOpen={(path) => void readFile(path)} />) : <p className="empty-state">项目目录为空。点击顶部项目名称可重新选择目录。</p>)}
             {leftTab === "screens" && <div className="screen-list">
-              <div className="screen-list-heading"><span>检测到 {screens.length} 个 UI 文件</span><button onClick={() => void loadProjectContents()} aria-label="重新扫描界面"><RefreshCw size={13} /></button></div>
-              {screens.map((screen) => <button key={screen.path} className={`screen-row ${activeUiPath === screen.path ? "active" : ""}`} onClick={() => void openUiScreen(screen.path)}>
+              <div className="screen-list-heading"><span>检测到 {screens.length} 个 UI 入口</span><button onClick={() => void rescanUiScreens()} disabled={screensBusy} aria-busy={screensBusy} aria-label="重新扫描整个 scripts 目录"><RefreshCw size={13} className={screensBusy ? "spin" : ""} aria-hidden="true" /></button></div>
+              {screens.map((screen) => <button key={screen.path} title={screen.path} className={`screen-row ${activeUiPath === screen.path ? "active" : ""}`} onClick={() => void openUiScreen(screen.path)}>
                 <MonitorPlay size={15} /><span><strong>{screen.name}</strong><small>{screenLabel(screen)}</small></span>{activeUiPath === screen.path && <span className="active-dot" />}
               </button>)}
             </div>}
             {leftTab === "assets" && <div className="asset-list">
-              <div className="screen-list-heading"><span>{assets.length ? `${assets.length} 个图片资源` : "项目资源"}</span><button onClick={() => void loadAssets()} aria-label="刷新资源"><RefreshCw size={13} /></button></div>
-              {assets.length === 0 ? <p className="empty-state">未发现图片资源，或 assets 目录为空。</p> : assets.slice(0, 120).map((asset) => (
-                <button key={asset.path} className="file-row" onClick={() => void readFile(asset.path).catch(() => undefined)} title={asset.path}>
-                  <Image size={14} /><span>{asset.name}</span><small>{Math.max(1, Math.round(asset.bytes / 1024))} KB</small>
+              <div className="screen-list-heading"><span>{assets.length ? `${assets.length} 个游戏素材` : "项目素材"}</span><button onClick={() => { void loadAssets(); void loadWorkflow(); }} aria-label="刷新资源"><RefreshCw size={13} /></button></div>
+              {assets.length === 0 ? <p className="empty-state">未发现图片、音频、视频或模型素材。</p> : assets.slice(0, 160).map((asset) => (
+                <button key={asset.path} className="file-row asset-row" onClick={() => toast(`${asset.status === "referenced" ? "已绑定" : "待确认"}：${asset.path}`, asset.status === "referenced" ? "success" : "warn")} title={`${asset.path}${asset.referencedBy?.length ? `\n引用：${asset.referencedBy.join(", ")}` : "\n未发现源码引用"}`}>
+                  {asset.kind === "audio" ? <Music2 size={14} /> : asset.kind === "video" ? <Video size={14} /> : asset.kind === "model" ? <Box size={14} /> : <Image size={14} />}
+                  <span>{asset.name}</span>
+                  <small className={asset.status === "referenced" ? "asset-bound" : "asset-unbound"}>{asset.status === "referenced" ? `已绑定 ${asset.referencedBy?.length || 0}` : "待确认"}</small>
                 </button>
               ))}
             </div>}
@@ -2006,58 +2867,173 @@ export function App() {
         </aside>
         <PanelResizer orientation="col" label="调节左侧栏宽度" onPointerDown={beginLayoutDrag("left")} />
 
-        <section className={`center-pane panel ${previewDockOpen ? "with-preview-dock" : ""}`}>
-          <nav className="document-tabs">
-            <button aria-pressed={centerTab === "visual"} className={centerTab === "visual" ? "active" : ""} onClick={() => setCenterTab("visual")}><MonitorPlay size={14} />{fileName(activeUiPath).replace(/\.lua$/i, ".ui")}</button>
-            <button aria-pressed={centerTab === "code"} className={centerTab === "code" ? "active" : ""} onClick={() => setCenterTab("code")}><Code2 size={14} />{fileName(selectedFile)}{codeDirty && <span className="dirty-dot" aria-label="有未保存更改">●</span>}</button>
-            <button
-              aria-pressed={previewDockOpen}
-              className={previewDockOpen ? "active" : ""}
-              onClick={() => {
-                const next = !previewDockOpen;
-                setPreviewDockOpen(next);
-                if (next) void loadPreviewPanel();
-              }}
-            ><Columns2 size={14} />预览</button>
-            <button className="document-save" onClick={() => void saveFile()} disabled={!codeDirty || saveState === "saving"} title="保存 (⌘/Ctrl S)"><Save size={14} />{saveState === "saving" ? "保存中" : saveState === "saved" ? "已保存" : saveState === "error" ? "失败" : "保存"}</button>
+        <div className="center-pane-host">
+        <section
+          className={`center-pane panel ${previewDockOpen && centerTab !== "runtime" ? "with-preview-dock" : ""} ${floatingWorkspace ? "floating-workspace" : ""}`}
+          style={floatingWorkspace ? { left: floatingWorkspace.x, top: floatingWorkspace.y, width: floatingWorkspace.width, height: floatingWorkspace.height } : undefined}
+        >
+          <nav ref={documentTabsRef} className="document-tabs" onPointerDown={beginFloatingWorkspaceMove}>
+            {floatingWorkspace && <span className="floating-workspace-grip" title="拖回顶部标签栏即可重新停靠"><GripVertical size={14} /></span>}
+            {documentTabs.map((tab) => {
+              const isActive = tab === "preview" ? previewDockOpen : centerTab === tab;
+              const activate = () => {
+                if (tab === "preview") {
+                  const next = !previewDockOpen;
+                  setPreviewDockOpen(next);
+                  if (next) void loadPreviewPanel();
+                } else if (tab === "workflow") {
+                  setCenterTab("workflow");
+                  void loadWorkflow();
+                } else if (tab === "visual") {
+                  setMode("inspect");
+                  setCenterTab("visual");
+                } else if (tab === "runtime") {
+                  setMode(mode === "live-edit" ? "live-edit" : "inspect");
+                  setCenterTab("runtime");
+                  setPreviewDockOpen(false);
+                } else {
+                  setCenterTab("code");
+                }
+              };
+              return (
+                <button
+                  key={tab}
+                  draggable
+                  data-document-tab={tab}
+                  aria-pressed={isActive}
+                  className={isActive ? "active" : ""}
+                  title="拖动可排序；拖出标签栏可浮动"
+                  onClick={activate}
+                  onDragStart={(event) => {
+                    // The panel that leaves the dock must match the tab under
+                    // the pointer, even when the user starts dragging an
+                    // inactive tab.
+                    if (tab === "preview") {
+                      if (!previewDockOpen) {
+                        setPreviewDockOpen(true);
+                        void loadPreviewPanel();
+                      }
+                    } else {
+                      activate();
+                    }
+                    setDraggedDocumentTab(tab);
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", tab);
+                  }}
+                  onDragOver={(event) => { event.preventDefault(); reorderDocumentTab(tab); }}
+                  onDragEnd={finishDocumentTabDrag}
+                  onKeyDown={(event) => {
+                    if (!event.altKey || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+                    event.preventDefault();
+                    moveDocumentTab(tab, event.key === "ArrowLeft" ? -1 : 1);
+                  }}
+                >
+                  {tab === "workflow" ? <LayoutDashboard size={14} />
+                    : tab === "visual" ? <SlidersHorizontal size={14} />
+                      : tab === "runtime" ? <MonitorPlay size={14} />
+                        : tab === "code" ? <Code2 size={14} /> : <Columns2 size={14} />}
+                  {tab === "workflow" ? "交付工作台"
+                    : tab === "visual" ? `结构草图 · ${fileName(activeUiPath).replace(/\.lua$/i, ".ui")}`
+                      : tab === "runtime" ? "运行时场景"
+                        : tab === "code" ? fileName(selectedFile) : "Web 预览"}
+                  {tab === "code" && codeDirty && <span className="dirty-dot" aria-label="有未保存更改">●</span>}
+                </button>
+              );
+            })}
+            {floatingWorkspace && <button className="workspace-dock-button" type="button" title="重新停靠工作区" onClick={() => { setFloatingWorkspace(null); toast("工作区已重新停靠", "success"); }}><PanelTop size={14} />停靠</button>}
+            {centerTab === "code" && <button className="document-save" onClick={() => void saveFile()} disabled={!codeDirty || saveState === "saving"} title="保存 (⌘/Ctrl S)"><Save size={14} />{saveState === "saving" ? "保存中" : saveState === "saved" ? "已保存" : saveState === "error" ? "失败" : "保存"}</button>}
           </nav>
-          <div className={`center-body ${previewDockOpen ? "split" : ""}`}>
+          <div className={`center-body ${previewDockOpen && centerTab !== "runtime" ? "split" : ""}`}>
             <div className="center-main">
-              {centerTab === "visual" ? (
+              {centerTab === "workflow" ? (
+                <ProjectCockpit
+                  overview={workflow}
+                  loading={workflowLoading}
+                  busyAction={workflowBusyAction}
+                  onRefresh={() => void loadWorkflow()}
+                  onAction={(action) => void runWorkflowAction(action)}
+                  onObjectiveSaved={(nextObjective) => setWorkflow((current) => current ? { ...current, objective: nextObjective } : current)}
+                  onToast={toast}
+                />
+              ) : centerTab === "runtime" ? (
+                <RuntimeMirror
+                  runtimeLive={runtimeLive}
+                  runtimeBusy={runtimeBusy}
+                  runtimeConnected={Boolean(health?.runtimeSessionId)}
+                  adapterInstalled={Boolean(health?.runtimeAdapter?.installed)}
+                  installBusy={adapterInstallBusy}
+                  projectName={project?.name || ""}
+                  orientation={previewPanel?.orientation || (makerMeta.orientation === "landscape" ? "landscape" : "portrait")}
+                  snapshot={snapshot}
+                  snapshotSource={effectiveSource}
+                  selectedIds={selectedNodeIds}
+                  editRevision={runtimeEditRevision}
+                  mode={mode}
+                  onModeChange={(next) => setMode(next)}
+                  onStart={() => { toast("正在启动 Maker 预览…", "info"); void runtimeAction("start"); }}
+                  onRefreshRuntime={() => void runtimeAction("refresh")}
+                  onInstallAdapter={() => void installRuntimeEditor()}
+                  onSelect={selectNode}
+                  onContextMenu={openNodeContextMenu}
+                  onPatch={patchNodeById}
+                  onToast={toast}
+                />
+              ) : centerTab === "visual" ? (
                 <div className="canvas-area">
                   <div className="canvas-meta">
-                    <span>{device.width}×{device.height}</span>
-                    <span>DPR {device.dpr}</span>
-                    <span>{mode === "play" ? "LocalRuntime" : mode === "inspect" ? "检查" : "实时编辑"}</span>
+                    <span>真实画布 {Math.round(previewWidth)}×{Math.round(previewHeight)}</span>
+                    <span>{snapshot?.viewport?.physicalWidth && snapshot?.viewport?.physicalHeight ? `物理 ${snapshot.viewport.physicalWidth}×${snapshot.viewport.physicalHeight}` : `DPR ${device.dpr}`}</span>
+                    <span>{mode === "inspect" ? "检查" : "实时编辑"}</span>
                     <span className="canvas-source">画布：{canvasSourceLabel}</span>
                     {runtimeLive && (
                       <span className="canvas-source runtime-scene">
                         真机：{runtimeScene === "live" ? "活树可同步" : runtimeScene === "loading" ? "加载/启动画面" : "已连接"}
                       </span>
                     )}
+                    <div className="canvas-zoom" role="group" aria-label="场景缩放">
+                      <button type="button" aria-label="缩小场景" title="缩小" onClick={() => { setCanvasAutoFit(false); setStageScale((value) => Math.max(.1, value - .1)); }}><ZoomOut size={13} /></button>
+                      <input
+                        type="range"
+                        min="10"
+                        max="400"
+                        step="1"
+                        value={Math.round(stageScale * 100)}
+                        aria-label={`场景缩放 ${Math.round(stageScale * 100)}%`}
+                        onChange={(event) => { setCanvasAutoFit(false); setStageScale(Number(event.target.value) / 100); }}
+                      />
+                      <output>{Math.round(stageScale * 100)}%</output>
+                      <button type="button" aria-label="放大场景" title="放大" onClick={() => { setCanvasAutoFit(false); setStageScale((value) => Math.min(4, value + .1)); }}><ZoomIn size={13} /></button>
+                      <button type="button" className={canvasAutoFit ? "active" : ""} aria-pressed={canvasAutoFit} title="一键最佳比例" onClick={applyBestCanvasScale}><Maximize2 size={13} />最佳</button>
+                    </div>
                   </div>
-                  <div ref={stageRef} className="device-stage" style={{ aspectRatio: `${device.width}/${device.height}` }}>
-                    <div className="safe-area" style={{
-                      top: `${device.safeArea.top / device.height * 100}%`,
-                      right: `${device.safeArea.right / device.width * 100}%`,
-                      bottom: `${device.safeArea.bottom / device.height * 100}%`,
-                      left: `${device.safeArea.left / device.width * 100}%`
-                    }} />
-                    <div className="runtime-surface" style={{
-                      width: previewWidth,
-                      height: previewHeight,
-                      transform: `scale(${stageScale})`
-                    }}>
-                      {snapshot && (
-                        <RuntimeNode
-                          node={snapshot.root}
-                          selectedId={snapshot.selectedId}
-                          onSelect={selectNodeAndLocate}
-                          onDragStart={beginNodeDrag}
-                          onPlayClick={(node) => toast(`LocalRuntime 点击：${node.name}`, "success")}
-                          mode={mode}
-                        />
-                      )}
+                  <div ref={canvasViewportRef} className="canvas-viewport">
+                    <div
+                      ref={stageRef}
+                      className="device-stage"
+                      style={{ width: previewWidth * stageScale, height: previewHeight * stageScale }}
+                    >
+                      <div className="safe-area" style={{
+                        top: `${device.safeArea.top / device.height * 100}%`,
+                        right: `${device.safeArea.right / device.width * 100}%`,
+                        bottom: `${device.safeArea.bottom / device.height * 100}%`,
+                        left: `${device.safeArea.left / device.width * 100}%`
+                      }} />
+                      <div className="runtime-surface" style={{
+                        width: previewWidth,
+                        height: previewHeight,
+                        transform: `scale(${stageScale})`
+                      }}>
+                        {snapshot && (
+                          <RuntimeNode
+                            node={snapshot.root}
+                            selectedId={snapshot.selectedId}
+                            selectedIds={selectedNodeIds}
+                            onSelect={selectNode}
+                            onDragStart={beginNodeDrag}
+                            mode={mode}
+                          />
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="simulation-ribbon">
@@ -2095,7 +3071,7 @@ export function App() {
                 />
               )}
             </div>
-            {previewDockOpen && (
+            {previewDockOpen && centerTab !== "runtime" && (
               <>
                 <PanelResizer orientation="col" label="调节预览坞宽度" onPointerDown={beginLayoutDrag("previewDock", true)} />
                 <aside className="preview-side panel">
@@ -2114,10 +3090,60 @@ export function App() {
               </>
             )}
           </div>
+          {floatingWorkspace && <button
+            className="floating-workspace-resize"
+            type="button"
+            aria-label="调整浮动工作区大小；方向键微调，Shift 加速"
+            title="拖动调整窗口大小"
+            onPointerDown={beginFloatingWorkspaceResize}
+            onKeyDown={(event) => {
+              const amount = event.shiftKey ? 40 : 10;
+              const dx = event.key === "ArrowRight" ? amount : event.key === "ArrowLeft" ? -amount : 0;
+              const dy = event.key === "ArrowDown" ? amount : event.key === "ArrowUp" ? -amount : 0;
+              if (!dx && !dy) return;
+              event.preventDefault();
+              setFloatingWorkspace((current) => current ? {
+                ...current,
+                width: clamp(current.width + dx, 480, Math.max(480, window.innerWidth - current.x - 8)),
+                height: clamp(current.height + dy, 340, Math.max(340, window.innerHeight - current.y - 8))
+              } : current);
+            }}
+          />}
         </section>
+        </div>
         <PanelResizer orientation="col" label="调节右侧属性栏宽度" onPointerDown={beginLayoutDrag("right", true)} />
 
-        <aside className="right-pane panel">
+        {centerTab === "workflow" ? <aside className="right-pane panel workflow-tools-pane">
+          <nav className="pane-tabs"><button className="active" aria-pressed="true"><Rocket size={14} aria-hidden="true" />交付工具</button></nav>
+          <div className="workflow-tools-body">
+            <section>
+              <span className="section-kicker">当前状态</span>
+              <h3>{workflow?.score ?? 0} 分就绪</h3>
+              <p>{workflow?.nextAction?.reason || "等待项目检查结果。"}</p>
+              <button className="workflow-primary-tool" disabled={!workflow?.nextAction || workflowBusyAction === workflow.nextAction.action} onClick={() => workflow?.nextAction && void runWorkflowAction(workflow.nextAction.action)}><Play size={14} aria-hidden="true" />{workflow?.nextAction?.label || "暂无下一步"}</button>
+            </section>
+            <section>
+              <span className="section-kicker">环境与项目</span>
+              <div className="workflow-tool-grid">
+                <button onClick={() => void runWorkflowAction("doctor")} disabled={workflowBusyAction === "doctor"}><Activity size={15} aria-hidden="true" /><strong>Doctor</strong><small>检查工具链与绑定</small></button>
+                <button onClick={() => void runWorkflowAction("open-design")}><SlidersHorizontal size={15} aria-hidden="true" /><strong>设计</strong><small>编辑 UI 与旁路</small></button>
+              </div>
+            </section>
+            <section>
+              <span className="section-kicker">运行与证据</span>
+              <div className="workflow-tool-grid">
+                <button onClick={() => void runWorkflowAction("start-preview")} disabled={workflowBusyAction === "start-preview"}><CirclePlay size={15} aria-hidden="true" /><strong>启动预览</strong><small>官方 Maker Runtime</small></button>
+                <button onClick={() => void runWorkflowAction("open-preview")}><Columns2 size={15} aria-hidden="true" /><strong>内嵌预览</strong><small>并排查看游戏流</small></button>
+                <button onClick={() => void runWorkflowAction("capture-evidence")} disabled={workflowBusyAction === "capture-evidence"}><Image size={15} aria-hidden="true" /><strong>截取证据</strong><small>保存可复核画面</small></button>
+                <button onClick={() => void runWorkflowAction("generate-qrcode")} disabled={workflowBusyAction === "generate-qrcode"}><QrCode size={15} aria-hidden="true" /><strong>测试二维码</strong><small>生成测试入口</small></button>
+              </div>
+            </section>
+            <section>
+              <span className="section-kicker">提交与交付</span>
+              <button className="workflow-build-tool" onClick={() => void runWorkflowAction("build")} disabled={workflowBusyAction === "build" || !health?.capabilities.makerCli}><Hammer size={15} aria-hidden="true" /><span><strong>远端构建</strong><small>显式触发，不会自动提交</small></span></button>
+            </section>
+          </div>
+        </aside> : <aside className="right-pane panel">
           <nav className="pane-tabs">
             <button aria-pressed={inspectorTab === "properties"} className={inspectorTab === "properties" ? "active" : ""} onClick={() => setInspectorTab("properties")}><SlidersHorizontal size={14} />属性</button>
             <button aria-pressed={inspectorTab === "events"} className={inspectorTab === "events" ? "active" : ""} onClick={() => setInspectorTab("events")}><CirclePlay size={14} />事件</button>
@@ -2126,20 +3152,38 @@ export function App() {
           {selected ? <div className="inspector-body">
             <div className="selection-heading"><span className="selection-icon">{iconForType(selected.type)}</span><div><strong>{selected.name}</strong><small>{selected.type} · {selected.id}</small></div></div>
             {inspectorTab === "properties" && <><section className="property-group"><h3>布局</h3>
+              <InspectorField label="定位" property="position" value={selected.props.position} onCommit={patchNode} />
+              <InspectorField label="X / 左" property="left" value={selected.props.left} onCommit={patchNode} />
+              <InspectorField label="Y / 上" property="top" value={selected.props.top} onCommit={patchNode} />
               <InspectorField label="宽度" property="width" value={selected.props.width} onCommit={patchNode} />
               <InspectorField label="高度" property="height" value={selected.props.height} onCommit={patchNode} />
+              <InspectorField label="旋转" property="rotate" value={selected.props.rotate} onCommit={patchNode} />
+              <InspectorField label="缩放" property="transform.scale" value={selectedTransform.scale ?? 1} onCommit={(_property, value) => void patchNodeProps({ transform: { ...selectedTransform, scale: value } })} />
               <InspectorField label="间距" property="gap" value={selected.props.gap} onCommit={patchNode} />
               <InspectorField label="Flex 方向" property="flexDirection" value={selected.props.flexDirection} onCommit={patchNode} />
             </section>
             <section className="property-group"><h3>外观</h3>
-              <InspectorField label="文字" property="text" value={selected.props.text} onCommit={patchNode} />
+              <InspectorField label="文字" property="text" value={selected.props.text} onCommit={patchNode} live />
               <InspectorField label="字号" property="fontSize" value={selected.props.fontSize} onCommit={patchNode} />
-              <InspectorField label="背景 RGBA" property="backgroundColor" value={selected.props.backgroundColor} onCommit={patchNode} />
+              <InspectorAssetField value={selected.props.backgroundImage} assets={assets} onCommit={patchNode} />
+              {selectedHasImage && <InspectorColorField label="图片颜色" property="color" value={selected.props.color ?? [255, 255, 255, 255]} onCommit={patchNode} />}
+              {selectedHasText && <InspectorColorField label="文字颜色" property={selectedTextColorProperty} value={selected.props[selectedTextColorProperty] ?? [255, 255, 255, 255]} onCommit={patchNode} />}
+              <InspectorField label="透明度" property="opacity" value={selected.props.opacity} onCommit={patchNode} />
+              <InspectorColorField label="背景颜色" property="backgroundColor" value={selected.props.backgroundColor ?? [0, 0, 0, 0]} onCommit={patchNode} />
               <InspectorField label="圆角" property="borderRadius" value={selected.props.borderRadius} onCommit={patchNode} />
             </section>
             <Tip label="打开当前选中节点对应的 Lua 源码，并定位到构造行。">
               <button className="source-link" onClick={() => selected ? void jumpToSource(selected) : setCenterTab("code")}><FileCode2 size={14} />{selected.source?.file ?? "运行时节点"}:{selected.source?.line ?? "?"}</button>
             </Tip>
+            <section className="inspector-node-ops">
+              <div><h3>节点操作</h3><small>同级顺序决定渲染遮挡关系</small></div>
+              <div className="inspector-order-row">
+                <button type="button" disabled={snapshot?.root.id === selected.id} onClick={() => void runTreeOp({ type: "move", nodeId: selected.id, direction: "up" }, "上移节点")}><ArrowUp size={13} />上移</button>
+                <button type="button" disabled={snapshot?.root.id === selected.id} onClick={() => void runTreeOp({ type: "move", nodeId: selected.id, direction: "down" }, "下移节点")}><ArrowDown size={13} />下移</button>
+                <button type="button" disabled={snapshot?.root.id === selected.id} onClick={duplicateSelected}><Copy size={13} />复制</button>
+              </div>
+              <button type="button" className="inspector-delete" disabled={snapshot?.root.id === selected.id} onClick={() => void runTreeOp({ type: "delete", nodeId: selected.id }, `删除 ${selected.name}`)}><Trash2 size={13} />删除节点</button>
+            </section>
             </>}
             {inspectorTab === "events" && <section className="inspector-section">
               <div className="inspector-section-title"><div><h3>交互事件</h3><p>从当前节点的 Lua 构造参数中提取</p></div><span>{selectedEvents.length}</span></div>
@@ -2152,14 +3196,73 @@ export function App() {
               <button className="inspector-code-button" onClick={() => selected.source?.file && void readFile(selected.source.file)}><FileCode2 size={14} />在源码中编辑动画</button>
             </section>}
           </div> : <p className="empty-state">选择一个运行时节点。</p>}
-        </aside>
+        </aside>}
       </section>
+
+      {nodeContextMenu && contextNode && (
+        <div
+          className="node-context-menu"
+          role="menu"
+          aria-label={`${contextNode.name} 节点菜单`}
+          style={{ left: nodeContextMenu.x, top: nodeContextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <div className="node-context-heading">
+            <span>{iconForType(contextNode.type)}</span>
+            <div><strong>{contextNode.name}</strong><small>{contextNode.type}</small></div>
+          </div>
+          <span className="node-context-section">创建子节点</span>
+          <div className="node-context-create">
+            {([
+              ["Node", "空节点"],
+              ["Label", "Label"],
+              ["Image", "图片"],
+              ["Button", "按钮"],
+              ["Panel", "Panel"]
+            ] as [UiNodeType, string][]).map(([nodeType, label]) => (
+              <button key={nodeType} type="button" role="menuitem" onClick={() => {
+                setNodeContextMenu(null);
+                void runTreeOp({ type: "insert-child", nodeId: contextNode.id, nodeType }, `创建 ${label}`);
+              }}>
+                {iconForType(nodeType)}<span>{label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="node-context-divider" />
+          <button type="button" role="menuitem" disabled={snapshot?.root.id === contextNode.id} onClick={() => {
+            setNodeContextMenu(null);
+            void runTreeOp({ type: "duplicate", nodeId: contextNode.id }, `复制 ${contextNode.name}`);
+          }}><Copy size={14} /><span>复制节点</span></button>
+          <button type="button" role="menuitem" onClick={() => {
+            setNodeContextMenu(null);
+            selectNode(contextNode.id);
+            setRenamingId(contextNode.id);
+            setRenameDraft(contextNode.name);
+          }}><FileCode2 size={14} /><span>重命名</span></button>
+          <button type="button" role="menuitem" disabled={snapshot?.root.id === contextNode.id} onClick={() => {
+            setNodeContextMenu(null);
+            void runTreeOp({ type: "move", nodeId: contextNode.id, direction: "up" }, "上移节点");
+          }}><ArrowUp size={14} /><span>上移一层</span></button>
+          <button type="button" role="menuitem" disabled={snapshot?.root.id === contextNode.id} onClick={() => {
+            setNodeContextMenu(null);
+            void runTreeOp({ type: "move", nodeId: contextNode.id, direction: "down" }, "下移节点");
+          }}><ArrowDown size={14} /><span>下移一层</span></button>
+          <div className="node-context-divider" />
+          <button type="button" role="menuitem" className="danger" disabled={snapshot?.root.id === contextNode.id} onClick={() => {
+            setNodeContextMenu(null);
+            void runTreeOp({ type: "delete", nodeId: contextNode.id }, `删除 ${contextNode.name}`);
+          }}><Trash2 size={14} /><span>删除节点</span><kbd>⌫</kbd></button>
+        </div>
+      )}
 
       <section className="terminal-panel panel">
         <PanelResizer orientation="row" label="调节终端高度" onPointerDown={beginLayoutDrag("terminal", false, true)} />
         <nav className="terminal-tabs">
           <span className="terminal-title"><PanelBottom size={14} />终端</span>
           {channels.map((channel) => <button key={channel.id} aria-pressed={activeTerminal === channel.id} className={activeTerminal === channel.id ? "active" : ""} onClick={() => setActiveTerminal(channel.id)}>{channel.label}</button>)}
+          <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: layout.terminal <= 42 ? DEFAULT_LAYOUT.terminal : 40 })}>{layout.terminal <= 42 ? "展开" : "收起"}</button>
+          <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: terminalMaxHeight() })}>最大化</button>
           <button className="terminal-reset" onClick={resetLayout} title="一键还原 IDE 布局">还原布局</button>
         </nav>
         <pre className={`terminal-output ${activeTerminal === "shell" ? "locked" : ""}`}>{logs[activeTerminal].join("\n")}</pre>

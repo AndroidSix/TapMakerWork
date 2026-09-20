@@ -22,6 +22,10 @@ export interface AssetEntry {
   name: string;
   path: string;
   bytes: number;
+  extension: string;
+  kind: "image" | "audio" | "video" | "model" | "font" | "other";
+  referencedBy: string[];
+  status: "referenced" | "unreferenced";
 }
 
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", ".emmylua", ".tmp", ".tapmakerwork", ".maker"]);
@@ -78,12 +82,19 @@ export function searchProject(projectRoot: string, query: string, limit = 50): S
   return hits;
 }
 
-export function listProjectAssets(projectRoot: string, limit = 200): AssetEntry[] {
-  const roots = ["assets", "images", "image", "textures", "resources"].map((name) => path.join(projectRoot, name)).filter((candidate) => fs.existsSync(candidate));
-  if (!roots.length && fs.existsSync(path.join(projectRoot, "assets"))) roots.push(path.join(projectRoot, "assets"));
-  const assets: AssetEntry[] = [];
-  const pending = [...roots];
-  while (pending.length && assets.length < limit) {
+function assetKind(extension: string): AssetEntry["kind"] {
+  if ([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp"].includes(extension)) return "image";
+  if ([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"].includes(extension)) return "audio";
+  if ([".mp4", ".webm", ".mov", ".m4v"].includes(extension)) return "video";
+  if ([".glb", ".gltf", ".fbx", ".obj", ".mtl"].includes(extension)) return "model";
+  if ([".ttf", ".otf", ".woff", ".woff2"].includes(extension)) return "font";
+  return "other";
+}
+
+function collectReferenceDocuments(projectRoot: string): Array<{ path: string; text: string }> {
+  const documents: Array<{ path: string; text: string }> = [];
+  const pending = [projectRoot];
+  while (pending.length && documents.length < 1_000) {
     const directory = pending.pop()!;
     let entries: fs.Dirent[];
     try {
@@ -92,25 +103,78 @@ export function listProjectAssets(projectRoot: string, limit = 200): AssetEntry[
       continue;
     }
     for (const entry of entries) {
-      if (assets.length >= limit) break;
+      if (entry.name.startsWith(".") && entry.name !== ".project") continue;
+      const filename = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name) && !["assets", "images", "image", "textures", "resources"].includes(entry.name)) pending.push(filename);
+        continue;
+      }
+      if (!entry.isFile() || !/\.(lua|json|md|ts|tsx|js|jsx|yaml|yml)$/i.test(entry.name)) continue;
+      try {
+        const stat = fs.statSync(filename);
+        if (stat.size > 1_500_000) continue;
+        documents.push({
+          path: path.relative(projectRoot, filename).split(path.sep).join("/"),
+          text: fs.readFileSync(filename, "utf8")
+        });
+      } catch {
+        // Ignore unreadable source documents.
+      }
+    }
+  }
+  return documents;
+}
+
+export function listProjectAssets(projectRoot: string, limit = 500): AssetEntry[] {
+  const roots = ["assets", "images", "image", "textures", "resources"].map((name) => path.join(projectRoot, name)).filter((candidate) => fs.existsSync(candidate));
+  if (!roots.length && fs.existsSync(path.join(projectRoot, "assets"))) roots.push(path.join(projectRoot, "assets"));
+  const candidates: Array<Omit<AssetEntry, "referencedBy" | "status">> = [];
+  const pending = [...roots];
+  while (pending.length && candidates.length < limit) {
+    const directory = pending.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (candidates.length >= limit) break;
       const filename = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) pending.push(filename);
         continue;
       }
-      if (!/\.(png|jpe?g|webp|gif|svg)$/i.test(entry.name)) continue;
+      const extension = path.extname(entry.name).toLowerCase();
+      if (assetKind(extension) === "other") continue;
       try {
         const stat = fs.statSync(filename);
-        assets.push({
+        candidates.push({
           name: entry.name,
           path: path.relative(projectRoot, filename).split(path.sep).join("/"),
-          bytes: stat.size
+          bytes: stat.size,
+          extension,
+          kind: assetKind(extension)
         });
       } catch {
         // ignore unreadable assets
       }
     }
   }
+  const documents = collectReferenceDocuments(projectRoot);
+  const assets: AssetEntry[] = candidates.map((asset) => {
+    const withoutAssets = asset.path.replace(/^(assets|images|image|textures|resources)\//i, "");
+    const referenceKeys = [asset.path, withoutAssets, asset.name].filter((value, index, list) => value.length > 2 && list.indexOf(value) === index);
+    const referencedBy = documents
+      .filter((document) => referenceKeys.some((key) => document.text.includes(key)))
+      .map((document) => document.path)
+      .slice(0, 8);
+    return {
+      ...asset,
+      referencedBy,
+      status: referencedBy.length ? "referenced" as const : "unreferenced" as const
+    };
+  });
   assets.sort((a, b) => a.path.localeCompare(b.path));
   return assets;
 }
@@ -214,6 +278,7 @@ export function readMakerPreviewLogs(projectRoot: string, supervisorLogPath?: st
 
 export function projectHasRuntimeAdapter(projectRoot: string): { installed: boolean; paths: string[] } {
   const candidates = [
+    "scripts/tapmakerwork/TapMakerWorkBridge.lua",
     "scripts/TapMakerWorkBridge.lua",
     "scripts/ui/TapMakerWorkBridge.lua",
     "scripts/core/TapMakerWorkBridge.lua",

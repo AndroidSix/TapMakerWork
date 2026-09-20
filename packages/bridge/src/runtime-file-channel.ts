@@ -10,6 +10,8 @@ export interface RuntimeFileStatus {
   transport?: string;
   url?: string;
   lastHttpError?: string;
+  lastCommandError?: string;
+  lastCommandResult?: string;
   snapshotError?: string;
   snapshotBytes?: number;
   rootType?: string;

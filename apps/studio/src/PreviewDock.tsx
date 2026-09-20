@@ -208,15 +208,15 @@ export function PreviewDock({
             <strong>{runtimeLive ? "Runtime 已连接" : "预览说明"}</strong>
             <p>
               {runtimeLive
-                ? "游戏在独立 Runtime 窗口运行；IDE 画布是可编辑控件树，改属性会写 .ui.json 并同步真机。"
-                : "当前 URL 不是可交互游戏流。实时改 UI 请在左侧设计画布操作。"}
+                ? "这是 Web 预览通道，不代表独立 Runtime 的最终画面；请切到“真实运行”查看系统窗口采样。"
+                : "当前 URL 不是可交互游戏流。编辑请使用设计画布，最终效果以“真实运行”为准。"}
             </p>
           </div>
         )}
         {!url ? (
           <div className="empty-state preview-empty">
             <strong>实时预览</strong>
-            <p>在左侧画布 <b>实时编辑</b> UI；此处可嵌入可交互的游戏预览 URL。</p>
+            <p>此处只嵌入 Web 游戏流；Maker 独立运行器请切到 <b>真实运行</b>。</p>
             <p className="muted">项目 {projectName || "—"} · {desktopAvailable ? "桌面通道可用" : "iframe 模式"}{runtimeLive ? " · Runtime 已连接" : ""}</p>
           </div>
         ) : !embeddable ? (

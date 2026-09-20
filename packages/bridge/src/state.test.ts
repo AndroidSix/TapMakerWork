@@ -17,4 +17,30 @@ describe("editor history", () => {
     expect(redone.revision).toBe(changed.revision + 2);
     expect(redone.root.children[1]?.children[0]?.props.text).toBe("临时预览");
   });
+
+  it("keeps the current selection when a runtime refresh omits selectedId", () => {
+    const state = new EditorState();
+    const current = state.getSnapshot();
+    const refreshed = state.replaceFromRuntime({ revision: 99, root: current.root });
+    expect(refreshed.selectedId).toBe("home.single-player");
+  });
+
+  it("coalesces realtime drag patches into one undo step", () => {
+    const state = new EditorState();
+    const initial = state.getSnapshot();
+    let revision = initial.revision;
+    for (const left of [10, 20, 30]) {
+      revision = state.apply({
+        requestId: `drag-${left}`,
+        baseRevision: revision,
+        nodeId: "home.single-player",
+        props: { left },
+        historyGroup: "drag-gesture"
+      }).revision;
+    }
+    const undone = state.undo();
+    expect(undone.root.children[1]?.children[0]?.props.left).toBeUndefined();
+    const redone = state.redo();
+    expect(redone.root.children[1]?.children[0]?.props.left).toBe(30);
+  });
 });
