@@ -5,7 +5,7 @@
 > [!IMPORTANT]
 > **非 TapTap 官方产品。** 在官方 Maker CLI / Runtime 之上做可视化与交付增强，不修改、不再分发官方安装包。
 >
-> **协作与 PR 只认 Gitee 主仓**；GitHub 仅作镜像下载。
+> **协作与 PR 只认 GitHub 主仓**；Gitee 仅作镜像下载。
 
 ---
 
@@ -20,8 +20,8 @@
 | 平台 | 安装包 |
 |------|--------|
 | **官网** | [androidsix.github.io/tapmakerwork-site](https://androidsix.github.io/tapmakerwork-site/) |
-| **Gitee 发行版（主）** | [gitee.com/AndroidSUP/tap-maker-work/releases](https://gitee.com/AndroidSUP/tap-maker-work/releases) |
-| **GitHub Releases（镜像）** | [github.com/AndroidSix/TapMakerWork/releases](https://github.com/AndroidSix/TapMakerWork/releases) |
+| **GitHub Releases（主）** | [github.com/AndroidSix/TapMakerWork/releases](https://github.com/AndroidSix/TapMakerWork/releases) |
+| **Gitee 发行版（镜像）** | [gitee.com/AndroidSUP/tap-maker-work/releases](https://gitee.com/AndroidSUP/tap-maker-work/releases) |
 
 - macOS：下载 `TapMakerWork-*-mac-*.dmg`
 - Windows：下载 `TapMakerWork-*-windows-*.exe`
@@ -61,11 +61,11 @@ Electron 桌面 / 控制台
 | 角色 | 地址 | 用来做什么 |
 |------|------|------------|
 | **官网** | [tapmakerwork-site](https://androidsix.github.io/tapmakerwork-site/) | 产品介绍与下载总览 |
-| **主仓 · Gitee** | [AndroidSUP/tap-maker-work](https://gitee.com/AndroidSUP/tap-maker-work) | 开发、Issue、**全部 PR** |
-| **镜像 · GitHub** | [AndroidSix/TapMakerWork](https://github.com/AndroidSix/TapMakerWork) | 浏览提交、Releases 下载 |
+| **主仓 · GitHub** | [AndroidSix/TapMakerWork](https://github.com/AndroidSix/TapMakerWork) | 开发、Issue、**全部 PR** |
+| **镜像 · Gitee** | [AndroidSUP/tap-maker-work](https://gitee.com/AndroidSUP/tap-maker-work) | 国内访问、Releases 下载 |
 
-- Pull Request、缺陷反馈、功能讨论 → **只提 Gitee**  
-- GitHub 上的 PR **不会被合并**，详见 [CONTRIBUTING.md](./CONTRIBUTING.md)  
+- Pull Request、缺陷反馈、功能讨论 → **只提 GitHub**
+- Gitee 镜像上的改动 **不会被合并**，详见 [CONTRIBUTING.md](./CONTRIBUTING.md)
 - 安装依赖与贡献流程亦见该文档  
 
 ## 社区交流
@@ -89,7 +89,7 @@ https://qm.qq.com/q/OCt1HAmHK2
 
 ## 后续开发计划
 
-> 下列为规划中的能力，**尚未全部实现**；进度以 [docs/ROADMAP.md](./docs/ROADMAP.md) 与发行说明为准。欢迎在 Gitee Issue / 交流群提出优先级建议。
+> 下列为规划中的能力，**尚未全部实现**；进度以 [docs/ROADMAP.md](./docs/ROADMAP.md) 与发行说明为准。欢迎在 GitHub Issue / 交流群提出优先级建议。
 
 ### 资源与构建优化
 
@@ -174,7 +174,7 @@ https://qm.qq.com/q/OCt1HAmHK2
 <summary><b>桌面与 AI 集成</b></summary>
 
 - Electron 宿主、一键打包 IDE、双平台安装包
-- 固定检查 Gitee 主仓发行版，支持安装包自动更新元数据与手动下载回退
+- 固定检查 GitHub 主仓发行版，支持安装包自动更新元数据与手动下载回退
 - Maker MCP 版本发现与 stable/Beta 切换
 - 系统 Node.js 发现（PATH / 登录 shell / Homebrew / Volta）
 - macOS Runtime 窗口采集与输入转发（需系统权限）
@@ -230,7 +230,7 @@ npm run dist:all    # 双平台（视构建链而定）
 
 产物目录：`outputs/installers`。签名、公证、权限与更新源见 [`docs/DESKTOP_RELEASE.md`](./docs/DESKTOP_RELEASE.md)。
 
-发布时：本地打包后，将**同一批**安装包上传到 **Gitee 发行版** 与 **GitHub Releases**。
+发布时：本地打包 → 上传到 **GitHub Releases（主）**；Gitee 镜像通过「镜像同步」自动拿到同一批安装包。
 
 ---
 
@@ -284,7 +284,7 @@ node /absolute/path/to/packages/bridge/dist/mcp.js
 
 **说明**
 
-- 请以 **Gitee 主仓** 本 README 中的收款码为准；镜像仓可能同步有延迟。
+- 请以 **GitHub 主仓** 本 README 中的收款码为准；Gitee 镜像同步可能有延迟。
 - 个人收款码可能有单笔/日限额，适合小额支持。
 - 请勿将赞助理解为购买许可证或激活码；我们不在 GitHub 通过私聊售卖软件。
 
@@ -304,9 +304,9 @@ node /absolute/path/to/packages/bridge/dist/mcp.js
   <sub>
     官网 · <a href="https://androidsix.github.io/tapmakerwork-site/">tapmakerwork-site</a>
     &nbsp;|&nbsp;
-    主仓 · <a href="https://gitee.com/AndroidSUP/tap-maker-work">Gitee</a>
+    主仓 · <a href="https://github.com/AndroidSix/TapMakerWork">GitHub</a>
     &nbsp;|&nbsp;
-    镜像 · <a href="https://github.com/AndroidSix/TapMakerWork">GitHub</a>
+    镜像 · <a href="https://gitee.com/AndroidSUP/tap-maker-work">Gitee</a>
     &nbsp;|&nbsp;
     第三方工具 · 非 TapTap 官方
   </sub>

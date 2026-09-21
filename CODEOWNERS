@@ -1,0 +1,29 @@
+# CODEOWNERS — TapMakerWork 代码审查人
+#
+# 本文件用于 GitHub 镜像：声明每个目录/文件的审查负责人。
+# GitHub PR 不会被合并（见 CONTRIBUTING.md），但保留审查人记录，
+# 让任何走 GitHub 入口的贡献也能被正确路由。
+#
+# Gitee 主仓的对应规则在网页上维护：
+#   仓库设置 → 仓库管理 → 审查人
+# 建议把下方每个分组的成员同步到 Gitee 的「默认审查人 / 目录审查人」中。
+
+# ---------- 默认：所有改动 ----------
+*                                       @AndroidSUP @AndroidSix
+
+# ---------- 桌面端与打包 ----------
+/electron-builder.yml                   @AndroidSUP @AndroidSix
+/scripts/                               @AndroidSUP @AndroidSix
+/apps/desktop/                          @AndroidSUP @AndroidSix
+/outputs/launchers/                     @AndroidSUP @AndroidSix
+/build/                                 @AndroidSUP @AndroidSix
+
+# ---------- 文档与协作流程 ----------
+/CONTRIBUTING.md                        @AndroidSUP @AndroidSix
+/README.md                              @AndroidSUP @AndroidSix
+/LICENSE                                @AndroidSUP @AndroidSix
+/docs/                                  @AndroidSUP @AndroidSix
+
+# ---------- CI / 发布工作流 ----------
+/.github/workflows/                     @AndroidSUP @AndroidSix
+/.github/CODEOWNERS                     @AndroidSUP @AndroidSix
