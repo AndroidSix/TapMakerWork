@@ -10,6 +10,7 @@ import {
   listInstalledNodeRuntimes,
   listInstalledMakerRuntimes,
   readMakerRuntimePreference,
+  resolveSystemNodeRuntime,
   selectMakerRuntime,
   writeMakerRuntimePreference
 } from "./maker.js";
@@ -84,7 +85,7 @@ describe("Maker runtime selection", () => {
     expect(catalog.stable).toBe("24.8.1");
   });
 
-  it("prefers the newest managed Node.js runtime over the device runtime", () => {
+  it("keeps legacy managed Node.js runtimes listed without overriding the system runtime", () => {
     const root = temporaryDirectory();
     const executableName = process.platform === "win32" ? "node.exe" : "node";
     for (const version of ["22.20.0", "24.8.1"]) {
@@ -93,6 +94,14 @@ describe("Maker runtime selection", () => {
       fs.writeFileSync(path.join(bin, executableName), "", "utf8");
     }
     expect(listInstalledNodeRuntimes(root).map((runtime) => runtime.version)).toEqual(["24.8.1", "22.20.0"]);
-    expect(discoverNodeRuntime(root)).toMatchObject({ version: "24.8.1", source: "managed" });
+    expect(discoverNodeRuntime()).toMatchObject({ source: expect.stringMatching(/device|embedded/) });
+  });
+
+  it("resolves the real system executable and ignores invalid candidates", () => {
+    expect(resolveSystemNodeRuntime([path.join(temporaryDirectory(), "missing-node"), process.execPath])).toMatchObject({
+      executable: fs.realpathSync(process.execPath),
+      version: process.version.replace(/^v/, ""),
+      source: "device"
+    });
   });
 });

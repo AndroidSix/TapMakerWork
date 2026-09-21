@@ -64,13 +64,13 @@ export function resolvePreviewPanel(
 ): PreviewPanelState {
   const file = loadPreviewPanelFile(projectRoot);
   const manualUrl = file.url?.trim() || "";
-  const qrcodeUrl = makerMeta?.qrcodeUrl?.trim() || "";
   const orientation = file.orientation
     || (makerMeta?.orientation === "landscape" ? "landscape" as const : "portrait" as const);
-  const url = manualUrl || qrcodeUrl;
   return {
-    url,
-    urlSource: manualUrl ? "manual" : qrcodeUrl ? "qrcode" : "none",
+    url: manualUrl,
+    // A test_qrcode URL points to a PNG for phones to scan. It is evidence,
+    // not a browser game stream, so never feed it into Web preview.
+    urlSource: manualUrl ? "manual" : "none",
     orientation,
     autoRefreshIframe: file.autoRefreshIframe ?? true,
     autoRefreshMaker: file.autoRefreshMaker ?? false,

@@ -14,6 +14,39 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
     ipcRenderer.on("tapmakerwork:history-action", handler);
     return () => ipcRenderer.removeListener("tapmakerwork:history-action", handler);
   },
+  permissions: {
+    get: () => ipcRenderer.invoke("tapmakerwork:permissions-get"),
+    request: (permission: "screen" | "accessibility") => ipcRenderer.invoke("tapmakerwork:permissions-request", permission),
+    open: (permission: "screen" | "accessibility") => ipcRenderer.invoke("tapmakerwork:permissions-open", permission),
+    restart: () => ipcRenderer.invoke("tapmakerwork:app-restart"),
+    onChanged: (listener: (state: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: unknown) => listener(state);
+      ipcRenderer.on("tapmakerwork:permissions-changed", handler);
+      return () => ipcRenderer.removeListener("tapmakerwork:permissions-changed", handler);
+    }
+  },
+  updates: {
+    get: () => ipcRenderer.invoke("tapmakerwork:update-get"),
+    configure: (url: string) => ipcRenderer.invoke("tapmakerwork:update-configure", url),
+    check: () => ipcRenderer.invoke("tapmakerwork:update-check"),
+    download: () => ipcRenderer.invoke("tapmakerwork:update-download"),
+    restart: () => ipcRenderer.invoke("tapmakerwork:update-restart"),
+    onState: (listener: (state: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: unknown) => listener(state);
+      ipcRenderer.on("tapmakerwork:update-state", handler);
+      return () => ipcRenderer.removeListener("tapmakerwork:update-state", handler);
+    }
+  },
+  hardwareAcceleration: {
+    get: () => ipcRenderer.invoke("tapmakerwork:hardware-get"),
+    set: (enabled: boolean) => ipcRenderer.invoke("tapmakerwork:hardware-set", enabled),
+    restart: () => ipcRenderer.invoke("tapmakerwork:app-restart")
+  },
+  legal: {
+    get: () => ipcRenderer.invoke("tapmakerwork:legal-get"),
+    accept: () => ipcRenderer.invoke("tapmakerwork:legal-accept"),
+    decline: () => ipcRenderer.invoke("tapmakerwork:legal-decline")
+  },
   captureRuntime: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) =>
     ipcRenderer.invoke("tapmakerwork:runtime-capture", opts) as Promise<{
       ok: boolean;

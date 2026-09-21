@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { ExternalLink, Image as ImageIcon, MonitorPlay, RefreshCw, Save } from "lucide-react";
 import type { PreviewPanelState } from "@tapmakerwork/protocol";
 
@@ -37,6 +37,7 @@ export function PreviewDock({
   const [urlDraft, setUrlDraft] = useState(panel?.url || "");
   const [busy, setBusy] = useState<"save" | "refresh" | "shot" | "">("");
   const [shots, setShots] = useState<Array<{ path: string; bytes: number }>>([]);
+  const [runtimeFrame, setRuntimeFrame] = useState<{ dataUrl: string; sourceId?: string; sourceName?: string; width?: number; height?: number }>();
   const frameRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const transport = panel?.transport || "auto";
@@ -83,9 +84,67 @@ export function PreviewDock({
   }, [useNative, mountNative, reloadToken]);
 
   useEffect(() => {
+    if (!useNative || !frameRef.current) return;
+    const observer = new ResizeObserver(() => { void mountNative(); });
+    observer.observe(frameRef.current);
+    return () => observer.disconnect();
+  }, [mountNative, useNative]);
+
+  useEffect(() => {
     if (!useNative || !reloadToken) return;
     void window.tapMakerWork?.preview?.reload();
   }, [useNative, reloadToken]);
+
+  useEffect(() => {
+    const captureRuntime = window.tapMakerWork?.captureRuntime || window.tapMakerWork?.runtime?.capture;
+    if (!runtimeLive || embeddable || !captureRuntime) {
+      setRuntimeFrame(undefined);
+      return;
+    }
+    let active = true;
+    const capture = async () => {
+      try {
+        const result = await captureRuntime({ projectName, orientation: panel?.orientation || "portrait" });
+        if (active && result.ok && result.dataUrl) setRuntimeFrame({
+          dataUrl: result.dataUrl,
+          ...(result.sourceId ? { sourceId: result.sourceId } : {}),
+          ...(result.sourceName ? { sourceName: result.sourceName } : {}),
+          ...(result.width ? { width: result.width } : {}),
+          ...(result.height ? { height: result.height } : {})
+        });
+      } catch {
+        // The next capture retries while Runtime remains available.
+      }
+    };
+    void capture();
+    const timer = window.setInterval(capture, 450);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [embeddable, panel?.orientation, projectName, runtimeLive]);
+
+  const interactWithRuntime = useCallback(async (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!runtimeFrame?.sourceId || !runtimeFrame.sourceName || !window.tapMakerWork?.runtime?.interact) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const sourceWidth = runtimeFrame.width || bounds.width;
+    const sourceHeight = runtimeFrame.height || bounds.height;
+    const sourceRatio = sourceWidth / Math.max(1, sourceHeight);
+    const boundsRatio = bounds.width / Math.max(1, bounds.height);
+    const renderedWidth = boundsRatio > sourceRatio ? bounds.height * sourceRatio : bounds.width;
+    const renderedHeight = boundsRatio > sourceRatio ? bounds.height : bounds.width / sourceRatio;
+    const renderedLeft = bounds.left + (bounds.width - renderedWidth) / 2;
+    const renderedTop = bounds.top + (bounds.height - renderedHeight) / 2;
+    const localX = event.clientX - renderedLeft;
+    const localY = event.clientY - renderedTop;
+    if (localX < 0 || localY < 0 || localX > renderedWidth || localY > renderedHeight) return;
+    const result = await window.tapMakerWork.runtime.interact({
+      sourceId: runtimeFrame.sourceId,
+      sourceName: runtimeFrame.sourceName,
+      normalizedX: localX / Math.max(1, renderedWidth),
+      normalizedY: localY / Math.max(1, renderedHeight),
+      viewportWidth: sourceWidth,
+      viewportHeight: sourceHeight
+    });
+    if (!result.ok) onToast(result.error || "Runtime 点击转发失败", "error");
+  }, [onToast, runtimeFrame]);
 
   const saveSettings = useCallback(async (patch: Partial<PreviewPanelState>) => {
     setBusy("save");
@@ -171,8 +230,8 @@ export function PreviewDock({
           />
         </label>
         <button className="icon-command" aria-label="保存 URL" disabled={busy === "save"} onClick={() => void saveSettings({ url: urlDraft })}><Save size={13} /></button>
-        <Tip label="回退到 Maker test_qrcode.url（多为扫码链接，不能当游戏流）">
-          <button className="icon-command" aria-label="使用项目二维码链接" onClick={() => void saveSettings({ url: "" })}><MonitorPlay size={13} /></button>
+        <Tip label="清除 Web URL；Runtime 运行时自动回退到本机实时画面">
+          <button className="icon-command" aria-label="使用本机 Runtime 预览" onClick={() => void saveSettings({ url: "" })}><MonitorPlay size={13} /></button>
         </Tip>
         <label className="preview-orient">
           <select value={panel?.orientation || "portrait"} onChange={(e) => void saveSettings({ orientation: e.target.value as "portrait" | "landscape" })}>
@@ -213,10 +272,15 @@ export function PreviewDock({
             </p>
           </div>
         )}
-        {!url ? (
+        {runtimeFrame ? (
+          <button className="preview-runtime-frame" type="button" onPointerDown={(event) => void interactWithRuntime(event)} aria-label="本机 Runtime 实时预览；点击可操作游戏">
+            <img src={runtimeFrame.dataUrl} alt="Maker Runtime 实时画面" />
+            <span>{runtimeFrame.sourceName || "Maker Runtime"} · 本机实时回退</span>
+          </button>
+        ) : !url ? (
           <div className="empty-state preview-empty">
-            <strong>实时预览</strong>
-            <p>此处只嵌入 Web 游戏流；Maker 独立运行器请切到 <b>真实运行</b>。</p>
+            <strong>Web / Runtime 预览</strong>
+            <p>输入可访问的 Web 游戏 URL；未配置 URL 时，启动 Runtime 后会自动显示本机实时画面。</p>
             <p className="muted">项目 {projectName || "—"} · {desktopAvailable ? "桌面通道可用" : "iframe 模式"}{runtimeLive ? " · Runtime 已连接" : ""}</p>
           </div>
         ) : !embeddable ? (

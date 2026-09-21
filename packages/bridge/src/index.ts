@@ -24,7 +24,6 @@ import {
   compareMakerVersions,
   discoverNodeRuntime,
   discoverMakerRuntime,
-  installNodeRuntimeVersion,
   installMakerRuntimeVersion,
   listInstalledNodeRuntimes,
   listInstalledMakerRuntimes,
@@ -45,7 +44,7 @@ import { listProjectEntries, readProjectText, resolveInsideProject, resolveProje
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
-import { listProjectAssets, projectHasRuntimeAdapter, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
+import { commitGitProject, listProjectAssets, projectHasRuntimeAdapter, pullGitProject, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
 import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
 import { findRuntimeFileStatus, normalizeUiTree, writeIdeCommandsFile } from "./runtime-file-channel.js";
 import { findUiNodePath, readUiSidecar, sidecarExists, sidecarRelativePath, snapshotFromSidecar, uiNodeAtLine, writeUiSidecar } from "./ui-sidecar.js";
@@ -226,13 +225,14 @@ function nodeVersionsPayload() {
   const active = discoverNodeRuntime();
   const latest = nodeRemoteVersion?.stable;
   return {
-    device: { version: process.version.replace(/^v/, ""), executable: process.execPath },
+    device: active.source === "device" ? active : null,
+    embedded: { version: process.version.replace(/^v/, ""), executable: process.execPath },
     active,
     installed,
     stable: {
-      installed: installed[0]?.version,
+      installed: active.version,
       latest,
-      updateAvailable: Boolean(latest && (!installed[0] || compareMakerVersions(latest, installed[0].version) > 0))
+      updateAvailable: Boolean(latest && compareMakerVersions(latest, active.version) > 0)
     },
     checkedAt: nodeRemoteVersion?.checkedAt
   };
@@ -247,7 +247,7 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
-    "access-control-allow-origin": "http://127.0.0.1:4173"
+    "access-control-allow-origin": "*"
   });
   response.end(JSON.stringify(body));
 }
@@ -264,7 +264,7 @@ function sendProjectAsset(response: ServerResponse, filename: string): void {
   response.writeHead(200, {
     "content-type": mimeType,
     "cache-control": "no-store",
-    "access-control-allow-origin": "http://127.0.0.1:4173"
+    "access-control-allow-origin": "*"
   });
   fs.createReadStream(filename).pipe(response);
 }
@@ -304,7 +304,7 @@ const server = http.createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${host}:${port}`);
     if (request.method === "OPTIONS") {
       response.writeHead(204, {
-        "access-control-allow-origin": "http://127.0.0.1:4173",
+        "access-control-allow-origin": "*",
         "access-control-allow-methods": "GET,POST,OPTIONS",
         "access-control-allow-headers": "content-type"
       });
@@ -389,6 +389,67 @@ const server = http.createServer(async (request, response) => {
     } else if (request.method === "GET" && url.pathname === "/api/git/status") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, await readGitStatus(project.root));
+    } else if (request.method === "POST" && url.pathname === "/api/git/pull") {
+      if (!project) throw new Error("project_not_open");
+      const result = await pullGitProject(project.root);
+      broadcast({ type: "log.append", channel: "build", lines: [result.ok ? "Git 拉取完成。" : `Git 拉取停止：${result.error || "unknown"}`] });
+      sendJson(response, result.ok ? 200 : 409, result);
+    } else if (request.method === "POST" && url.pathname === "/api/git/commit") {
+      if (!project) throw new Error("project_not_open");
+      const body = await readJson(request) as { message?: string; push?: boolean; remoteBuild?: boolean };
+      const result = await commitGitProject(project.root, body.message || "", Boolean(body.push));
+      if (!result.ok) {
+        broadcast({ type: "log.append", channel: "build", lines: [`Git 提交停止：${result.error || "unknown"}`] });
+        sendJson(response, 409, result);
+      } else if (body.remoteBuild) {
+        if (!body.push) throw new Error("remote_build_requires_push");
+        if (!makerRuntime) throw new Error("maker_cli_not_found");
+        broadcast({ type: "log.append", channel: "build", lines: ["Git 已推送，开始调用 Maker MCP 远端构建并刷新预览…"] });
+        try {
+          const build = await runMakerBuild(makerRuntime, project.root);
+          let previewRefresh: { ok: boolean; error?: string } = { ok: true };
+          try {
+            await runMakerCommand(makerRuntime, project.root, "refresh", 45_000);
+          } catch (refreshError) {
+            previewRefresh = { ok: false, error: refreshError instanceof Error ? refreshError.message : String(refreshError) };
+          }
+          const panel = bumpPreviewReload(project.root, {}, readMakerProjectMeta(project.root));
+          broadcast({ type: "preview.panel", panel, reason: "git-remote-build" });
+          broadcast({
+            type: "log.append",
+            channel: "build",
+            lines: [
+              "Maker MCP 远端构建完成。",
+              previewRefresh.ok ? "Maker Runtime / Web 预览刷新完成。" : `构建成功，但 Runtime 刷新未完成：${previewRefresh.error}`,
+              JSON.stringify(build).slice(0, 4000)
+            ]
+          });
+          sendJson(response, 200, { ...result, remoteBuild: { ok: true, result: build, previewRefresh }, panel });
+        } catch (buildError) {
+          const message = buildError instanceof Error ? buildError.message : String(buildError);
+          broadcast({ type: "log.append", channel: "build", lines: [`Git 已推送，但 Maker MCP 远端构建失败：${message}`] });
+          sendJson(response, 502, { ...result, remoteBuild: { ok: false, error: message } });
+        }
+      } else {
+        broadcast({ type: "log.append", channel: "build", lines: [body.push ? "Git 提交并推送完成。" : "Git 本地提交完成。"] });
+        sendJson(response, 200, result);
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/maker/qrcode/image") {
+      if (!project) throw new Error("project_not_open");
+      const qrcodeUrl = readMakerProjectMeta(project.root).qrcodeUrl;
+      if (!qrcodeUrl || !/^https:\/\//i.test(qrcodeUrl)) throw new Error("qrcode_url_not_found");
+      const remote = await fetch(qrcodeUrl, { signal: AbortSignal.timeout(15_000) });
+      if (!remote.ok) throw new Error(`qrcode_image_${remote.status}`);
+      const contentType = remote.headers.get("content-type") || "image/png";
+      if (!contentType.startsWith("image/")) throw new Error("qrcode_response_not_image");
+      const bytes = Buffer.from(await remote.arrayBuffer());
+      response.writeHead(200, {
+        "content-type": contentType,
+        "content-length": bytes.length,
+        "cache-control": "no-store",
+        "access-control-allow-origin": "*"
+      });
+      response.end(bytes);
     } else if (request.method === "GET" && url.pathname === "/api/runtime/adapter") {
       const adapter = project ? projectHasRuntimeAdapter(project.root) : { installed: false, paths: [] as string[] };
       sendJson(response, 200, adapter);
@@ -789,15 +850,11 @@ const server = http.createServer(async (request, response) => {
       refreshSelectedMakerRuntime();
       broadcast({ type: "log.append", channel: "build", lines: [`Maker MCP ${target} 安装完成，TapMakerWork 已切换。其他 AI 客户端可能需要重新连接 MCP。`] });
       sendJson(response, 200, { ok: true, result, ...makerVersionsPayload() });
-    } else if (request.method === "POST" && url.pathname === "/api/node/version/install") {
-      nodeRemoteVersion = await checkNodeRuntimeUpdates();
-      const target = nodeRemoteVersion.stable;
-      if (!target) throw new Error("node_stable_version_unavailable");
-      broadcast({ type: "log.append", channel: "build", lines: [`正在安装 Node.js ${target}（稳定 LTS）到 TapMakerWork 托管环境…`] });
-      const result = await installNodeRuntimeVersion(target);
+    } else if (request.method === "POST" && url.pathname === "/api/node/version/sync") {
       refreshSelectedMakerRuntime();
-      broadcast({ type: "log.append", channel: "build", lines: [`Node.js ${target} 安装完成，后续 Maker MCP 进程将使用该版本。`] });
-      sendJson(response, 200, { ok: true, result, ...nodeVersionsPayload(), maker: makerVersionsPayload() });
+      const node = discoverNodeRuntime();
+      broadcast({ type: "log.append", channel: "build", lines: [`已重新同步系统 Node.js：${node.version}（${node.executable}）`] });
+      sendJson(response, 200, { ok: true, ...nodeVersionsPayload(), maker: makerVersionsPayload() });
     } else if (request.method === "GET" && url.pathname === "/api/maker/project-meta") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, {

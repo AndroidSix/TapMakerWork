@@ -18,6 +18,15 @@ export interface GitStatus {
   changes: Array<{ path: string; status: string }>;
 }
 
+export interface GitActionResult {
+  ok: boolean;
+  action: "pull" | "commit" | "commit-push";
+  output?: string | undefined;
+  error?: string | undefined;
+  conflictPlan?: string | undefined;
+  status: GitStatus;
+}
+
 export interface AssetEntry {
   name: string;
   path: string;
@@ -224,6 +233,62 @@ export async function readGitStatus(projectRoot: string): Promise<GitStatus> {
     dirty: changes.length > 0,
     changes: changes.slice(0, 100)
   };
+}
+
+function gitConflictPlan(status: GitStatus, error: string): string {
+  const conflicted = status.changes.filter((item) => /^(AA|AU|DD|DU|UA|UD|UU)$/.test(item.status));
+  const changed = conflicted.length ? conflicted : status.changes;
+  const files = changed.length ? changed.map((item) => `- [${item.status}] ${item.path}`).join("\n") : "- 未识别出具体文件，请先读取完整 Git 状态";
+  return [
+    "请帮我解决当前 Maker 项目的 Git 同步问题。不要丢弃任何本地修改，也不要使用 git reset --hard 或强制推送。",
+    `当前分支：${status.branch}`,
+    `远端差异：ahead ${status.ahead} / behind ${status.behind}`,
+    `Git 错误：${error}`,
+    "涉及文件：",
+    files,
+    "请先检查每个冲突文件的两侧意图，给出合并方案；经我确认后再修改文件、标记冲突并继续提交。"
+  ].join("\n");
+}
+
+export async function pullGitProject(projectRoot: string): Promise<GitActionResult> {
+  try {
+    const before = await readGitStatus(projectRoot);
+    if (before.dirty) {
+      const error = "工作区存在未提交修改；为避免覆盖本地内容，本次没有拉取。";
+      return { ok: false, action: "pull", error, conflictPlan: gitConflictPlan(before, error), status: before };
+    }
+    const output = await run("git", ["pull", "--ff-only"], projectRoot, 120_000);
+    return { ok: true, action: "pull", output: output.trim(), status: await readGitStatus(projectRoot) };
+  } catch (pullError) {
+    const error = pullError instanceof Error ? pullError.message : String(pullError);
+    const status = await readGitStatus(projectRoot);
+    return { ok: false, action: "pull", error, conflictPlan: gitConflictPlan(status, error), status };
+  }
+}
+
+export async function commitGitProject(projectRoot: string, message: string, push = false): Promise<GitActionResult> {
+  const cleanMessage = message.trim();
+  if (!cleanMessage) throw new Error("commit_message_required");
+  const action = push ? "commit-push" as const : "commit" as const;
+  try {
+    const before = await readGitStatus(projectRoot);
+    let output = "";
+    if (before.dirty) {
+      await run("git", ["add", "-A"], projectRoot, 30_000);
+      output += await run("git", ["commit", "-m", cleanMessage], projectRoot, 120_000);
+    }
+    if (push) {
+      const current = await readGitStatus(projectRoot);
+      output += current.upstream
+        ? await run("git", ["push"], projectRoot, 180_000)
+        : await run("git", ["push", "-u", "origin", current.branch], projectRoot, 180_000);
+    }
+    return { ok: true, action, output: output.trim() || "工作区没有需要提交的修改。", status: await readGitStatus(projectRoot) };
+  } catch (commitError) {
+    const error = commitError instanceof Error ? commitError.message : String(commitError);
+    const status = await readGitStatus(projectRoot);
+    return { ok: false, action, error, conflictPlan: gitConflictPlan(status, error), status };
+  }
 }
 
 export function readMakerPreviewLogs(projectRoot: string, supervisorLogPath?: string, maxLines = 200): { lines: string[]; source?: string } {

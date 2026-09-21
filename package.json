@@ -1,6 +1,10 @@
 {
   "name": "tapmakerwork",
   "version": "0.1.0",
+  "productName": "TapMakerWork",
+  "description": "TapTap Maker visual desktop workspace",
+  "author": "androidsup",
+  "main": "apps/desktop/dist/main.js",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -11,11 +15,24 @@
     "dev": "concurrently -k -n bridge,studio,desktop -c yellow,cyan,magenta \"npm run dev -w @tapmakerwork/bridge\" \"npm run dev -w @tapmakerwork/studio\" \"npm run dev -w @tapmakerwork/desktop\"",
     "dev:web": "concurrently -k -n bridge,studio -c yellow,cyan \"npm run dev -w @tapmakerwork/bridge\" \"npm run dev -w @tapmakerwork/studio\"",
     "build": "npm run build -w @tapmakerwork/protocol && npm run build -w @tapmakerwork/bridge && npm run build -w @tapmakerwork/studio && npm run build -w @tapmakerwork/desktop",
+    "build:desktop-runtime": "node scripts/build-desktop-runtime.mjs",
+    "build:release": "npm run build && npm run build:desktop-runtime",
+    "dist:dir": "npm run build:release && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
+    "dist:mac": "npm run build:release && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
+    "dist:win": "npm run build:release && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
+    "dist:all": "npm run build:release && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --win",
+    "package:ide": "node scripts/package-ide.mjs --all",
+    "package:ide:mac": "node scripts/package-ide.mjs --mac",
+    "package:ide:win": "node scripts/package-ide.mjs --win",
     "test": "npm run test -w @tapmakerwork/protocol && npm run test -w @tapmakerwork/bridge && npm run test -w @tapmakerwork/studio && npm run test -w @tapmakerwork/desktop",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
+    "@electron/notarize": "^3.1.1",
     "concurrently": "^9.2.1",
+    "cross-env": "^10.0.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.2",
     "vitest": "^5.0.1"
   },
@@ -30,5 +47,11 @@
   },
   "config": {
     "electron_mirror": "https://cdn.npmmirror.com/binaries/electron/"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "build": {
+    "extends": "./electron-builder.yml"
   }
 }

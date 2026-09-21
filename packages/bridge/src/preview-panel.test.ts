@@ -18,11 +18,11 @@ function tempProject(): string {
 }
 
 describe("preview-panel", () => {
-  it("resolvePreviewPanel prefers manual url over qrcode", () => {
+  it("resolvePreviewPanel keeps qrcode evidence out of the web preview channel", () => {
     const root = tempProject();
     const fromQr = resolvePreviewPanel(root, { qrcodeUrl: "https://example.test/qr", orientation: "landscape" });
-    assert.equal(fromQr.url, "https://example.test/qr");
-    assert.equal(fromQr.urlSource, "qrcode");
+    assert.equal(fromQr.url, "");
+    assert.equal(fromQr.urlSource, "none");
     assert.equal(fromQr.orientation, "landscape");
 
     const patched = applyPreviewPanelPatch(root, { url: "https://example.test/live" }, { qrcodeUrl: "https://example.test/qr" });
@@ -34,8 +34,8 @@ describe("preview-panel", () => {
     assert.equal(merged.urlSource, "manual");
 
     const cleared = applyPreviewPanelPatch(root, { url: "" }, { qrcodeUrl: "https://example.test/qr" });
-    assert.equal(cleared.url, "https://example.test/qr");
-    assert.equal(cleared.urlSource, "qrcode");
+    assert.equal(cleared.url, "");
+    assert.equal(cleared.urlSource, "none");
   });
 
   it("bumpPreviewReload increments token", () => {

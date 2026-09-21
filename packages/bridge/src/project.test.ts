@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readProjectText, resolveInsideProject, resolveProjectRoot, writeProjectText } from "./project.js";
+import { isTapMakerProject, readProjectText, resolveInsideProject, resolveProjectRoot, writeProjectText } from "./project.js";
 
 const temporary: string[] = [];
 afterEach(() => {
@@ -15,7 +15,17 @@ describe("project boundary", () => {
     temporary.push(root);
     fs.mkdirSync(path.join(root, ".maker-mcp"));
     fs.writeFileSync(path.join(root, ".maker-mcp", "config.json"), "{}");
+    fs.mkdirSync(path.join(root, ".project"));
+    fs.writeFileSync(path.join(root, ".project", "project.json"), JSON.stringify({ project_id: "m_test", entry: "main.lua" }));
     expect(resolveProjectRoot(root)).toMatchObject({ root: fs.realpathSync(root), makerBound: true });
+  });
+
+  it("rejects ordinary folders that are not TapMaker projects", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-project-"));
+    temporary.push(root);
+    fs.writeFileSync(path.join(root, "package.json"), "{}");
+    expect(isTapMakerProject(root)).toBe(false);
+    expect(() => resolveProjectRoot(root)).toThrow("not_tapmaker_project");
   });
 
   it("rejects paths outside the project", () => {

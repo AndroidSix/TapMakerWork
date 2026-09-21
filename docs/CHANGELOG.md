@@ -1,5 +1,19 @@
 # Change log
 
+## 2026-09-21 — desktop delivery, permissions and updates
+
+- Changed Maker subprocesses to follow the system Node.js discovered from PATH, login shells, Homebrew, Volta and standard Windows locations; legacy managed runtimes no longer override it.
+- Added a skippable first-run macOS permission guide for Screen Recording and Accessibility, with live status, direct System Settings links, recheck and restart actions.
+- Added a stable `com.androidsup.tapmakerwork` application identity, hardened-runtime entitlements and explicit signing guidance so new-machine permissions persist across signed releases.
+- Added production loading for the bundled Studio and a packaged Bridge child process, removing the development-server dependency from installed builds.
+- Added one-command macOS/Windows packaging, native two-platform CI artifacts, DMG/ZIP and NSIS targets, and deterministic explicit-signing behavior.
+- Added configurable update feeds, automatic periodic checks, manual checks, download progress, failure states and restart-to-install through electron-updater.
+- Added a default-off hardware-acceleration setting with an explicit restart state, so GPU rendering can be enabled only on compatible machines.
+- Added strict TapTap Maker project recognition through `.project/project.json`; ordinary folders are rejected without replacing the active project.
+- Added a first-install EULA and privacy-policy gate that documents local data use, Screen Recording, Accessibility, research intent and the decline-to-exit behavior.
+- Added automatic live Runtime error detection with a focused recovery dialog, complete logs and a copy-ready AI repair prompt.
+- Added a dedicated Maker backend shortcut beside the TapTap developer-console shortcut.
+
 ## 2026-09-20 — true Runtime view and explicit source navigation
 
 - Maker MCP now defaults to the newest version already installed on the device, with correct prerelease ordering.

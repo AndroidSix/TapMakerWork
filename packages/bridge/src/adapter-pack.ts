@@ -117,6 +117,7 @@ ${BOOTSTRAP_END}
 }
 
 function findRepoRoot(fromDir: string): string {
+  if (process.env.TAPMAKERWORK_APP_ROOT) return process.env.TAPMAKERWORK_APP_ROOT;
   let current = fromDir;
   for (let index = 0; index < 8; index += 1) {
     if (fs.existsSync(path.join(current, "package.json")) && fs.existsSync(path.join(current, "packages"))) return current;
@@ -135,7 +136,9 @@ export function exportRuntimeAdapterPackage(options: {
   const repoRoot = findRepoRoot(options.bridgePackageRoot);
   const templatePath = path.join(repoRoot, "runtime", "lua", "TapMakerWorkBridge.lua");
   if (!fs.existsSync(templatePath)) throw new Error("adapter_template_not_found");
-  const outputDir = path.join(repoRoot, "outputs", "runtime-adapter");
+  const outputDir = process.env.TAPMAKERWORK_OUTPUTS_DIR
+    ? path.join(process.env.TAPMAKERWORK_OUTPUTS_DIR, "runtime-adapter")
+    : path.join(repoRoot, "outputs", "runtime-adapter");
   fs.mkdirSync(outputDir, { recursive: true });
 
   const adapterSource = fs.readFileSync(templatePath, "utf8");

@@ -9,6 +9,7 @@ import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 import JsonWorker from "monaco-editor/language/json/json.worker?worker";
 import TsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 import { App } from "./App";
+import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopUpdateState } from "./desktop-api";
 import "./styles.css";
 
 self.MonacoEnvironment = {
@@ -28,6 +29,31 @@ declare global {
       chooseProject?: () => Promise<string | undefined>;
       onOpenProject?: (listener: (projectPath: string) => void) => () => void;
       onHistoryAction?: (listener: (action: "undo" | "redo") => void) => () => void;
+      permissions?: {
+        get: () => Promise<DesktopPermissionState>;
+        request: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
+        open: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
+        restart: () => Promise<void>;
+        onChanged: (listener: (state: DesktopPermissionState) => void) => () => void;
+      };
+      updates?: {
+        get: () => Promise<DesktopUpdateState>;
+        configure: (url: string) => Promise<DesktopUpdateState>;
+        check: () => Promise<DesktopUpdateState>;
+        download: () => Promise<DesktopUpdateState>;
+        restart: () => Promise<DesktopUpdateState>;
+        onState: (listener: (state: DesktopUpdateState) => void) => () => void;
+      };
+      hardwareAcceleration?: {
+        get: () => Promise<DesktopHardwareAccelerationState>;
+        set: (enabled: boolean) => Promise<DesktopHardwareAccelerationState>;
+        restart: () => Promise<void>;
+      };
+      legal?: {
+        get: () => Promise<DesktopLegalState>;
+        accept: () => Promise<DesktopLegalState>;
+        decline: () => Promise<{ accepted: false; closing: boolean }>;
+      };
       captureRuntime?: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) => Promise<{
         ok: boolean;
         dataUrl?: string;

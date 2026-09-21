@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 const MAKER_PACKAGE = "@taptap/maker";
 const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
@@ -29,7 +30,7 @@ export interface MakerRuntime {
 export interface NodeRuntime {
   executable: string;
   version: string;
-  source: "device" | "managed";
+  source: "device" | "managed" | "embedded";
 }
 
 export interface NodeRemoteVersion {
@@ -105,11 +106,59 @@ export function listInstalledNodeRuntimes(runtimeRoot = nodeRuntimeRoot()): Node
     .sort((left, right) => compareMakerVersions(right.version, left.version));
 }
 
-export function discoverNodeRuntime(runtimeRoot = nodeRuntimeRoot()): NodeRuntime {
-  return listInstalledNodeRuntimes(runtimeRoot)[0] ?? {
+function commandOutput(command: string, args: string[]): string {
+  try {
+    return execFileSync(command, args, {
+      encoding: "utf8",
+      timeout: 4_000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function systemNodeCandidates(): string[] {
+  const candidates = [process.env.TAPMAKERWORK_NODE, process.env.NODE];
+  const executableName = process.platform === "win32" ? "node.exe" : "node";
+  for (const directory of (process.env.PATH || "").split(path.delimiter).filter(Boolean)) {
+    candidates.push(path.join(directory, executableName));
+  }
+  if (process.platform === "win32") {
+    candidates.push(...commandOutput("where.exe", ["node"]).split(/\r?\n/));
+    if (process.env.ProgramFiles) candidates.push(path.join(process.env.ProgramFiles, "nodejs", "node.exe"));
+    if (process.env.LOCALAPPDATA) {
+      candidates.push(path.join(process.env.LOCALAPPDATA, "Programs", "nodejs", "node.exe"));
+      candidates.push(path.join(process.env.LOCALAPPDATA, "Volta", "bin", "node.exe"));
+    }
+  } else {
+    const shell = process.env.SHELL && fs.existsSync(process.env.SHELL) ? process.env.SHELL : "/bin/zsh";
+    candidates.push(...commandOutput(shell, ["-lic", "command -v node"]).split(/\r?\n/));
+    candidates.push("/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node");
+  }
+  return [...new Set(candidates.map((candidate) => candidate?.trim()).filter((candidate): candidate is string => Boolean(candidate)))];
+}
+
+export function resolveSystemNodeRuntime(candidates = systemNodeCandidates()): NodeRuntime | undefined {
+  for (const candidate of candidates) {
+    try {
+      if (!path.isAbsolute(candidate) || !fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) continue;
+      const version = normalizedNodeVersion(commandOutput(candidate, ["--version"]));
+      if (!VERSION_PATTERN.test(version)) continue;
+      return { executable: fs.realpathSync(candidate), version, source: "device" };
+    } catch {
+      // Keep probing: GUI apps often inherit an incomplete PATH on a new machine.
+    }
+  }
+  return undefined;
+}
+
+export function discoverNodeRuntime(): NodeRuntime {
+  return resolveSystemNodeRuntime() ?? {
     executable: process.execPath,
     version: normalizedNodeVersion(process.version),
-    source: "device"
+    source: "embedded"
   };
 }
 

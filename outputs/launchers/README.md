@@ -6,6 +6,8 @@
 
 双击 `TapMakerWork-macOS.command`。
 
+修改 IDE 源码后，双击 `Package-TapMakerWork-All.command` 可一次生成 macOS 与 Windows 安装包。
+
 首次运行时输入 Maker 项目的绝对路径，或把项目文件夹拖进终端窗口再按回车。启动器会记住该路径。也可以将项目文件夹直接拖到启动器图标上。
 
 如果 macOS 阻止打开，可在 Finder 中右键启动器，选择“打开”。
@@ -13,6 +15,8 @@
 ## Windows
 
 双击 `TapMakerWork-Windows.cmd`。
+
+修改 IDE 源码后，双击 `Package-TapMakerWork-All.cmd` 可生成 Windows 安装包。macOS 安装包受 Apple 工具链限制，请在 Mac 上运行双端脚本，或在代码托管页面手动触发 `desktop-release` 工作流。
 
 首次运行时输入 Maker 项目的绝对路径。启动器会记住该路径。也可以将项目文件夹直接拖到 `.cmd` 文件上。
 

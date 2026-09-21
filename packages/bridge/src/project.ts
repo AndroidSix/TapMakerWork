@@ -7,10 +7,25 @@ export interface ProjectBinding {
   makerBound: boolean;
 }
 
+export function isTapMakerProject(candidate: string): boolean {
+  try {
+    const projectFile = path.join(candidate, ".project", "project.json");
+    if (!fs.statSync(projectFile).isFile()) return false;
+    const metadata = JSON.parse(fs.readFileSync(projectFile, "utf8")) as Record<string, unknown>;
+    const schema = typeof metadata.$schema === "string" ? metadata.$schema : "";
+    return typeof metadata.project_id === "string"
+      || typeof metadata.entry === "string"
+      || /project\.schema\.json$/i.test(schema);
+  } catch {
+    return false;
+  }
+}
+
 export function resolveProjectRoot(candidate: string): ProjectBinding {
   if (!path.isAbsolute(candidate)) throw new Error("project_path_must_be_absolute");
   const root = fs.realpathSync(candidate);
   if (!fs.statSync(root).isDirectory()) throw new Error("project_path_must_be_directory");
+  if (!isTapMakerProject(root)) throw new Error("not_tapmaker_project");
   return {
     root,
     name: path.basename(root),

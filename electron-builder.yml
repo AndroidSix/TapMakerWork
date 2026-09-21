@@ -1,0 +1,55 @@
+appId: com.androidsup.tapmakerwork
+productName: TapMakerWork
+copyright: Copyright © 2026 androidsup
+afterSign: scripts/notarize.cjs
+directories:
+  output: outputs/installers
+files:
+  - apps/desktop/dist/**/*
+  - apps/studio/dist/**/*
+  - packages/bridge/dist-app/**/*
+  - runtime/**/*
+  - package.json
+asar: true
+compression: maximum
+electronLanguages:
+  - en
+  - zh-CN
+  - zh-TW
+asarUnpack:
+  - packages/bridge/dist-app/**/*
+extraResources:
+  - from: packages/bridge/dist-app
+    to: bridge
+    filter:
+      - index.mjs
+# Update feed intentionally empty. Fill a HTTPS generic feed later
+# (release assets + latest*.yml), not a git tree URL.
+publish: null
+mac:
+  icon: build/icon.icns
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: ${productName}-${version}-windows-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: TapMakerWork
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false

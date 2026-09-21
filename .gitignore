@@ -6,3 +6,5 @@ dist/
 .tapmakerwork/
 coverage/
 work/
+outputs/installers/
+packages/bridge/dist-app/

@@ -54,7 +54,17 @@ import {
   ZoomIn,
   ZoomOut,
   GripVertical,
-  PanelTop
+  PanelTop,
+  MousePointer2,
+  Move,
+  RotateCw,
+  Scaling,
+  BoxSelect,
+  Magnet,
+  Cpu,
+  ScrollText,
+  AlertTriangle,
+  XCircle
 } from "lucide-react";
 import {
   DEFAULT_DEVICE_PROFILES,
@@ -79,8 +89,12 @@ import { PreviewDock } from "./PreviewDock";
 import { ProjectCockpit } from "./ProjectCockpit";
 import { RuntimeMirror } from "./RuntimeMirror";
 import { rgbaCss, rgbaFromHex, rgbaFromValue, rgbaToHex, type RgbaColor } from "./color-utils";
+import { angleBetween, resizeRect, scaleRatio, snapValue, toolForShortcut, type TransformTool } from "./runtime-transform";
+import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopUpdateState } from "./desktop-api";
+import { extractRuntimeErrorReport, type RuntimeErrorReport } from "./runtime-error";
 
 const API = "http://127.0.0.1:43121";
+declare const __APP_VERSION__: string;
 
 interface Health {
   ok: boolean;
@@ -126,8 +140,9 @@ interface MakerVersionState {
 }
 
 interface NodeVersionState {
-  device: { version: string; executable: string };
-  active: { version: string; executable: string; source: "device" | "managed" };
+  device: { version: string; executable: string } | null;
+  embedded: { version: string; executable: string };
+  active: { version: string; executable: string; source: "device" | "managed" | "embedded" };
   installed: Array<{ version: string; executable: string; source: "managed" }>;
   stable: { installed?: string; latest?: string; updateAvailable: boolean };
   checkedAt?: string;
@@ -173,6 +188,7 @@ interface AssetEntry {
 
 interface GitStatusState {
   branch: string;
+  upstream?: string;
   ahead?: number;
   behind?: number;
   dirty?: boolean;
@@ -288,6 +304,11 @@ function runtimeLayoutBox(props: Record<string, UiValue>): { w?: number | undefi
 function runtimeStyle(node: UiNode): CSSProperties {
   const props = node.props;
   const box = runtimeLayoutBox(props);
+  const transform = props.transform && typeof props.transform === "object" && !Array.isArray(props.transform)
+    ? props.transform as Record<string, UiValue>
+    : {};
+  const rotation = typeof props.rotate === "number" ? props.rotate : 0;
+  const scale = typeof transform.scale === "number" ? transform.scale : 1;
   const backgroundImage = concreteValue(props.backgroundImage);
   const width = box.w != null && box.w > 0 ? `${box.w}px` : dimension(props.width);
   const height = box.h != null && box.h > 0 ? `${box.h}px` : dimension(props.height);
@@ -342,7 +363,9 @@ function runtimeStyle(node: UiNode): CSSProperties {
     opacity: typeof props.opacity === "number" ? props.opacity : undefined,
     overflow: props.overflow === "hidden" ? "hidden" : "visible",
     pointerEvents: "auto",
-    cursor: "pointer"
+    cursor: "pointer",
+    transform: rotation || scale !== 1 ? `rotate(${rotation}deg) scale(${scale})` : undefined,
+    transformOrigin: "center"
   };
 }
 
@@ -470,14 +493,20 @@ function imagePathFromProps(props: Record<string, UiValue>): string | undefined 
   return undefined;
 }
 
-function RuntimeNode({ node, selectedId, selectedIds, onSelect, onDragStart, onPlayClick, mode }: {
+const CANVAS_RESIZE_HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
+
+function RuntimeNode({ node, rootId, selectedId, selectedIds, onSelect, onDragStart, onPlayClick, onContextMenu, mode, canvasTool = "move", editable = false }: {
   node: UiNode;
+  rootId: string;
   selectedId: string | undefined;
   selectedIds: string[];
   onSelect: (id: string, additive?: boolean) => void;
-  onDragStart?: ((id: string, event: React.PointerEvent) => void) | undefined;
+  onDragStart?: ((id: string, event: React.PointerEvent, operation?: string) => void) | undefined;
   onPlayClick?: ((node: UiNode) => void) | undefined;
+  onContextMenu?: ((id: string, x: number, y: number) => void) | undefined;
   mode: WorkspaceMode;
+  canvasTool?: TransformTool;
+  editable?: boolean;
 }) {
   if (!node || typeof node !== "object") return null;
   if (node.props?.visible === false) return null;
@@ -489,7 +518,9 @@ function RuntimeNode({ node, selectedId, selectedIds, onSelect, onDragStart, onP
     selectedIds.includes(node.id) ? "selected" : "",
     isSlot ? "runtime-slot" : "",
     isEmptyFactory ? "runtime-factory" : "",
-    mode === "play" ? "local-runtime" : ""
+    mode === "play" ? "local-runtime" : "",
+    editable ? "canvas-editable-node" : "",
+    node.id === rootId ? "canvas-root-node" : ""
   ].join(" ");
   const imageSource = node.type === "Image" ? imagePathFromProps(node.props) : undefined;
   return (
@@ -500,8 +531,15 @@ function RuntimeNode({ node, selectedId, selectedIds, onSelect, onDragStart, onP
       onPointerDown={(event) => {
         event.stopPropagation();
         onSelect(node.id, event.shiftKey);
-        if (mode === "live-edit" && onDragStart && !event.shiftKey) onDragStart(node.id, event);
+        if (editable && node.id !== rootId && onDragStart && !event.shiftKey && canvasTool === "move") onDragStart(node.id, event, "move");
         if (mode === "play" && node.type === "Button" && onPlayClick) onPlayClick(node);
+      }}
+      onContextMenu={(event) => {
+        if (!editable || !onContextMenu) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect(node.id);
+        onContextMenu(node.id, event.clientX, event.clientY);
       }}
     >
       {isSlot && <span className="slot-label">{displayValue(node.props?.expression, "Slot").slice(0, 24)}</span>}
@@ -517,9 +555,27 @@ function RuntimeNode({ node, selectedId, selectedIds, onSelect, onDragStart, onP
         <span className="panel-name">{node.name}</span>
       )}
       {uiChildren(node).map((child) => (
-        <RuntimeNode key={child.id} node={child} selectedId={selectedId} selectedIds={selectedIds} onSelect={onSelect} onDragStart={onDragStart} onPlayClick={onPlayClick} mode={mode} />
+        <RuntimeNode key={child.id} node={child} rootId={rootId} selectedId={selectedId} selectedIds={selectedIds} onSelect={onSelect} onDragStart={onDragStart} onPlayClick={onPlayClick} onContextMenu={onContextMenu} mode={mode} canvasTool={canvasTool} editable={editable} />
       ))}
       {selectedId === node.id && mode !== "play" && <span className="node-badge">{labelForType(node.type)}{node.source?.line ? ` :${node.source.line}` : ""}</span>}
+      {editable && selectedId === node.id && node.id !== rootId && canvasTool === "move" && (
+        <button type="button" className="runtime-transform-handle runtime-move-handle" aria-label={`移动 ${node.name || labelForType(node.type)}`} onPointerDown={(event) => onDragStart?.(node.id, event, "move")}><Move size={12} /></button>
+      )}
+      {editable && selectedId === node.id && node.id !== rootId && canvasTool === "rotate" && (
+        <button type="button" className="runtime-transform-handle runtime-rotate-handle" aria-label={`旋转 ${node.name || labelForType(node.type)}`} onPointerDown={(event) => onDragStart?.(node.id, event, "rotate")}><RotateCw size={12} /></button>
+      )}
+      {editable && selectedId === node.id && node.id !== rootId && canvasTool === "scale" && (
+        <button type="button" className="runtime-transform-handle runtime-scale-handle" aria-label={`缩放 ${node.name || labelForType(node.type)}`} onPointerDown={(event) => onDragStart?.(node.id, event, "scale")}><Scaling size={12} /></button>
+      )}
+      {editable && selectedId === node.id && node.id !== rootId && canvasTool === "rect" && CANVAS_RESIZE_HANDLES.map((handle) => (
+        <button
+          type="button"
+          key={handle}
+          className={`runtime-resize-handle handle-${handle}`}
+          aria-label={`从 ${handle} 方向调整 ${node.name || labelForType(node.type)} 大小`}
+          onPointerDown={(event) => onDragStart?.(node.id, event, handle)}
+        />
+      ))}
     </div>
   );
 }
@@ -818,6 +874,100 @@ function keepValidSelection(current: UiSnapshot | undefined, incoming: UiSnapsho
   return withoutSelection;
 }
 
+function PermissionGuide({ state, busy, onAction, onClose }: {
+  state: DesktopPermissionState;
+  busy: string;
+  onAction: (permission: "screen" | "accessibility" | "restart" | "refresh") => void;
+  onClose: () => void;
+}) {
+  const permissionRows = [
+    { key: "screen" as const, title: "屏幕与系统音频录制", description: "用于把 Maker Runtime 的真实窗口并排显示在工作台中。", value: state.screen },
+    { key: "accessibility" as const, title: "辅助功能", description: "用于把你在 Runtime 镜像上的点击准确转发到真实游戏窗口。", value: state.accessibility }
+  ];
+  return (
+    <div className="permission-backdrop" role="presentation">
+      <section className="permission-guide" role="dialog" aria-modal="true" aria-labelledby="permission-guide-title">
+        <div className="permission-guide-head">
+          <div><span className="permission-step">新机器设置 · 1/1</span><h2 id="permission-guide-title">授权 TapMakerWork 完成实时编辑</h2><p>这些权限只用于本机 Runtime 预览和交互，不会自动读取其他窗口内容。</p></div>
+          <ShieldAlert size={28} aria-hidden="true" />
+        </div>
+        {!state.stableIdentity && <div className="permission-warning"><strong>当前为开发模式</strong><span>可以调试权限，但 macOS 会把授权记在 Electron 上。正式签名安装包会使用固定的 TapMakerWork 身份，授权更稳定。</span></div>}
+        <div className="permission-list">
+          {permissionRows.map((item) => {
+            const granted = item.value === "granted";
+            return <article key={item.key} className={granted ? "granted" : "needed"}>
+              <span className="permission-status-icon">{granted ? <CheckCircle2 size={18} /> : <ShieldAlert size={18} />}</span>
+              <div><strong>{item.title}</strong><p>{item.description}</p><small>{granted ? "已授权" : item.value === "not-determined" ? "尚未询问" : "需要在系统设置中开启"}</small></div>
+              <button disabled={granted || Boolean(busy)} onClick={() => onAction(item.key)}>{busy === item.key ? "正在打开…" : granted ? "已完成" : "去授权"}</button>
+            </article>;
+          })}
+        </div>
+        <div className="permission-guide-actions">
+          <button className="secondary" onClick={onClose}>稍后设置</button>
+          <button className="secondary" disabled={Boolean(busy)} onClick={() => onAction("refresh")}><RefreshCw size={14} />重新检测</button>
+          <button className="primary" disabled={!state.ready || Boolean(busy)} onClick={() => onAction("restart")}>重启应用并继续</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function LegalConsentDialog({ state, busy, onAccept, onDecline, onClose }: {
+  state: DesktopLegalState | undefined;
+  busy: "accept" | "decline" | "";
+  onAccept: () => void;
+  onDecline: () => void;
+  onClose: () => void;
+}) {
+  const accepted = Boolean(state?.accepted);
+  return <div className="legal-backdrop" role="presentation">
+    <section className="legal-dialog" role="dialog" aria-modal="true" aria-labelledby="legal-dialog-title">
+      <header>
+        <div><span>首次启动 · EULA 与隐私政策</span><h2 id="legal-dialog-title">使用 TapMakerWork 前请阅读并确认</h2></div>
+        {accepted && <button className="icon-command" aria-label="关闭协议" onClick={onClose}><XCircle size={18} /></button>}
+      </header>
+      <div className="legal-document" tabIndex={0}>
+        <section><h3>最终用户许可协议</h3><p>TapMakerWork 是面向 TapTap Maker 项目可视化编辑与研究验证的本地开发工具。激活、继续使用或点击“同意并激活”即表示你同意本协议与下方隐私政策。</p><p>本项目出于研究与开发辅助目的，不以盗取用户数据、篡改或破坏 TapTap Maker、项目文件及其完整性为目的。工具只会在你主动打开的项目范围内执行编辑、预览、Git 与构建操作。</p></section>
+        <section><h3>屏幕录制与辅助功能权限</h3><p><strong>屏幕录制</strong>仅用于捕获本机 TapTap Maker Runtime 游戏窗口，将真实运行画面显示在 IDE 中，并用于用户主动触发的本地截图证据。TapMakerWork 不会自行录制整块屏幕，也不会自行上传捕获的画面。</p><p><strong>辅助功能</strong>仅用于把你在 Runtime 镜像上的点击坐标转发到真实游戏窗口。没有你的交互，不会自动控制其他应用。</p></section>
+        <section><h3>本地数据与网络</h3><p>应用会在本机保存设置、最近项目路径、协议接受状态、预览配置与必要日志。项目修改只发生在你选择的目录中。只有当你主动使用 Maker 构建、二维码、更新检查、Git 推送或外部链接时，才会连接对应服务；这些服务适用其各自条款。</p></section>
+        <section><h3>风险与责任</h3><p>请在编辑和 Git 操作前保留备份。研究工具按现状提供，不承诺适用于所有项目或硬件环境；应用不会在未经确认的情况下执行强制推送、硬重置或删除整个项目。</p></section>
+      </div>
+      {!state && <p className="legal-loading" role="status">正在读取协议状态…</p>}
+      <footer>
+        {accepted ? <button className="primary" onClick={onClose}>我已了解</button> : <>
+          <button className="secondary danger" disabled={Boolean(busy) || !state} onClick={onDecline}>{busy === "decline" ? "正在关闭…" : "不同意并退出"}</button>
+          <button className="primary" autoFocus disabled={Boolean(busy) || !state} onClick={onAccept}>{busy === "accept" ? "正在激活…" : "同意并激活"}</button>
+        </>}
+      </footer>
+    </section>
+  </div>;
+}
+
+function RuntimeErrorDialog({ report, onCopy, onOpenLogs, onDismiss }: {
+  report: RuntimeErrorReport;
+  onCopy: () => void;
+  onOpenLogs: () => void;
+  onDismiss: () => void;
+}) {
+  return <div className="runtime-error-backdrop" role="presentation">
+    <section className="runtime-error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="runtime-error-title" aria-describedby="runtime-error-description">
+      <header><span><AlertTriangle size={20} /></span><div><h2 id="runtime-error-title">TapTap Maker 运行时错误</h2><p id="runtime-error-description">请修复游戏中的以下错误。请定位根因并修改代码，完成后验证游戏不再报错。</p></div></header>
+      <pre>{report.errorText}</pre>
+      <footer><button onClick={onOpenLogs}>查看 Runtime 日志</button><button onClick={onDismiss}>暂时忽略</button><button className="primary" autoFocus onClick={onCopy}><Copy size={14} />复制错误报告</button></footer>
+    </section>
+  </div>;
+}
+
+function ProjectRejectDialog({ path, message, onClose }: { path: string; message: string; onClose: () => void }) {
+  return <div className="project-reject-backdrop" role="presentation">
+    <section className="project-reject-dialog" role="alertdialog" aria-modal="true" aria-labelledby="project-reject-title">
+      <span className="project-reject-icon"><FolderOpen size={24} /></span>
+      <div><h2 id="project-reject-title">无法打开此文件夹</h2><p>{message}</p><code title={path}>{path}</code></div>
+      <button className="primary" autoFocus onClick={onClose}>重新选择</button>
+    </section>
+  </div>;
+}
+
 export function App() {
   const [connected, setConnected] = useState(false);
   const [health, setHealth] = useState<Health>();
@@ -845,7 +995,7 @@ export function App() {
   const [fps, setFps] = useState(60);
   const [activeTerminal, setActiveTerminal] = useState<LogChannel>("runtime");
   const [logs, setLogs] = useState(initialLogs);
-  const [leftTab, setLeftTab] = useState<"files" | "screens" | "hierarchy" | "assets">("screens");
+  const [leftTab, setLeftTab] = useState<"files" | "screens" | "hierarchy" | "assets" | "git">("screens");
   const [centerTab, setCenterTab] = useState<CenterTab>("workflow");
   const [documentTabs, setDocumentTabs] = useState<DocumentTab[]>(loadDocumentTabs);
   const [draggedDocumentTab, setDraggedDocumentTab] = useState<DocumentTab | null>(null);
@@ -867,6 +1017,9 @@ export function App() {
   const [searchBusy, setSearchBusy] = useState(false);
   const [assets, setAssets] = useState<AssetEntry[]>([]);
   const [gitStatus, setGitStatus] = useState<GitStatusState>();
+  const [gitBusy, setGitBusy] = useState<"pull" | "commit" | "push-build" | "">("");
+  const [gitCommitMessage, setGitCommitMessage] = useState("chore: update Maker project");
+  const [gitConflictPlan, setGitConflictPlan] = useState("");
   const [systemInfo, setSystemInfo] = useState<Record<string, unknown>>();
   const [adapterExport, setAdapterExport] = useState<string>("");
   const [revealLine, setRevealLine] = useState<number | null>(null);
@@ -877,10 +1030,24 @@ export function App() {
   const [makerVersions, setMakerVersions] = useState<MakerVersionState>();
   const [nodeVersions, setNodeVersions] = useState<NodeVersionState>();
   const [makerVersionBusy, setMakerVersionBusy] = useState<"" | "check" | "switch" | "stable" | "beta" | "node">("");
+  const [desktopPermissions, setDesktopPermissions] = useState<DesktopPermissionState>();
+  const [permissionGuideOpen, setPermissionGuideOpen] = useState(false);
+  const [permissionBusy, setPermissionBusy] = useState("");
+  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState>();
+  const [updateUrlDraft, setUpdateUrlDraft] = useState("");
+  const [desktopUpdateBusy, setDesktopUpdateBusy] = useState("");
+  const [desktopHardware, setDesktopHardware] = useState<DesktopHardwareAccelerationState>();
+  const [hardwareBusy, setHardwareBusy] = useState(false);
+  const [desktopLegal, setDesktopLegal] = useState<DesktopLegalState>();
+  const [legalDialogOpen, setLegalDialogOpen] = useState(Boolean(window.tapMakerWork?.legal));
+  const [legalBusy, setLegalBusy] = useState<"accept" | "decline" | "">("");
   const [workflow, setWorkflow] = useState<ProjectWorkflowOverview>();
   const [workflowLoading, setWorkflowLoading] = useState(false);
   const [workflowBusyAction, setWorkflowBusyAction] = useState<ProjectWorkflowAction>();
   const [qrOpen, setQrOpen] = useState(false);
+  const [qrImageFailed, setQrImageFailed] = useState(false);
+  const [projectReject, setProjectReject] = useState<{ path: string; message: string }>();
+  const [runtimeErrorReport, setRuntimeErrorReport] = useState<RuntimeErrorReport>();
   const [qrMenuOpen, setQrMenuOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [newNodeType, setNewNodeType] = useState<UiNodeType>("Panel");
@@ -898,11 +1065,15 @@ export function App() {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const modeRef = useRef<WorkspaceMode>(mode);
+  const centerTabRef = useRef<CenterTab>(centerTab);
   const selectedNodeIdRef = useRef<string | undefined>(undefined);
   const runtimeEditSyncTimerRef = useRef<number | null>(null);
+  const dismissedRuntimeErrorsRef = useRef(new Set<string>());
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [stageScale, setStageScale] = useState(1);
   const [canvasAutoFit, setCanvasAutoFit] = useState(true);
+  const [canvasTool, setCanvasTool] = useState<TransformTool>("move");
+  const [canvasSnapEnabled, setCanvasSnapEnabled] = useState(false);
   const canvasViewportRef = useRef<HTMLDivElement | null>(null);
   const documentTabsRef = useRef<HTMLElement | null>(null);
   const floatingWorkspaceDragRef = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null);
@@ -1032,8 +1203,173 @@ export function App() {
   }, [mode]);
 
   useEffect(() => {
+    const permissionsApi = window.tapMakerWork?.permissions;
+    const updatesApi = window.tapMakerWork?.updates;
+    const hardwareApi = window.tapMakerWork?.hardwareAcceleration;
+    const legalApi = window.tapMakerWork?.legal;
+    if (!permissionsApi && !updatesApi && !hardwareApi && !legalApi) return;
+    let active = true;
+    if (permissionsApi) {
+      void permissionsApi.get().then((state) => {
+        if (!active) return;
+        setDesktopPermissions(state);
+        const dismissed = localStorage.getItem("tapmakerwork.permissions.dismissed") === "1";
+        if (state.platform === "darwin" && !state.ready && !dismissed) setPermissionGuideOpen(true);
+      });
+    }
+    if (updatesApi) {
+      void updatesApi.get().then((state) => {
+        if (!active) return;
+        setDesktopUpdate(state);
+        if (state.updateUrl) setUpdateUrlDraft(state.updateUrl);
+      });
+    }
+    if (hardwareApi) {
+      void hardwareApi.get().then((state) => {
+        if (active) setDesktopHardware(state);
+      }).catch(() => undefined);
+    }
+    if (legalApi) {
+      void legalApi.get().then((state) => {
+        if (!active) return;
+        setDesktopLegal(state);
+        setLegalDialogOpen(!state.accepted);
+      }).catch((error) => {
+        if (active) toast(`无法读取用户协议状态：${error instanceof Error ? error.message : String(error)}`, "error");
+      });
+    }
+    const removePermissionListener = permissionsApi?.onChanged((state) => {
+      setDesktopPermissions(state);
+      if (state.ready) localStorage.removeItem("tapmakerwork.permissions.dismissed");
+    });
+    const removeUpdateListener = updatesApi?.onState((state) => {
+      setDesktopUpdate(state);
+      if (state.updateUrl) setUpdateUrlDraft(state.updateUrl);
+    });
+    return () => {
+      active = false;
+      removePermissionListener?.();
+      removeUpdateListener?.();
+    };
+  }, [toast]);
+
+  const runPermissionAction = useCallback(async (action: "screen" | "accessibility" | "restart" | "refresh") => {
+    const api = window.tapMakerWork?.permissions;
+    if (!api) return;
+    setPermissionBusy(action);
+    try {
+      if (action === "restart") {
+        await api.restart();
+        return;
+      }
+      const state = action === "refresh" ? await api.get() : await api.request(action);
+      setDesktopPermissions(state);
+      if (state.ready) toast("系统权限已就绪，可以使用真实 Runtime 预览与交互", "success");
+    } catch (error) {
+      toast(`权限操作失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setPermissionBusy("");
+    }
+  }, [toast]);
+
+  const closePermissionGuide = useCallback(() => {
+    localStorage.setItem("tapmakerwork.permissions.dismissed", "1");
+    setPermissionGuideOpen(false);
+  }, []);
+
+  const configureDesktopUpdates = useCallback(async () => {
+    const api = window.tapMakerWork?.updates;
+    if (!api) return;
+    setDesktopUpdateBusy("configure");
+    try {
+      const state = await api.configure(updateUrlDraft);
+      setDesktopUpdate(state);
+      toast("更新地址已保存", "success");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setDesktopUpdateBusy("");
+    }
+  }, [toast, updateUrlDraft]);
+
+  const runDesktopUpdateAction = useCallback(async (action: "check" | "download" | "restart") => {
+    const api = window.tapMakerWork?.updates;
+    if (!api) return;
+    setDesktopUpdateBusy(action);
+    try {
+      const state = await api[action]();
+      setDesktopUpdate(state);
+    } catch (error) {
+      toast(`应用更新失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setDesktopUpdateBusy("");
+    }
+  }, [toast]);
+
+  const setHardwareAcceleration = useCallback(async (enabled: boolean) => {
+    const api = window.tapMakerWork?.hardwareAcceleration;
+    if (!api) return;
+    setHardwareBusy(true);
+    try {
+      const state = await api.set(enabled);
+      setDesktopHardware(state);
+      toast(`硬件加速已${enabled ? "开启" : "关闭"}，重启应用后生效`, "success");
+    } catch (error) {
+      toast(`硬件加速设置失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setHardwareBusy(false);
+    }
+  }, [toast]);
+
+  const acceptLegalTerms = useCallback(async () => {
+    const api = window.tapMakerWork?.legal;
+    if (!api) { setLegalDialogOpen(false); return; }
+    setLegalBusy("accept");
+    try {
+      const state = await api.accept();
+      setDesktopLegal(state);
+      setLegalDialogOpen(false);
+      toast("已接受用户协议与隐私政策", "success");
+    } catch (error) {
+      toast(`协议状态保存失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setLegalBusy("");
+    }
+  }, [toast]);
+
+  const declineLegalTerms = useCallback(async () => {
+    setLegalBusy("decline");
+    try {
+      await window.tapMakerWork?.legal?.decline();
+    } catch (error) {
+      setLegalBusy("");
+      toast(`无法关闭应用：${error instanceof Error ? error.message : String(error)}`, "error");
+    }
+  }, [toast]);
+
+  useEffect(() => {
     if (snapshot?.selectedId) selectedNodeIdRef.current = snapshot.selectedId;
   }, [snapshot?.selectedId]);
+
+  useEffect(() => {
+    centerTabRef.current = centerTab;
+  }, [centerTab]);
+
+  useEffect(() => setQrImageFailed(false), [makerMeta.qrcodeUrl, makerMeta.qrcodeGeneratedAt]);
+
+  useEffect(() => {
+    if (centerTab !== "visual") return;
+    const selectTool = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable='true']") || target?.closest(".monaco-editor")) return;
+      const tool = toolForShortcut(event.key);
+      if (!tool) return;
+      event.preventDefault();
+      setCanvasTool(tool);
+    };
+    window.addEventListener("keydown", selectTool);
+    return () => window.removeEventListener("keydown", selectTool);
+  }, [centerTab]);
 
   useEffect(() => {
     setSelectedNodeIds((current) => {
@@ -1316,6 +1652,11 @@ export function App() {
     });
   }, []);
 
+  const selectCanvasNode = useCallback((nodeId: string, additive = false) => {
+    selectNode(nodeId, additive);
+    setLeftTab("hierarchy");
+  }, [selectNode]);
+
   const openNodeContextMenu = useCallback((nodeId: string, x: number, y: number) => {
     const width = 232;
     const height = 390;
@@ -1364,7 +1705,7 @@ export function App() {
     if (response.ok) {
       const next = { ...(result as UiSnapshot), selectedId: nodeId };
       setSnapshot(next);
-      if (mode === "live-edit") {
+      if (mode === "live-edit" || centerTab === "visual") {
         setSidecarInfo((current) => ({ ...current, dirty: true }));
       }
       scheduleRuntimeEditSync(120);
@@ -1409,7 +1750,12 @@ export function App() {
         body: JSON.stringify({ path: projectPath })
       });
       const result = await response.json() as ProjectState & { error?: string };
-      if (!response.ok || !result.project) throw new Error(result.error || "无法打开项目");
+      if (!response.ok || !result.project) {
+        if (result.error === "not_tapmaker_project") {
+          setProjectReject({ path: projectPath, message: "所选文件夹不是 TapTap Maker 项目。项目根目录必须包含有效的 .project/project.json。" });
+        }
+        throw new Error(result.error === "not_tapmaker_project" ? "不是 TapTap Maker 项目" : result.error || "无法打开项目");
+      }
       setProject(result.project);
       if (result.snapshot) setSnapshot(result.snapshot);
       await loadProjectContents();
@@ -1442,6 +1788,15 @@ export function App() {
     setProjectError("请使用桌面版的“文件 → 打开项目…”选择项目目录。");
   }, [openProjectPath]);
 
+  const removeRecentProject = useCallback((projectPath: string) => {
+    setRecentProjects((current) => {
+      const next = current.filter((item) => item.root !== projectPath);
+      localStorage.setItem("tapmakerwork.recentProjects", JSON.stringify(next));
+      return next;
+    });
+    toast("已从最近项目移除", "success");
+  }, [toast]);
+
   const refreshRuntimeLogs = useCallback(async () => {
     try {
       const [logsResponse, statusResponse] = await Promise.all([
@@ -1449,9 +1804,14 @@ export function App() {
         fetch(`${API}/api/maker/preview/status`)
       ]);
       const result = await logsResponse.json() as { lines?: string[]; error?: string };
-      if (statusResponse.ok) setMakerPreviewStatus(await statusResponse.json() as MakerPreviewStatus);
+      const status = statusResponse.ok ? await statusResponse.json() as MakerPreviewStatus : undefined;
+      if (status) setMakerPreviewStatus(status);
       const lines = result.lines?.length ? result.lines : result.error ? [`日志：${result.error}`] : ["暂无 Runtime 日志。"];
       setLogs((current) => ({ ...current, runtime: lines.slice(-200) }));
+      const report = extractRuntimeErrorReport(lines);
+      if (status?.process_alive && report && !dismissedRuntimeErrorsRef.current.has(report.fingerprint)) {
+        setRuntimeErrorReport(report);
+      }
     } catch (error) {
       setLogs((current) => ({ ...current, runtime: [...current.runtime, `读取日志失败：${error instanceof Error ? error.message : String(error)}`] }));
     }
@@ -1491,6 +1851,44 @@ export function App() {
       setGitStatus(undefined);
     }
   }, []);
+
+  const runGitAction = useCallback(async (action: "pull" | "commit" | "push-build") => {
+    setGitBusy(action);
+    setGitConflictPlan("");
+    setActiveTerminal("build");
+    try {
+      const response = await fetch(`${API}/api/git/${action === "pull" ? "pull" : "commit"}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: action === "pull" ? "{}" : JSON.stringify({
+          message: gitCommitMessage,
+          push: action === "push-build",
+          remoteBuild: action === "push-build"
+        })
+      });
+      const result = await response.json() as {
+        ok?: boolean;
+        output?: string;
+        error?: string;
+        conflictPlan?: string;
+        status?: GitStatusState;
+        remoteBuild?: { ok?: boolean; error?: string };
+      };
+      if (result.status) setGitStatus(result.status);
+      if (result.conflictPlan) setGitConflictPlan(result.conflictPlan);
+      const detail = result.output || result.error || result.remoteBuild?.error;
+      if (detail) setLogs((current) => ({ ...current, build: [...current.build, detail].slice(-500) }));
+      if (!response.ok || result.ok === false || result.remoteBuild?.ok === false) {
+        throw new Error(result.remoteBuild?.error || result.error || "Git 操作失败");
+      }
+      toast(action === "pull" ? "已拉取最新代码" : action === "commit" ? "已完成本地提交" : "已提交、推送并触发远端刷新", "success");
+      void loadGitStatus();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setGitBusy("");
+    }
+  }, [gitCommitMessage, loadGitStatus, toast]);
 
   const loadSystemInfo = useCallback(async () => {
     try {
@@ -1588,28 +1986,22 @@ export function App() {
     }
   }, [makerVersions, refreshMakerHealth, toast]);
 
-  const installNodeStable = useCallback(async () => {
-    const target = nodeVersions?.stable.latest;
-    if (!target) {
-      toast("请先检查更新，获取 Node.js 稳定版", "warn");
-      return;
-    }
-    if (!window.confirm(`安装 Node.js ${target}（稳定 LTS）到 TapMakerWork 托管环境？\n不会覆盖设备上的系统 Node.js。`)) return;
+  const syncSystemNode = useCallback(async () => {
     setMakerVersionBusy("node");
     try {
-      const response = await fetch(`${API}/api/node/version/install`, { method: "POST" });
+      const response = await fetch(`${API}/api/node/version/sync`, { method: "POST" });
       const result = await response.json() as NodeVersionState & { error?: string; maker?: MakerVersionState };
-      if (!response.ok) throw new Error(result.error || "Node.js 安装失败");
+      if (!response.ok) throw new Error(result.error || "系统 Node.js 同步失败");
       setNodeVersions(result);
       if (result.maker) setMakerVersions(result.maker);
       await refreshMakerHealth();
-      toast(`Node.js ${target} 已安装，Maker MCP 将使用该稳定版`, "success");
+      toast(`已同步系统 Node.js ${result.active.version}`, "success");
     } catch (error) {
-      toast(`安装 Node.js 失败：${error instanceof Error ? error.message : String(error)}`, "error");
+      toast(`同步 Node.js 失败：${error instanceof Error ? error.message : String(error)}`, "error");
     } finally {
       setMakerVersionBusy("");
     }
-  }, [nodeVersions, refreshMakerHealth, toast]);
+  }, [refreshMakerHealth, toast]);
 
   const exportRuntimeAdapter = useCallback(async () => {
     try {
@@ -1797,14 +2189,14 @@ export function App() {
         return;
       }
       setSnapshot(result as UiSnapshot);
-      if (mode === "live-edit") setSidecarInfo((current) => ({ ...current, dirty: true }));
+      if (mode === "live-edit" || centerTab === "visual") setSidecarInfo((current) => ({ ...current, dirty: true }));
       scheduleRuntimeEditSync(140);
       toast(`${label}成功`, "success");
       setLeftTab("hierarchy");
     } catch (error) {
       toast(`${label}失败：${error instanceof Error ? error.message : String(error)}`, "error");
     }
-  }, [snapshot, mode, scheduleRuntimeEditSync, toast]);
+  }, [snapshot, mode, centerTab, scheduleRuntimeEditSync, toast]);
 
   const beginRenameSelected = useCallback(() => {
     const node = snapshot?.selectedId ? findUiNode(snapshot.root, snapshot.selectedId) : undefined;
@@ -1928,10 +2320,10 @@ export function App() {
   }, [activeUiPath, snapshot]);
 
   useEffect(() => {
-    if (mode !== "live-edit" || !sidecarInfo.dirty) return;
+    if (!sidecarInfo.dirty) return;
     const timer = window.setTimeout(() => { void saveUiSidecar(); }, 700);
     return () => window.clearTimeout(timer);
-  }, [mode, sidecarInfo.dirty, snapshot, saveUiSidecar]);
+  }, [sidecarInfo.dirty, snapshot, saveUiSidecar]);
 
   useEffect(() => {
     if (centerTab !== "code" || !revealLine || !editorRef.current) return;
@@ -1981,7 +2373,7 @@ export function App() {
       socket.onmessage = (message) => {
         const event = JSON.parse(String(message.data)) as BridgeEvent;
         if (event.type === "ui.snapshot" || event.type === "ui.patch.applied" || event.type === "ui.patch.rejected") {
-          if (event.type === "ui.snapshot" && event.source === "runtime" && modeRef.current === "live-edit") {
+          if (event.type === "ui.snapshot" && event.source === "runtime" && (modeRef.current === "live-edit" || centerTabRef.current === "visual")) {
             setSnapshotSource("runtime");
             return;
           }
@@ -2005,6 +2397,12 @@ export function App() {
   useEffect(() => window.tapMakerWork?.onOpenProject?.((projectPath) => { void openProjectPath(projectPath); }), [openProjectPath]);
 
   useEffect(() => {
+    if (centerTab !== "visual") return;
+    setCanvasAutoFit(true);
+  }, [activeUiPath, centerTab]);
+
+  useEffect(() => {
+    if (centerTab !== "visual") return;
     const viewport = canvasViewportRef.current;
     if (!viewport) return;
     const updateScale = () => {
@@ -2017,7 +2415,7 @@ export function App() {
     const observer = new ResizeObserver(updateScale);
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, [canvasAutoFit, previewHeight, previewWidth]);
+  }, [canvasAutoFit, centerTab, previewHeight, previewWidth]);
 
   const selected = useMemo(() => snapshot?.selectedId ? findUiNode(snapshot.root, snapshot.selectedId) : undefined, [snapshot]);
   const selectedTransform = useMemo(() => {
@@ -2033,6 +2431,17 @@ export function App() {
   const canvasVisualScore = useMemo(() => snapshot ? visualWeight(snapshot.root) : 0, [snapshot]);
   const canvasLooksSparse = canvasVisualScore < 8;
   const runtimeLive = Boolean(health?.runtimeSessionId || makerPreviewStatus?.process_alive);
+  useEffect(() => {
+    dismissedRuntimeErrorsRef.current.clear();
+    setRuntimeErrorReport(undefined);
+  }, [project?.root]);
+
+  useEffect(() => {
+    if (!runtimeLive || !project) return;
+    void refreshRuntimeLogs();
+    const timer = window.setInterval(() => void refreshRuntimeLogs(), 2_000);
+    return () => window.clearInterval(timer);
+  }, [project?.root, refreshRuntimeLogs, runtimeLive]);
   const runtimeScene = health?.runtimeScene || "idle";
   const effectiveSource = snapshotSource || health?.snapshotSource;
   const canvasSourceLabel = effectiveSource === "runtime"
@@ -2054,51 +2463,117 @@ export function App() {
   const selectedAnimations = useMemo(() => selected ? Object.entries(selected.props).filter(([key]) => /animation|transition|duration|easing|opacity|transform/i.test(key)) : [], [selected]);
   const dragRef = useRef<{
     id: string;
+    kind: "move" | "resize" | "rotate" | "scale";
+    resizeHandle?: string;
+    baseRevision: number;
+    source?: UiNode["source"];
     startX: number;
     startY: number;
     left: number;
     top: number;
-    w?: number | undefined;
-    h?: number | undefined;
+    width: number;
+    height: number;
+    rotate: number;
+    scale: number;
+    transform: Record<string, UiValue>;
+    screenCenter: { x: number; y: number };
+    startAngle: number;
+    startPoint: { x: number; y: number };
+    current: { left: number; top: number; width: number; height: number; rotate: number; scale: number };
   } | null>(null);
 
-  const beginNodeDrag = useCallback((nodeId: string, event: React.PointerEvent) => {
-    if (mode !== "live-edit" || !snapshot) return;
+  const beginNodeDrag = useCallback((nodeId: string, event: React.PointerEvent, operation = "move") => {
+    if (centerTab !== "visual" || !snapshot) return;
     const node = findUiNode(snapshot.root, nodeId);
-    if (!node) return;
+    if (!node || node.id === snapshot.root.id) return;
+    event.preventDefault();
+    event.stopPropagation();
     const box = runtimeLayoutBox(node.props);
     const left = box.x ?? (typeof node.props.left === "number" ? node.props.left : 0);
     const top = box.y ?? (typeof node.props.top === "number" ? node.props.top : 0);
-    dragRef.current = { id: nodeId, startX: event.clientX, startY: event.clientY, left, top, w: box.w, h: box.h };
+    const element = (event.currentTarget as HTMLElement).closest<HTMLElement>("[data-node-id]");
+    const measured = element?.getBoundingClientRect();
+    const width = box.w ?? (typeof node.props.width === "number" ? node.props.width : measured ? measured.width / Math.max(stageScale, .01) : 80);
+    const height = box.h ?? (typeof node.props.height === "number" ? node.props.height : measured ? measured.height / Math.max(stageScale, .01) : 32);
+    const transform = node.props.transform && typeof node.props.transform === "object" && !Array.isArray(node.props.transform)
+      ? node.props.transform as Record<string, UiValue>
+      : {};
+    const rotate = typeof node.props.rotate === "number" ? node.props.rotate : 0;
+    const nodeScale = typeof transform.scale === "number" ? transform.scale : 1;
+    const screenCenter = measured
+      ? { x: measured.left + measured.width / 2, y: measured.top + measured.height / 2 }
+      : { x: event.clientX, y: event.clientY };
+    const kind = operation === "rotate" || operation === "scale" || operation === "move" ? operation : "resize";
+    dragRef.current = {
+      id: nodeId,
+      kind,
+      ...(kind === "resize" ? { resizeHandle: operation } : {}),
+      baseRevision: snapshot.revision,
+      ...(node.source ? { source: node.source } : {}),
+      startX: event.clientX,
+      startY: event.clientY,
+      left,
+      top,
+      width,
+      height,
+      rotate,
+      scale: nodeScale,
+      transform,
+      screenCenter,
+      startAngle: angleBetween(screenCenter, { x: event.clientX, y: event.clientY }),
+      startPoint: { x: event.clientX, y: event.clientY },
+      current: { left, top, width, height, rotate, scale: nodeScale }
+    };
     (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
-  }, [mode, snapshot]);
+  }, [centerTab, snapshot, stageScale]);
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
       const drag = dragRef.current;
-      if (!drag || !snapshot) return;
+      if (!drag) return;
       const scale = stageScale || 1;
       const dx = (event.clientX - drag.startX) / scale;
       const dy = (event.clientY - drag.startY) / scale;
-      const nextLeft = Math.round(drag.left + dx);
-      const nextTop = Math.round(drag.top + dy);
+      const snapping = canvasSnapEnabled || event.metaKey || event.ctrlKey;
+      const rawRect = drag.kind === "resize"
+        ? resizeRect({ x: drag.left, y: drag.top, w: drag.width, h: drag.height }, drag.resizeHandle || "se", dx, dy)
+        : { x: drag.left + dx, y: drag.top + dy, w: drag.width, h: drag.height };
+      const rect = snapping && (drag.kind === "move" || drag.kind === "resize") ? {
+        x: snapValue(rawRect.x, 10),
+        y: snapValue(rawRect.y, 10),
+        w: snapValue(rawRect.w, 10),
+        h: snapValue(rawRect.h, 10)
+      } : rawRect;
+      const angleDelta = (angleBetween(drag.screenCenter, { x: event.clientX, y: event.clientY }) - drag.startAngle) * 180 / Math.PI;
+      const rawRotate = drag.rotate + angleDelta;
+      const rawScale = drag.scale * scaleRatio(drag.screenCenter, drag.startPoint, { x: event.clientX, y: event.clientY });
+      const next = {
+        left: Math.round(rect.x),
+        top: Math.round(rect.y),
+        width: Math.round(rect.w),
+        height: Math.round(rect.h),
+        rotate: Math.round((snapping ? snapValue(rawRotate, 15) : rawRotate) * 10) / 10,
+        scale: Math.round((snapping ? snapValue(rawScale, .1) : rawScale) * 100) / 100
+      };
+      drag.current = next;
       setSnapshot((current) => {
         if (!current) return current;
         const visit = (node: UiNode): UiNode => {
           if (node.id === drag.id) {
+            const layoutProps = drag.kind === "move" || drag.kind === "resize" ? {
+              position: "absolute" as const,
+              left: next.left,
+              top: next.top,
+              ...(drag.kind === "resize" ? { width: next.width, height: next.height } : {}),
+              $layout: { x: next.left, y: next.top, w: next.width, h: next.height }
+            } : {};
             return {
               ...node,
               props: {
                 ...node.props,
-                position: "absolute",
-                left: nextLeft,
-                top: nextTop,
-                $layout: {
-                  x: nextLeft,
-                  y: nextTop,
-                  ...(drag.w != null ? { w: drag.w } : {}),
-                  ...(drag.h != null ? { h: drag.h } : {})
-                }
+                ...layoutProps,
+                ...(drag.kind === "rotate" ? { rotate: next.rotate } : {}),
+                ...(drag.kind === "scale" ? { transform: { ...drag.transform, scale: next.scale } } : {})
               }
             };
           }
@@ -2109,29 +2584,30 @@ export function App() {
     };
     const onUp = () => {
       const drag = dragRef.current;
-      if (!drag || !snapshot) {
+      if (!drag) {
         dragRef.current = null;
         return;
       }
-      const node = findUiNode(snapshot.root, drag.id);
-      const box = node ? runtimeLayoutBox(node.props) : {};
-      const left = box.x ?? (node && typeof node.props.left === "number" ? node.props.left : drag.left);
-      const top = box.y ?? (node && typeof node.props.top === "number" ? node.props.top : drag.top);
       dragRef.current = null;
-      if (!node) return;
-      const nodeId = node.id;
+      const nodeId = drag.id;
       setSnapshot((current) => current ? { ...current, selectedId: nodeId } : current);
       void (async () => {
+        const props: Record<string, UiValue> = drag.kind === "rotate"
+          ? { rotate: drag.current.rotate }
+          : drag.kind === "scale"
+            ? { transform: { ...drag.transform, scale: drag.current.scale } }
+            : {
+                position: "absolute",
+                left: drag.current.left,
+                top: drag.current.top,
+                ...(drag.kind === "resize" ? { width: drag.current.width, height: drag.current.height } : {})
+              };
         const patch: UiPatch = {
           requestId: crypto.randomUUID(),
-          baseRevision: snapshot.revision,
+          baseRevision: drag.baseRevision,
           nodeId,
-          props: {
-            position: "absolute",
-            left,
-            top
-          },
-          ...(node.source ? { source: node.source } : {})
+          props,
+          ...(drag.source ? { source: drag.source } : {})
         };
         const response = await fetch(`${API}/api/ui/patch`, {
           method: "POST",
@@ -2140,24 +2616,30 @@ export function App() {
         });
         if (response.ok) {
           const next = await response.json() as UiSnapshot;
-          setSnapshot(next);
-          if (mode === "live-edit") setSidecarInfo((current) => ({ ...current, dirty: true }));
+          setSnapshot({ ...next, selectedId: nodeId });
+          setSidecarInfo((current) => ({ ...current, dirty: true }));
+          scheduleRuntimeEditSync(120);
+        } else {
+          const result = await response.json().catch(() => ({})) as { error?: string };
+          toast(`画布调整失败：${result.error || response.statusText}`, "error");
         }
       })();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
-  }, [snapshot, stageScale, patchNode]);
+  }, [canvasSnapEnabled, scheduleRuntimeEditSync, stageScale, toast]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       void fetch(`${API}/api/health`).then((res) => res.json()).then((value: Health) => {
         setHealth(value);
-        if (value.runtimeSessionId && modeRef.current !== "live-edit") {
+        if (value.runtimeSessionId && modeRef.current !== "live-edit" && centerTabRef.current !== "visual") {
           void fetch(`${API}/api/ui/snapshot`).then((r) => r.json()).then((snap) => {
             setSnapshot((current) => keepValidSelection(current, snap as UiSnapshot, selectedNodeIdRef.current));
           }).catch(() => undefined);
@@ -2184,12 +2666,12 @@ export function App() {
     if (response.ok) {
       const next = await response.json() as UiSnapshot;
       setSnapshot((current) => keepValidSelection(current, next, selectedNodeIdRef.current));
-      if (mode === "live-edit") setSidecarInfo((current) => ({ ...current, dirty: true }));
+      if (mode === "live-edit" || centerTab === "visual") setSidecarInfo((current) => ({ ...current, dirty: true }));
       scheduleRuntimeEditSync(0);
       setRuntimeEditRevision((revision) => revision + 1);
       toast(action === "undo" ? "已撤销上一步编辑" : "已重做编辑", "success");
     }
-  }, [mode, scheduleRuntimeEditSync, toast]);
+  }, [mode, centerTab, scheduleRuntimeEditSync, toast]);
 
   useEffect(() => window.tapMakerWork?.onHistoryAction?.((action) => {
     const active = document.activeElement as HTMLElement | null;
@@ -2409,10 +2891,48 @@ export function App() {
 
   const updateDevice = (changes: Partial<DeviceProfile>) => setDevice((current) => ({ ...current, ...changes, id: changes.id ?? "custom", label: changes.label ?? "自定义" }));
   const openShortcut = window.tapMakerWork?.platform === "darwin" ? "⌘ O" : "Ctrl O";
+  const dismissRuntimeError = () => {
+    if (runtimeErrorReport) dismissedRuntimeErrorsRef.current.add(runtimeErrorReport.fingerprint);
+    setRuntimeErrorReport(undefined);
+  };
+  const legalOverlay = legalDialogOpen
+    ? <LegalConsentDialog
+      state={desktopLegal}
+      busy={legalBusy}
+      onAccept={() => void acceptLegalTerms()}
+      onDecline={() => void declineLegalTerms()}
+      onClose={() => setLegalDialogOpen(false)}
+    />
+    : null;
+  const projectRejectOverlay = projectReject
+    ? <ProjectRejectDialog
+      path={projectReject.path}
+      message={projectReject.message}
+      onClose={() => {
+        setProjectReject(undefined);
+        setProjectError("");
+      }}
+    />
+    : null;
+  const runtimeErrorOverlay = runtimeErrorReport
+    ? <RuntimeErrorDialog
+      report={runtimeErrorReport}
+      onCopy={() => void copyText(runtimeErrorReport.clipboardText)}
+      onOpenLogs={() => {
+        setActiveTerminal("runtime");
+        persistLayout({ ...layout, terminal: Math.max(layout.terminal, DEFAULT_LAYOUT.terminal) });
+        dismissRuntimeError();
+      }}
+      onDismiss={dismissRuntimeError}
+    />
+    : null;
+  const permissionOverlay = !legalDialogOpen && permissionGuideOpen && desktopPermissions
+    ? <PermissionGuide state={desktopPermissions} busy={permissionBusy} onAction={(action) => void runPermissionAction(action)} onClose={closePermissionGuide} />
+    : null;
 
   if (!projectLoaded || !project) {
     return (
-      <main className="welcome-window">
+      <><main className="welcome-window">
         <header className="titlebar welcome-titlebar">
           <div className="brand"><span className="brand-mark">T</span><strong>TapMakerWork</strong></div>
           <span className="welcome-window-title">{projectLoaded ? "开始" : "正在连接…"}</span>
@@ -2428,19 +2948,22 @@ export function App() {
             {projectError && <p className="welcome-error" role="alert">{projectError}</p>}
             {recentProjects.length > 0 && <div className="recent-projects">
               <div className="recent-heading"><span>最近项目</span><small>{recentProjects.length} 个</small></div>
-              {recentProjects.map((item) => <button key={item.root} onClick={() => void openProjectPath(item.root)} disabled={projectOpening}>
-                <Folder size={17} aria-hidden="true" /><span><strong>{item.name}</strong><small>{item.root}</small></span><ChevronRight size={16} aria-hidden="true" />
-              </button>)}
+              {recentProjects.map((item) => <div className="recent-project-row" key={item.root}>
+                <button className="recent-project-open" onClick={() => void openProjectPath(item.root)} disabled={projectOpening}>
+                  <Folder size={17} aria-hidden="true" /><span><strong>{item.name}</strong><small>{item.root}</small></span><ChevronRight size={16} aria-hidden="true" />
+                </button>
+                <button className="recent-project-remove" aria-label={`移除最近项目 ${item.name}`} title="从最近项目移除（不会删除本地文件）" onClick={() => removeRecentProject(item.root)}><Trash2 size={14} /></button>
+              </div>)}
             </div>}
           </div>
           <div className="welcome-decoration" aria-hidden="true"><div /><div /><div /></div>
         </section>
-      </main>
+      </main>{legalOverlay}{projectRejectOverlay}{permissionOverlay}</>
     );
   }
 
   return (
-    <main
+    <><main
       className="app-shell"
       style={{
         gridTemplateRows: `48px 40px minmax(200px, 1fr) ${layout.terminal}px 22px`,
@@ -2448,7 +2971,7 @@ export function App() {
       } as React.CSSProperties}
     >
       <header className="titlebar">
-        <div className="brand"><span className="brand-mark">T</span><strong>TapMakerWork</strong><span className="phase-badge">闭环</span></div>
+        <div className="brand"><span className="brand-mark">T</span><strong>TapMakerWork</strong><span className="phase-badge">v{__APP_VERSION__}</span></div>
         <div className="project-chip" title={project.root}><Folder size={14} aria-hidden="true" /><span>{project.name}</span><GitBranch size={13} aria-hidden="true" /><small>{gitStatus?.branch || "—"}</small>{gitStatus?.dirty ? <small className="dirty-branch">•</small> : null}</div>
         <div className="runtime-status" role="status">{connected ? <Wifi size={14} aria-hidden="true" /> : <WifiOff size={14} aria-hidden="true" />}<span>{connected ? "Bridge 已连接" : "Bridge 断开"}</span>{runtimeLive ? <small className="runtime-live">Runtime 运行中</small> : <small>Runtime 未启动</small>}</div>
         <div className="title-actions">
@@ -2466,8 +2989,8 @@ export function App() {
           <Tip label="查看 Maker Runtime 的真实窗口画面；以此作为最终效果依据">
             <button aria-pressed={mode === "play"} className={mode === "play" ? "active" : ""} onClick={() => { setMode("play"); setCenterTab("runtime"); setPreviewDockOpen(false); }}><Play size={14} />游玩</button>
           </Tip>
-          <Tip label="在设计画布点选控件；不会自动跳转源码">
-            <button aria-pressed={mode === "inspect"} className={mode === "inspect" ? "active" : ""} onClick={() => { setMode("inspect"); setCenterTab("visual"); }}><Pause size={14} />检查</button>
+          <Tip label="在结构草图中直接拖动、缩放、改属性或右键创建节点">
+            <button aria-pressed={mode === "inspect" && centerTab === "visual"} className={mode === "inspect" && centerTab === "visual" ? "active" : ""} onClick={() => { setMode("inspect"); setCanvasAutoFit(true); setCenterTab("visual"); }}><Pause size={14} />结构编辑</button>
           </Tip>
           <Tip label="直接在 Runtime 最终画面上拖动、缩放并回写引擎控件">
             <button aria-pressed={mode === "live-edit"} className={mode === "live-edit" ? "active" : ""} onClick={() => { setMode("live-edit"); setCenterTab("runtime"); setPreviewDockOpen(false); }}><SlidersHorizontal size={14} />实时编辑</button>
@@ -2501,6 +3024,12 @@ export function App() {
           <span className="sidecar-chip">{sidecarInfo.exists ? (sidecarInfo.dirty ? "ui.json 未同步" : "ui.json 已同步") : "ui.json 未创建"}</span>
         </Tip>
         <span className="commandbar-spacer" />
+        <Tip label="打开 TapTap 开发者后台">
+          <button className="developer-console-button" onClick={() => openExternalUrl("https://developer.taptap.cn/")}><ExternalLink size={13} />开发者后台</button>
+        </Tip>
+        <Tip label="打开 TapTap Maker 后台">
+          <button className="developer-console-button maker-console-button" onClick={() => openExternalUrl("https://maker.taptap.cn/")}><ExternalLink size={13} />Maker 后台</button>
+        </Tip>
         <label className="device-compact">
           设备
           <select value={device.id} onChange={(event) => {
@@ -2540,7 +3069,6 @@ export function App() {
               <section>
                 <h3>Maker</h3>
                 <div className="tools-actions">
-                  <button disabled={makerBusy === "build" || !health?.capabilities.makerCli} onClick={() => { setToolsMenuOpen(false); void runMakerBuild(); }}><Hammer size={13} />构建</button>
                   <button disabled={makerBusy === "qrcode"} onClick={() => { setToolsMenuOpen(false); void runMakerQrcode(); }}><QrCode size={13} />二维码</button>
                   <button disabled={makerBusy === "doctor" || !health?.capabilities.makerCli} onClick={() => { setToolsMenuOpen(false); void runMakerDoctor(); }}><Activity size={13} />Doctor</button>
                   <button disabled={runtimeBusy} onClick={() => { setToolsMenuOpen(false); void runtimeAction("stop"); }}><Pause size={13} />停止</button>
@@ -2552,7 +3080,9 @@ export function App() {
           )}
         </div>
         <span className="mode-hint">
-          {mode === "live-edit"
+          {centerTab === "visual"
+            ? "结构编辑：拖动改位置 · 控制点改尺寸 · 右键管理节点 · 自动保存"
+            : mode === "live-edit"
             ? "实时编辑：编辑视图与实际 Runtime 同步 · Shift 多选 · W/E/R/T 变换"
             : mode === "inspect"
               ? "检查：单击只选中，源码跳转需显式点击"
@@ -2569,7 +3099,11 @@ export function App() {
           <div className="qr-body">
             {makerMeta.qrcodeUrl ? (
               <>
-                <img className="qr-image" src={makerMeta.qrcodeUrl} alt="Maker 测试二维码" />
+                {qrImageFailed ? (
+                  <div className="qr-image-error" role="alert"><QrCode size={36} /><strong>二维码图片加载失败</strong><span>链接仍可复制；也可以重新生成后重试。</span></div>
+                ) : (
+                  <img className="qr-image" src={`${API}/api/maker/qrcode/image?revision=${encodeURIComponent(makerMeta.qrcodeGeneratedAt || "latest")}`} alt="Maker 测试二维码" onError={() => setQrImageFailed(true)} />
+                )}
                 <p className="qr-meta">{makerMeta.title || project.name}{makerMeta.appId ? ` · App ${makerMeta.appId}` : ""}</p>
                 <p className="qr-meta">{makerMeta.qrcodeGeneratedAt ? `生成于 ${makerMeta.qrcodeGeneratedAt}` : ""}</p>
                 <code className="qr-url">{makerMeta.qrcodeUrl}</code>
@@ -2620,6 +3154,71 @@ export function App() {
           <div className="settings-grid">
             <div><h3>连接</h3><p>Bridge：{API}</p><p>协议：{String((systemInfo as { protocolVersion?: number } | undefined)?.protocolVersion ?? health ? 1 : "—")}</p><p>Node：{String((systemInfo as { node?: string } | undefined)?.node ?? "—")}</p><p>平台：{String((systemInfo as { platform?: string } | undefined)?.platform ?? "—")}</p></div>
             <div><h3>Maker</h3><p>版本：{health?.makerVersion || "未发现"}</p><p>项目：{project.root}</p><p>当前 UI：{String((systemInfo as { activeUiEntry?: string } | undefined)?.activeUiEntry ?? activeUiPath)}</p></div>
+            {window.tapMakerWork?.hardwareAcceleration && desktopHardware && (
+              <section className="desktop-system-card" aria-labelledby="hardware-acceleration-heading">
+                <div className="desktop-card-heading">
+                  <div><h3 id="hardware-acceleration-heading">硬件加速</h3><p>默认关闭。开启后使用 GPU 渲染 IDE 与 Web 预览，需重启应用生效。</p></div>
+                  <span className={desktopHardware.active ? "ready" : "neutral"}>{desktopHardware.active ? "运行中" : "已关闭"}</span>
+                </div>
+                <label className="settings-switch-row">
+                  <span><Cpu size={15} /><strong>启用硬件加速</strong><small>遇到花屏、驱动崩溃或远程桌面兼容问题时请保持关闭。</small></span>
+                  <input type="checkbox" checked={desktopHardware.enabled} disabled={hardwareBusy} onChange={(event) => void setHardwareAcceleration(event.target.checked)} />
+                </label>
+                {desktopHardware.restartRequired && <div className="desktop-card-actions"><span className="desktop-card-note">设置已更改，重启后生效。</span><button className="primary" onClick={() => void window.tapMakerWork?.hardwareAcceleration?.restart()}>立即重启</button></div>}
+              </section>
+            )}
+            {window.tapMakerWork?.legal && (
+              <section className="desktop-system-card" aria-labelledby="legal-settings-heading">
+                <div className="desktop-card-heading">
+                  <div><h3 id="legal-settings-heading">用户协议与隐私</h3><p>{desktopLegal?.acceptedAt ? `已于 ${new Date(desktopLegal.acceptedAt).toLocaleString()} 接受` : "首次使用前需要确认"}</p></div>
+                  <ScrollText size={18} />
+                </div>
+                <div className="desktop-card-actions"><button onClick={() => setLegalDialogOpen(true)}>查看 EULA 与隐私政策</button></div>
+              </section>
+            )}
+            {window.tapMakerWork?.permissions && desktopPermissions && (
+              <section className="desktop-system-card" aria-labelledby="desktop-permissions-heading">
+                <div className="desktop-card-heading">
+                  <div><h3 id="desktop-permissions-heading">系统授权</h3><p>真实 Runtime 画面需要屏幕录制；镜像点击需要辅助功能。</p></div>
+                  <span className={desktopPermissions.ready ? "ready" : "attention"}>{desktopPermissions.ready ? "已就绪" : "需处理"}</span>
+                </div>
+                <div className="desktop-permission-rows">
+                  {([[
+                    "screen", "屏幕录制", desktopPermissions.screen
+                  ], [
+                    "accessibility", "辅助功能", desktopPermissions.accessibility
+                  ]] as const).map(([key, label, value]) => <div key={key}>
+                    <span>{value === "granted" ? <CheckCircle2 size={14} /> : <ShieldAlert size={14} />}{label}</span>
+                    <strong>{value === "granted" ? "已授权" : "未授权"}</strong>
+                    <button disabled={value === "granted" || Boolean(permissionBusy)} onClick={() => void runPermissionAction(key)}>{value === "granted" ? "完成" : "打开设置"}</button>
+                  </div>)}
+                </div>
+                <div className="desktop-card-actions">
+                  <button onClick={() => setPermissionGuideOpen(true)}>查看授权向导</button>
+                  <button onClick={() => void runPermissionAction("refresh")} disabled={Boolean(permissionBusy)}><RefreshCw size={13} />重新检测</button>
+                  <button className="primary" onClick={() => void runPermissionAction("restart")} disabled={!desktopPermissions.ready}>重启应用</button>
+                </div>
+                {!desktopPermissions.stableIdentity && <p className="desktop-card-note">开发模式的授权归属 Electron；请用签名后的正式安装包在新机器授权。</p>}
+              </section>
+            )}
+            {window.tapMakerWork?.updates && desktopUpdate && (
+              <section className="desktop-system-card" aria-labelledby="desktop-update-heading">
+                <div className="desktop-card-heading">
+                  <div><h3 id="desktop-update-heading">应用更新</h3><p>当前 {desktopUpdate.currentVersion}{desktopUpdate.availableVersion && desktopUpdate.availableVersion !== desktopUpdate.currentVersion ? ` · 可更新 ${desktopUpdate.availableVersion}` : ""}</p></div>
+                  <span className={desktopUpdate.phase === "error" || desktopUpdate.phase === "unconfigured" ? "attention" : desktopUpdate.phase === "downloaded" ? "ready" : "neutral"}>
+                    {desktopUpdate.phase === "checking" ? "检查中" : desktopUpdate.phase === "available" ? "有新版本" : desktopUpdate.phase === "downloading" ? "下载中" : desktopUpdate.phase === "downloaded" ? "待重启" : desktopUpdate.phase === "up-to-date" ? "最新" : desktopUpdate.phase === "error" ? "失败" : desktopUpdate.phase === "unconfigured" ? "未配置" : "就绪"}
+                  </span>
+                </div>
+                <label className="update-url-field"><span>更新源</span><input value={updateUrlDraft} onChange={(event) => setUpdateUrlDraft(event.target.value)} placeholder="https://updates.example.com/tapmakerwork/" /><button disabled={!updateUrlDraft.trim() || Boolean(desktopUpdateBusy)} onClick={() => void configureDesktopUpdates()}>保存</button></label>
+                {(desktopUpdate.phase === "downloading" || desktopUpdate.phase === "downloaded") && <div className="update-progress" aria-label={`更新下载 ${Math.round(desktopUpdate.percent || 0)}%`}><i style={{ width: `${desktopUpdate.percent || 0}%` }} /><span>{Math.round(desktopUpdate.percent || 0)}%</span></div>}
+                {desktopUpdate.message && <p className={desktopUpdate.phase === "error" ? "desktop-card-error" : "desktop-card-note"} role="status">{desktopUpdate.message}</p>}
+                <div className="desktop-card-actions">
+                  <button disabled={Boolean(desktopUpdateBusy) || desktopUpdate.phase === "checking" || desktopUpdate.phase === "downloading"} onClick={() => void runDesktopUpdateAction("check")}><RefreshCw size={13} className={desktopUpdate.phase === "checking" ? "spin" : ""} />检查更新</button>
+                  {desktopUpdate.phase === "available" && <button className="primary" disabled={Boolean(desktopUpdateBusy)} onClick={() => void runDesktopUpdateAction("download")}><Download size={13} />下载更新</button>}
+                  {desktopUpdate.phase === "downloaded" && <button className="primary" onClick={() => void runDesktopUpdateAction("restart")}>立即重启安装</button>}
+                </div>
+              </section>
+            )}
             <section className="maker-version-settings" aria-labelledby="maker-version-heading">
               <div className="maker-version-heading">
                 <div>
@@ -2689,31 +3288,28 @@ export function App() {
               <article className="node-version-card" aria-labelledby="node-version-heading">
                 <div className="node-version-title">
                   <div>
-                    <strong id="node-version-heading">Node.js 稳定 LTS</strong>
-                    <small>仅检查正式 LTS；安装在 TapMakerWork 托管目录，不覆盖系统 Node.js。</small>
+                    <strong id="node-version-heading">系统 Node.js</strong>
+                    <small>始终跟随系统 PATH / Homebrew / Volta 中的 Node.js；不再用托管目录覆盖本机版本。</small>
                   </div>
-                  <span className={nodeVersions?.active.source === "managed" ? "managed" : "device"}>
-                    {nodeVersions?.active.source === "managed" ? "托管运行时" : "设备版本"}
+                  <span className={nodeVersions?.active.source === "device" ? "device" : "managed"}>
+                    {nodeVersions?.active.source === "device" ? "已同步系统" : "内置兜底"}
                   </span>
                 </div>
                 <dl>
-                  <div><dt>设备</dt><dd>{nodeVersions?.device.version || "—"}</dd></div>
+                  <div><dt>系统</dt><dd>{nodeVersions?.device?.version || "未发现"}</dd></div>
                   <div><dt>当前使用</dt><dd>{nodeVersions?.active.version || "—"}</dd></div>
                   <div><dt>最新 LTS</dt><dd>{nodeVersions?.stable.latest || "尚未检查"}</dd></div>
                 </dl>
                 <button
                   className="primary"
-                  onClick={() => void installNodeStable()}
-                  disabled={Boolean(makerVersionBusy) || !nodeVersions?.stable.updateAvailable}
+                  onClick={() => void syncSystemNode()}
+                  disabled={Boolean(makerVersionBusy)}
                   aria-busy={makerVersionBusy === "node"}
                 >
-                  <Download size={13} aria-hidden="true" />
-                  {makerVersionBusy === "node"
-                    ? "安装中…"
-                    : nodeVersions?.stable.updateAvailable
-                      ? `${nodeVersions.stable.installed ? "更新" : "安装"} Node.js ${nodeVersions.stable.latest}`
-                      : nodeVersions?.stable.latest ? "稳定版已就绪" : "先检查更新"}
+                  <RefreshCw size={13} className={makerVersionBusy === "node" ? "spin" : ""} aria-hidden="true" />
+                  {makerVersionBusy === "node" ? "同步中…" : "重新同步系统版本"}
                 </button>
+                {nodeVersions?.stable.updateAvailable && <small className="node-update-hint">系统 Node.js 低于最新 LTS {nodeVersions.stable.latest}，请用系统包管理器升级后重新同步。</small>}
               </article>
 
               <details className="maker-installed-list">
@@ -2762,6 +3358,9 @@ export function App() {
             </Tip>
             <Tip label="图片资源">
               <button aria-pressed={leftTab === "assets"} className={leftTab === "assets" ? "active" : ""} onClick={() => setLeftTab("assets")}><Image size={14} />资源</button>
+            </Tip>
+            <Tip label="Git 版本管理">
+              <button aria-pressed={leftTab === "git"} className={leftTab === "git" ? "active" : ""} onClick={() => { setLeftTab("git"); void loadGitStatus(); }}><GitBranch size={14} />Git</button>
             </Tip>
           </nav>
           <div className="pane-body">
@@ -2863,6 +3462,35 @@ export function App() {
                 </button>
               ))}
             </div>}
+            {leftTab === "git" && <div className="git-panel">
+              <div className="git-summary">
+                <span><GitBranch size={14} />{gitStatus?.branch || "未识别分支"}</span>
+                <button className="icon-command" aria-label="刷新 Git 状态" onClick={() => void loadGitStatus()}><RefreshCw size={13} /></button>
+              </div>
+              <div className="git-sync-status">
+                <span title={gitStatus?.upstream || "尚未绑定上游"}>{gitStatus?.upstream || "未绑定上游"}</span>
+                <small>↑ {gitStatus?.ahead || 0}</small><small>↓ {gitStatus?.behind || 0}</small>
+              </div>
+              <div className="git-changes" aria-label="Git 修改文件">
+                {(gitStatus?.changes?.length || 0) === 0 ? <p className="empty-state">工作区没有未提交修改。</p> : gitStatus?.changes?.map((change) => (
+                  <button key={`${change.status}:${change.path}`} title={change.path} onClick={() => void readFile(change.path).catch(() => toast("该文件无法在代码编辑器中打开", "warn"))}>
+                    <code>{change.status}</code><span>{change.path}</span>
+                  </button>
+                ))}
+              </div>
+              <label className="git-commit-field"><span>提交说明</span><input value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} placeholder="说明本次修改" /></label>
+              <div className="git-actions">
+                <button disabled={Boolean(gitBusy)} onClick={() => void runGitAction("pull")}><Download size={13} />{gitBusy === "pull" ? "拉取中…" : "拉取"}</button>
+                <button disabled={Boolean(gitBusy) || !gitCommitMessage.trim()} onClick={() => void runGitAction("commit")}><Save size={13} />{gitBusy === "commit" ? "提交中…" : "本地提交"}</button>
+                <button className="primary" disabled={Boolean(gitBusy) || !gitCommitMessage.trim()} onClick={() => void runGitAction("push-build")}><Rocket size={13} />{gitBusy === "push-build" ? "推送并刷新中…" : "提交推送并远端刷新"}</button>
+              </div>
+              {gitConflictPlan && <section className="git-conflict-plan" role="alert">
+                <strong><ShieldAlert size={14} />需要处理 Git 冲突</strong>
+                <p>已生成保留本地修改的处理上下文，可一键复制给 AI。</p>
+                <textarea readOnly value={gitConflictPlan} aria-label="可复制给 AI 的 Git 冲突处理上下文" />
+                <button onClick={() => void copyText(gitConflictPlan)}><Copy size={13} />复制给 AI</button>
+              </section>}
+            </div>}
           </div>
         </aside>
         <PanelResizer orientation="col" label="调节左侧栏宽度" onPointerDown={beginLayoutDrag("left")} />
@@ -2886,6 +3514,7 @@ export function App() {
                   void loadWorkflow();
                 } else if (tab === "visual") {
                   setMode("inspect");
+                  setCanvasAutoFit(true);
                   setCenterTab("visual");
                 } else if (tab === "runtime") {
                   setMode(mode === "live-edit" ? "live-edit" : "inspect");
@@ -2973,7 +3602,7 @@ export function App() {
                   onStart={() => { toast("正在启动 Maker 预览…", "info"); void runtimeAction("start"); }}
                   onRefreshRuntime={() => void runtimeAction("refresh")}
                   onInstallAdapter={() => void installRuntimeEditor()}
-                  onSelect={selectNode}
+                  onSelect={selectCanvasNode}
                   onContextMenu={openNodeContextMenu}
                   onPatch={patchNodeById}
                   onToast={toast}
@@ -2983,13 +3612,27 @@ export function App() {
                   <div className="canvas-meta">
                     <span>真实画布 {Math.round(previewWidth)}×{Math.round(previewHeight)}</span>
                     <span>{snapshot?.viewport?.physicalWidth && snapshot?.viewport?.physicalHeight ? `物理 ${snapshot.viewport.physicalWidth}×${snapshot.viewport.physicalHeight}` : `DPR ${device.dpr}`}</span>
-                    <span>{mode === "inspect" ? "检查" : "实时编辑"}</span>
+                    <span>可视化编辑</span>
                     <span className="canvas-source">画布：{canvasSourceLabel}</span>
                     {runtimeLive && (
                       <span className="canvas-source runtime-scene">
                         真机：{runtimeScene === "live" ? "活树可同步" : runtimeScene === "loading" ? "加载/启动画面" : "已连接"}
                       </span>
                     )}
+                    <div className="canvas-transform-tools" role="toolbar" aria-label="结构草图变换工具">
+                      {([
+                        ["select", "Q", "选择", <MousePointer2 size={15} />],
+                        ["move", "W", "移动", <Move size={15} />],
+                        ["rotate", "E", "旋转", <RotateCw size={15} />],
+                        ["scale", "R", "缩放", <Scaling size={15} />],
+                        ["rect", "T", "矩形变换", <BoxSelect size={15} />]
+                      ] as Array<[TransformTool, string, string, ReactNode]>).map(([tool, shortcut, label, icon]) => (
+                        <button key={tool} type="button" className={canvasTool === tool ? "active" : ""} aria-pressed={canvasTool === tool} title={`${label} (${shortcut})`} onClick={() => setCanvasTool(tool)}>
+                          {icon}<kbd>{shortcut}</kbd>
+                        </button>
+                      ))}
+                      <button type="button" className={canvasSnapEnabled ? "active" : ""} aria-pressed={canvasSnapEnabled} title="吸附到 10px 网格；旋转吸附 15°" onClick={() => setCanvasSnapEnabled((enabled) => !enabled)}><Magnet size={15} /></button>
+                    </div>
                     <div className="canvas-zoom" role="group" aria-label="场景缩放">
                       <button type="button" aria-label="缩小场景" title="缩小" onClick={() => { setCanvasAutoFit(false); setStageScale((value) => Math.max(.1, value - .1)); }}><ZoomOut size={13} /></button>
                       <input
@@ -3006,7 +3649,28 @@ export function App() {
                       <button type="button" className={canvasAutoFit ? "active" : ""} aria-pressed={canvasAutoFit} title="一键最佳比例" onClick={applyBestCanvasScale}><Maximize2 size={13} />最佳</button>
                     </div>
                   </div>
-                  <div ref={canvasViewportRef} className="canvas-viewport">
+                  <div
+                    ref={canvasViewportRef}
+                    className="canvas-viewport canvas-editor-viewport"
+                    tabIndex={0}
+                    aria-label="结构草图可视化编辑画布；拖动节点调整位置，拖动控制点调整大小，方向键微调位置"
+                    onPointerDown={(event) => {
+                      if (event.target === event.currentTarget) event.currentTarget.focus();
+                    }}
+                    onKeyDown={(event) => {
+                      if (!snapshot?.selectedId || snapshot.selectedId === snapshot.root.id || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+                      event.preventDefault();
+                      const node = findUiNode(snapshot.root, snapshot.selectedId);
+                      if (!node) return;
+                      const box = runtimeLayoutBox(node.props);
+                      const step = event.shiftKey ? 10 : 1;
+                      const left = box.x ?? (typeof node.props.left === "number" ? node.props.left : 0);
+                      const top = box.y ?? (typeof node.props.top === "number" ? node.props.top : 0);
+                      const dx = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
+                      const dy = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
+                      void patchNodeById(node.id, { position: "absolute", left: left + dx, top: top + dy }, { historyGroup: `canvas-nudge-${node.id}` });
+                    }}
+                  >
                     <div
                       ref={stageRef}
                       className="device-stage"
@@ -3026,11 +3690,15 @@ export function App() {
                         {snapshot && (
                           <RuntimeNode
                             node={snapshot.root}
+                            rootId={snapshot.root.id}
                             selectedId={snapshot.selectedId}
                             selectedIds={selectedNodeIds}
-                            onSelect={selectNode}
+                            onSelect={selectCanvasNode}
                             onDragStart={beginNodeDrag}
+                            onContextMenu={openNodeContextMenu}
                             mode={mode}
+                            canvasTool={canvasTool}
+                            editable
                           />
                         )}
                       </div>
@@ -3053,9 +3721,9 @@ export function App() {
                       </span>
                     ) : (
                       <span className="sparse-hint">
-                        画布是可编辑控件树，不是游戏截屏；真机窗口是 Runtime 实际渲染。
+                        拖动节点调整位置，拖动蓝色控制点调整大小；方向键微调，Shift + 方向键移动 10px。右键可创建、复制或删除节点。
                         <button type="button" onClick={() => void syncFromRuntime()}>从真机同步结构</button>
-                        {mode === "live-edit" ? " · 改属性会写 .ui.json" : ""}
+                        {" · 修改会自动写入 .ui.json"}
                       </span>
                     )}
                   </div>
@@ -3281,6 +3949,6 @@ export function App() {
         <span>{connected ? "本机连接" : "离线"}</span>
       </footer>
       <ToastStack items={toasts} />
-    </main>
+    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{permissionOverlay}</>
   );
 }
