@@ -33,6 +33,16 @@ describe("project workflow", () => {
     expect(assets.find((asset) => asset.name === "unused.png")?.status).toBe("unreferenced");
   });
 
+  it("flags _external adoption directory", () => {
+    const root = project();
+    fs.mkdirSync(path.join(root, "assets", "_external"), { recursive: true });
+    fs.writeFileSync(path.join(root, "assets", "_external", "pasted.png"), "png", "utf8");
+    const assets = listProjectAssets(root);
+    const adopted = assets.find((asset) => asset.name === "pasted.png");
+    expect(adopted?.status).toBe("external");
+    expect(adopted?.path).toBe("assets/_external/pasted.png");
+  });
+
   it("builds a persistent validation-oriented overview", () => {
     const root = project();
     fs.writeFileSync(path.join(root, "scripts", "ui", "HomePage.ui.json"), "{}", "utf8");

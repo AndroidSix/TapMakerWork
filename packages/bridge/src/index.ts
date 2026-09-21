@@ -47,6 +47,11 @@ import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
 import { commitGitProject, listProjectAssets, mutateGitProject, projectHasRuntimeAdapter, pullGitProject, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
 import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
 import { findRuntimeFileStatus, normalizeUiTree, writeIdeCommandsFile } from "./runtime-file-channel.js";
+import {
+  adoptWindowsMimeForFile,
+  resolveProjectAsset,
+  sendProjectAsset
+} from "./asset-handler.js";
 import { findUiNodePath, mergeUiSidecarOverride, mergeUiSidecarOverrides, nodeMatchesUiOverride, overrideSelectorForNode, readUiSidecar, sidecarExists, sidecarRelativePath, snapshotFromSidecar, uiNodeAtLine, writeUiSidecar, type UiSidecarOverride } from "./ui-sidecar.js";
 import {
   applyPreviewPanelPatch,
@@ -298,29 +303,6 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
   response.end(JSON.stringify(body));
 }
 
-function sendProjectAsset(response: ServerResponse, filename: string): void {
-  const extension = path.extname(filename).toLowerCase();
-  const mimeTypes: Record<string, string> = {
-    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-    ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml"
-  };
-  const mimeType = mimeTypes[extension];
-  if (!mimeType) throw new Error("unsupported_asset_type");
-  if (!fs.existsSync(filename) || !fs.statSync(filename).isFile()) throw new Error("asset_not_found");
-  response.writeHead(200, {
-    "content-type": mimeType,
-    "cache-control": "no-store",
-    "access-control-allow-origin": "*"
-  });
-  fs.createReadStream(filename).pipe(response);
-}
-
-function resolveProjectAsset(projectRoot: string, assetPath: string): string {
-  const direct = resolveInsideProject(projectRoot, assetPath);
-  if (fs.existsSync(direct)) return direct;
-  return resolveInsideProject(projectRoot, path.join("assets", assetPath));
-}
-
 async function readJson(request: IncomingMessage, maxBytes = 1_048_576): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -569,10 +551,21 @@ const server = http.createServer(async (request, response) => {
       snapshotSource = sidecar ? "sidecar" : conversion ? "conversion" : "empty";
       const snapshot = editor.reset(baseSnapshot);
       broadcast({ type: "ui.snapshot", snapshot });
+      let adapter: { installed: boolean; changed: boolean; error?: string } = { installed: false, changed: false };
+      try {
+        const installed = installRuntimeAdapter({
+          bridgePackageRoot: fileURLToPath(new URL(".", import.meta.url)),
+          projectRoot: project.root
+        });
+        adapter = { installed: true, changed: installed.changed };
+      } catch (error) {
+        adapter = { installed: false, changed: false, error: error instanceof Error ? error.message : String(error) };
+      }
       sendJson(response, 200, {
         project,
         snapshot,
         activeUiEntry,
+        adapter,
         sidecar: conversion ? {
           path: sidecarRelativePath(conversion.sourceFile),
           exists: sidecarExists(project.root, conversion.sourceFile),
@@ -608,7 +601,7 @@ const server = http.createServer(async (request, response) => {
       if (!project) throw new Error("project_not_open");
       const assetPath = url.searchParams.get("path");
       if (!assetPath) throw new Error("project_asset_path_required");
-      sendProjectAsset(response, resolveProjectAsset(project.root, assetPath));
+      sendProjectAsset(response, resolveProjectAsset(project.root, assetPath), project.root);
     } else if (request.method === "GET" && url.pathname === "/api/ui/snapshot") {
       sendJson(response, 200, editor.getSnapshot());
     } else if (request.method === "POST" && url.pathname === "/api/ui/screens/rescan") {
