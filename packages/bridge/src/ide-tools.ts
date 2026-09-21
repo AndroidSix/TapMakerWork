@@ -55,7 +55,7 @@ export interface AssetEntry {
   extension: string;
   kind: "image" | "audio" | "video" | "model" | "font" | "other";
   referencedBy: string[];
-  status: "referenced" | "unreferenced";
+  status: "referenced" | "unreferenced" | "external";
 }
 
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", ".emmylua", ".tmp", ".tapmakerwork", ".maker"]);
@@ -199,10 +199,11 @@ export function listProjectAssets(projectRoot: string, limit = 500): AssetEntry[
       .filter((document) => referenceKeys.some((key) => document.text.includes(key)))
       .map((document) => document.path)
       .slice(0, 8);
+    const isExternal = /^(assets|images|image|textures|resources)\/_external\//i.test(asset.path);
     return {
       ...asset,
       referencedBy,
-      status: referencedBy.length ? "referenced" as const : "unreferenced" as const
+      status: isExternal ? "external" as const : referencedBy.length ? "referenced" as const : "unreferenced" as const
     };
   });
   assets.sort((a, b) => a.path.localeCompare(b.path));

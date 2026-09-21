@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, shell, systemPreferences, WebContentsView } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, shell, systemPreferences, WebContentsView, type NativeImage } from "electron";
 import electronUpdater, { type UpdateInfo } from "electron-updater";
 import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runtimeViewportPoint, type RuntimeWindowBounds } from "./runtime-interaction.js";
 import { selectRuntimeWindow } from "./runtime-window.js";
+import { chooseWindowsRuntimeWindow, parseWindowsSourceId, WindowsRuntime, type ListedWindow } from "./windows-runtime.js";
 import { TelemetryController, formatDurationMs, type TelemetrySummary } from "./telemetry.js";
 import { GITEE_LATEST_RELEASE_API, GITEE_RELEASES_URL, giteeReleaseDownloadBase, isVersionNewer, normalizeReleaseVersion, type GiteeRelease } from "./release-update.js";
 
@@ -28,6 +29,108 @@ let mainWindow: BrowserWindow | null = null;
 let previewView: WebContentsView | null = null;
 let bridgeProcess: ChildProcess | null = null;
 const execFileAsync = promisify(execFile);
+let windowsRuntime: WindowsRuntime | undefined;
+
+function windowsBridge(): WindowsRuntime {
+  if (!windowsRuntime) windowsRuntime = new WindowsRuntime();
+  return windowsRuntime;
+}
+
+function runtimeTargetAspect(opts?: { orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }): number {
+  const requestedWidth = Number(opts?.viewportWidth || 0);
+  const requestedHeight = Number(opts?.viewportHeight || 0);
+  if (requestedWidth > 0 && requestedHeight > 0) return requestedWidth / requestedHeight;
+  return opts?.orientation === "landscape" ? 16 / 9 : 9 / 16;
+}
+
+function cropRuntimeFrame(frame: NativeImage, targetAspect: number): NativeImage {
+  const size = frame.getSize();
+  if (!size.width || !size.height || !Number.isFinite(targetAspect) || targetAspect <= 0) return frame;
+  const rawAspect = size.width / Math.max(1, size.height);
+  if (Math.abs(rawAspect - targetAspect) <= 0.003) return frame;
+  if (rawAspect > targetAspect) {
+    const width = Math.max(1, Math.round(size.height * targetAspect));
+    return frame.crop({ x: Math.max(0, Math.round((size.width - width) / 2)), y: 0, width, height: size.height });
+  }
+  const height = Math.max(1, Math.round(size.width / targetAspect));
+  return frame.crop({ x: 0, y: Math.max(0, size.height - height), width: size.width, height });
+}
+
+function windowsCaptureCandidates(windows: ListedWindow[]): { id: string; name: string }[] {
+  return windows
+    .filter((item) => !/^TapMakerWork$/i.test(item.title))
+    .map((item) => ({ id: `win:${item.hwnd}`, name: item.title }));
+}
+
+async function captureOnWindows(opts?: {
+  projectName?: string;
+  sourceId?: string;
+  orientation?: "portrait" | "landscape";
+  viewportWidth?: number;
+  viewportHeight?: number;
+}) {
+  const permission = "granted";
+  let candidates: { id: string; name: string }[] = [];
+  try {
+    const windows = await windowsBridge().list();
+    candidates = windowsCaptureCandidates(windows);
+    const selected = chooseWindowsRuntimeWindow(windows, opts?.projectName?.trim() || "", opts?.sourceId || "");
+    if (!selected) return { ok: false as const, error: "runtime_window_not_found", permission, candidates };
+    const shot = await windowsBridge().capture(selected.hwnd, 1280, 1280);
+    // Keep the real window aspect. Cropping to the 720x1280 design cuts a wider desktop Runtime.
+    const frame = nativeImage.createFromBuffer(shot.png);
+    if (shot.blank || frame.isEmpty()) return { ok: false as const, error: "runtime_frame_empty", permission, candidates };
+    const frameSize = frame.getSize();
+    return {
+      ok: true as const,
+      sourceId: `win:${selected.hwnd}`,
+      sourceName: selected.title,
+      dataUrl: frame.toDataURL(),
+      width: frameSize.width,
+      height: frameSize.height,
+      permission,
+      candidates
+    };
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : String(error),
+      permission,
+      candidates
+    };
+  }
+}
+
+async function interactOnWindows(opts?: {
+  sourceId?: string;
+  normalizedX?: number;
+  normalizedY?: number;
+  viewportWidth?: number;
+  viewportHeight?: number;
+}) {
+  const hwnd = parseWindowsSourceId(opts?.sourceId);
+  const viewportWidth = Number(opts?.viewportWidth || 0);
+  const viewportHeight = Number(opts?.viewportHeight || 0);
+  if (!hwnd || viewportWidth <= 0 || viewportHeight <= 0) return { ok: false, error: "runtime_input_target_required" };
+  try {
+    const bounds = await windowsBridge().bounds(hwnd);
+    if (bounds.width <= 0 || bounds.height <= 0) return { ok: false, error: "runtime_input_window_not_found" };
+    const point = runtimeViewportPoint(
+      { ...bounds, pid: 0 },
+      viewportWidth / viewportHeight,
+      Number(opts?.normalizedX || 0),
+      Number(opts?.normalizedY || 0)
+    );
+    await windowsBridge().click(hwnd, point.x, point.y);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    app.focus({ steal: true });
+    mainWindow?.show();
+    mainWindow?.focus();
+  }
+}
 
 type PermissionName = "screen" | "accessibility";
 type PermissionValue = "granted" | "denied" | "restricted" | "not-determined" | "unavailable";
@@ -181,7 +284,7 @@ function configureUpdater(): DesktopUpdateState {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
   updateConfigured = true;
-  return sendUpdateState({ phase: "idle", releaseUrl: GITEE_RELEASES_URL, message: "自动检查 Gitee 主仓发行版" });
+  return sendUpdateState({ phase: "idle", releaseUrl: GITEE_RELEASES_URL, message: "代码主仓为 GitHub，自动检查 Gitee 发行版" });
 }
 
 async function checkForDesktopUpdates(silent = false): Promise<DesktopUpdateState> {
@@ -193,7 +296,7 @@ async function checkForDesktopUpdates(silent = false): Promise<DesktopUpdateStat
       signal: AbortSignal.timeout(15_000)
     });
     if (response.status === 404) {
-      return sendUpdateState({ phase: "up-to-date", availableVersion: undefined, releaseUrl: GITEE_RELEASES_URL, message: "Gitee 主仓暂未发布发行版" });
+      return sendUpdateState({ phase: "up-to-date", availableVersion: undefined, releaseUrl: GITEE_RELEASES_URL, message: "Gitee 暂未发布发行版" });
     }
     if (!response.ok) throw new Error(`Gitee 发行版检查失败（HTTP ${response.status}）`);
     const release = await response.json() as GiteeRelease;
@@ -571,6 +674,7 @@ ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
   viewportWidth?: number;
   viewportHeight?: number;
 }) => {
+  if (process.platform === "win32") return captureOnWindows(opts);
   const permission = process.platform === "darwin" ? systemPreferences.getMediaAccessStatus("screen") : "granted";
   try {
     const portrait = opts?.orientation !== "landscape";
@@ -605,23 +709,13 @@ ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
       };
     }
     let frame = selected.thumbnail;
+    const targetAspect = runtimeTargetAspect(opts);
     const size = frame.getSize();
-    const requestedWidth = Number(opts?.viewportWidth || 0);
-    const requestedHeight = Number(opts?.viewportHeight || 0);
-    const targetAspect = requestedWidth > 0 && requestedHeight > 0
-      ? requestedWidth / requestedHeight
-      : portrait ? 9 / 16 : 16 / 9;
     const rawAspect = size.width / Math.max(1, size.height);
     // Runtime window captures include native title chrome on macOS. Crop the largest
     // viewport-shaped rect, anchored to the bottom so the title bar is removed first.
     if (Number.isFinite(targetAspect) && targetAspect > 0 && Math.abs(rawAspect - targetAspect) > 0.003) {
-      if (rawAspect > targetAspect) {
-        const width = Math.max(1, Math.round(size.height * targetAspect));
-        frame = frame.crop({ x: Math.max(0, Math.round((size.width - width) / 2)), y: 0, width, height: size.height });
-      } else {
-        const height = Math.max(1, Math.round(size.width / targetAspect));
-        frame = frame.crop({ x: 0, y: Math.max(0, size.height - height), width: size.width, height });
-      }
+      frame = cropRuntimeFrame(frame, targetAspect);
     }
     const frameSize = frame.getSize();
     return {
@@ -654,6 +748,7 @@ ipcMain.handle("tapmakerwork:runtime-interact", async (_event, opts?: {
   viewportWidth?: number;
   viewportHeight?: number;
 }) => {
+  if (process.platform === "win32") return interactOnWindows(opts);
   if (process.platform !== "darwin") return { ok: false, error: "runtime_input_platform_unsupported" };
   const sourceName = opts?.sourceName?.trim() || "";
   const sourceId = opts?.sourceId?.trim() || "";
@@ -797,4 +892,6 @@ app.on("before-quit", () => {
   }
   bridgeProcess?.kill();
   bridgeProcess = null;
+  windowsRuntime?.close();
+  windowsRuntime = undefined;
 });

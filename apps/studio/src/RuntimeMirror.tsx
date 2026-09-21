@@ -26,7 +26,7 @@ interface RuntimeMirrorProps {
 }
 
 type Candidate = { id: string; name: string };
-type RuntimeBox = Rect & { id: string; name: string; type: string; depth: number; parentId?: string | undefined; props: Record<string, UiValue> };
+type RuntimeBox = Rect & { id: string; name: string; type: string; depth: number; layer: number; parentId?: string | undefined; props: Record<string, UiValue> };
 type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 type TransformDraft = { rect: Rect; rotate: number; scale: number };
 type StageSize = { width: number; height: number };
@@ -54,14 +54,41 @@ function asRect(value: UiValue | undefined): Rect | undefined {
   return { x, y, w, h };
 }
 
-function collectRuntimeBoxes(root: UiNode): RuntimeBox[] {
+function isContainer(rect: Rect, screen: Rect): boolean {
+  const area = (rect.w * rect.h) / (screen.w * screen.h);
+  if (area >= 0.28) return true;
+  return rect.w >= screen.w * 0.72 && rect.h >= screen.h * 0.18;
+}
+
+function overlayRootId(root: UiNode, screen: Rect | undefined): string | undefined {
+  if (!screen) return undefined;
+  const children = Array.isArray(root.children) ? root.children : [];
+  const only = children[0];
+  if (children.length === 1 && only) return overlayRootId(only, screen);
+  for (let index = children.length - 1; index >= 1; index -= 1) {
+    const child = children[index];
+    if (!child) continue;
+    const rect = asRect(child.props.$screen);
+    if (rect && isContainer(rect, screen)) return child.id;
+  }
+  return undefined;
+}
+
+export function collectRuntimeBoxes(root: UiNode): RuntimeBox[] {
   const boxes: RuntimeBox[] = [];
-  const visit = (node: UiNode, depth: number, parentId?: string) => {
+  const screen = asRect(root.props.$screen);
+  const overlayId = overlayRootId(root, screen);
+  const visit = (node: UiNode, depth: number, parentId: string | undefined, insideOverlay: boolean) => {
     const rect = asRect(node.props.$screen);
-    if (rect && node.props.visible !== false) boxes.push({ ...rect, id: node.id, name: node.name, type: node.type, depth, parentId, props: node.props });
-    for (const child of Array.isArray(node.children) ? node.children : []) visit(child, depth + 1, node.id);
+    const inOverlay = insideOverlay || node.id === overlayId;
+    if (rect && node.props.visible !== false) {
+      const container = screen ? isContainer(rect, screen) : false;
+      const layer = inOverlay && !container ? 8000 + depth : depth;
+      boxes.push({ ...rect, id: node.id, name: node.name, type: node.type, depth, layer, parentId, props: node.props });
+    }
+    for (const child of Array.isArray(node.children) ? node.children : []) visit(child, depth + 1, node.id, inOverlay);
   };
-  visit(root, 0);
+  visit(root, 0, undefined, false);
   return boxes;
 }
 
@@ -129,8 +156,6 @@ export function RuntimeMirror({
   const [error, setError] = useState("");
   const [permission, setPermission] = useState("");
   const [capturing, setCapturing] = useState(false);
-  const [inputSending, setInputSending] = useState(false);
-  const [inputError, setInputError] = useState("");
   const [tool, setTool] = useState<TransformTool>("move");
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, TransformDraft>>({});
@@ -144,6 +169,7 @@ export function RuntimeMirror({
   const livePatchTimerRef = useRef<number | null>(null);
   const livePatchChainRef = useRef<Promise<void>>(Promise.resolve());
   const [stageSizes, setStageSizes] = useState<{ editor?: StageSize; live?: StageSize }>({});
+  const [frameAspect, setFrameAspect] = useState(0);
 
   const boxes = useMemo(() => snapshot && snapshotSource === "runtime" ? collectRuntimeBoxes(snapshot.root) : [], [snapshot, snapshotSource]);
   const boxMap = useMemo(() => new Map(boxes.map((box) => [box.id, box])), [boxes]);
@@ -155,16 +181,24 @@ export function RuntimeMirror({
     height: snapshot?.viewport?.height || rootRect?.h || (orientation === "portrait" ? 844 : 390)
   };
   const editable = runtimeLive && runtimeConnected && snapshotSource === "runtime" && boxes.length > 0;
+  const stageRatio = snapshotSource === "runtime" && viewport.height > 0
+    ? viewport.width / viewport.height
+    : frameAspect > 0 ? frameAspect : viewport.width / Math.max(1, viewport.height);
 
   useEffect(() => {
     const fit = (element: HTMLDivElement | null): StageSize | undefined => {
-      if (!element || viewport.width <= 0 || viewport.height <= 0) return undefined;
+      if (!element || stageRatio <= 0) return undefined;
       const availableWidth = Math.max(1, element.clientWidth - 20);
       const availableHeight = Math.max(1, element.clientHeight - 34);
-      const scale = Math.min(availableWidth / viewport.width, availableHeight / viewport.height);
+      let width = availableWidth;
+      let height = width / stageRatio;
+      if (height > availableHeight) {
+        height = availableHeight;
+        width = height * stageRatio;
+      }
       return {
-        width: Math.max(1, Math.floor(viewport.width * scale)),
-        height: Math.max(1, Math.floor(viewport.height * scale))
+        width: Math.max(1, Math.floor(width)),
+        height: Math.max(1, Math.floor(height))
       };
     };
     const update = () => {
@@ -190,7 +224,7 @@ export function RuntimeMirror({
       observer?.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, [mode, viewport.height, viewport.width]);
+  }, [frameAspect, mode, snapshotSource, stageRatio, viewport.height, viewport.width]);
 
   const setDraftValues = (value: Record<string, TransformDraft>) => {
     draftsRef.current = value;
@@ -214,6 +248,7 @@ export function RuntimeMirror({
       setPermission(result.permission || "");
       if (result.ok && result.dataUrl) {
         setLiveFrame(result.dataUrl);
+        if (result.width && result.height) setFrameAspect(result.width / result.height);
         if (syncEditorFrame || !frameRef.current) {
           frameRef.current = result.dataUrl;
           setFrame(result.dataUrl);
@@ -446,34 +481,6 @@ export function RuntimeMirror({
   const selectedDraft = selected ? drafts[selected.id] : undefined;
   const selectedRect = selectedDraft?.rect || selected || { x: 0, y: 0, w: 0, h: 0 };
 
-  const interactWithRuntime = async (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!sourceName || !sourceId || !window.tapMakerWork?.runtime?.interact || inputSending) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    if (!bounds.width || !bounds.height) return;
-    setInputSending(true);
-    setInputError("");
-    try {
-      const result = await window.tapMakerWork.runtime.interact({
-        sourceName,
-        sourceId,
-        normalizedX: (event.clientX - bounds.left) / bounds.width,
-        normalizedY: (event.clientY - bounds.top) / bounds.height,
-        viewportWidth: viewport.width,
-        viewportHeight: viewport.height
-      });
-      if (!result.ok) throw new Error(result.error || "runtime_input_failed");
-      window.setTimeout(() => void capture(sourceId, false, true, true), 55);
-    } catch (interactionError) {
-      const message = interactionError instanceof Error ? interactionError.message : String(interactionError);
-      setInputError(message);
-      onToast(message.includes("accessibility_permission_required") || message.includes("not authorized") || message.includes("不被允许")
-        ? "需要在系统设置中允许 TapMakerWork 控制电脑，才能把点击传给 Runtime"
-        : `Runtime 点击转发失败：${message}`, "error");
-    } finally {
-      setInputSending(false);
-    }
-  };
-
   return (
     <div className="runtime-mirror runtime-editor">
       <header className="runtime-mirror-toolbar">
@@ -482,7 +489,6 @@ export function RuntimeMirror({
           <small>{frame ? `${sourceName} · 最终渲染帧` : "Maker Runtime 独立窗口"}</small>
         </div>
         <div className="runtime-edit-modes" aria-label="运行时画布模式">
-          <button type="button" className={mode === "play" ? "active" : ""} disabled={!frame} onClick={() => onModeChange("play")}><CirclePlay size={13} />游玩</button>
           <button type="button" className={mode === "inspect" ? "active" : ""} onClick={() => onModeChange("inspect")}><Crosshair size={13} />检查</button>
           <button
             type="button"
@@ -519,19 +525,15 @@ export function RuntimeMirror({
 
       <div className={`runtime-editor-shell ${mode === "live-edit" ? "runtime-editor-split" : ""}`}>
         <section className="runtime-editor-pane">
-          <header><strong>{mode === "live-edit" ? "编辑视图" : mode === "play" ? "实际 Runtime" : "Runtime 场景"}</strong><span>{mode === "live-edit" ? "移动、旋转、缩放、Shift 多选" : mode === "play" ? "点击会传入真正的游戏窗口" : "单击检查节点"}</span></header>
+          <header><strong>{mode === "live-edit" ? "编辑视图" : "Runtime 场景"}</strong><span>{mode === "live-edit" ? "移动、旋转、缩放、Shift 多选" : "单击检查节点"}</span></header>
           <div className="runtime-stage-viewport" ref={editorViewportRef}>
             <div
               ref={stageRef}
-              className={`runtime-mirror-stage runtime-editor-stage orientation-${orientation} ${mode === "live-edit" ? "is-editing" : mode === "play" ? "is-playing runtime-live-interactive" : "is-inspecting"}`}
+              className={`runtime-mirror-stage runtime-editor-stage orientation-${orientation} ${mode === "live-edit" ? "is-editing" : "is-inspecting"}`}
               style={{
-                aspectRatio: `${viewport.width}/${viewport.height}`,
+                aspectRatio: `${stageRatio}`,
                 ...(stageSizes.editor ? { width: stageSizes.editor.width, height: stageSizes.editor.height } : {})
               }}
-              role={mode === "play" ? "application" : undefined}
-              tabIndex={mode === "play" ? 0 : undefined}
-              aria-label={mode === "play" ? "实际 Runtime，可直接点击游玩" : undefined}
-              onPointerUp={mode === "play" ? (event) => void interactWithRuntime(event) : undefined}
             >
           {frame ? <img src={frame} alt={`Maker Runtime 实际运行画面：${sourceName}`} draggable={false} /> : (
             <div className="runtime-mirror-empty">
@@ -543,7 +545,7 @@ export function RuntimeMirror({
                   : error === "runtime_window_not_found"
                     ? "未自动识别到游戏窗口；请确认窗口已出现，或从上方窗口列表手动选择。"
                     : error === "runtime_frame_empty"
-                      ? "找到了 Runtime 窗口，但系统返回了空画面；授权录屏后请重启 TapMakerWork。"
+                      ? "找到了 Runtime 窗口，但画面是空的。请让游戏窗口保持可见且不要最小化，然后再试。"
                       : error === "runtime_capture_unavailable"
                         ? "当前不是支持窗口采样的桌面版本；请重启或更新 TapMakerWork。"
                         : error ? `窗口采样失败：${error}` : "启动运行器后，这里直接编辑最终渲染画面。"}
@@ -573,7 +575,7 @@ export function RuntimeMirror({
                   top: `${rect.y / viewport.height * 100}%`,
                   width: `${rect.w / viewport.width * 100}%`,
                   height: `${rect.h / viewport.height * 100}%`,
-                  zIndex: 20 + box.depth,
+                  zIndex: 20 + box.layer,
                   transform: `rotate(${rotation}deg) scale(${scale})`,
                   transformOrigin: "center"
                 }}
@@ -602,7 +604,7 @@ export function RuntimeMirror({
             );
           })}
 
-            {(editable || mode === "play") && <span className="runtime-mirror-badge">{frame ? "真实帧" : "Runtime 布局"} · {mode === "live-edit" ? "编辑视图实时同步 · Shift 多选" : mode === "play" ? inputSending ? "正在传入点击…" : "点击直接游玩" : "控件树已对齐"}</span>}
+            {editable && <span className="runtime-mirror-badge">{frame ? "真实帧" : "Runtime 布局"} · {mode === "live-edit" ? "编辑视图实时同步 · Shift 多选" : "控件树已对齐"}</span>}
             </div>
           </div>
         </section>
@@ -612,21 +614,18 @@ export function RuntimeMirror({
             <header><strong>实际 Runtime</strong><span><i />约 220ms 刷新</span></header>
             <div className="runtime-stage-viewport" ref={liveViewportRef}>
               <div
-                className={`runtime-live-stage runtime-live-interactive orientation-${orientation} ${inputSending ? "is-sending" : ""}`}
+                className={`runtime-live-stage orientation-${orientation}`}
                 style={{
-                  aspectRatio: `${viewport.width}/${viewport.height}`,
+                  aspectRatio: `${stageRatio}`,
                   ...(stageSizes.live ? { width: stageSizes.live.width, height: stageSizes.live.height } : {})
                 }}
-                role="application"
-                tabIndex={0}
-                aria-label="实际 Runtime，可直接点击游玩"
-                title="点击会转发到真正的 Runtime 窗口"
-                onPointerUp={(event) => void interactWithRuntime(event)}
+                aria-label="实际 Runtime 只读画面"
+                title="点击请直接操作独立的 Runtime 窗口"
               >
                 {liveFrame || frame
                   ? <img src={liveFrame || frame} alt={`实际 Runtime 实时画面：${sourceName}`} draggable={false} />
                   : <div className="runtime-live-empty"><MonitorUp size={30} /><strong>实际窗口暂不可采样</strong><small>Runtime 活树仍可编辑；允许 macOS 屏幕录制后会自动恢复画面。</small></div>}
-                {(liveFrame || frame) && <span>{inputSending ? "正在传入点击…" : inputError ? "点击转发需授权" : "可交互 · 点击游玩"}</span>}
+                {(liveFrame || frame) && <span>只读画面</span>}
               </div>
             </div>
           </section>

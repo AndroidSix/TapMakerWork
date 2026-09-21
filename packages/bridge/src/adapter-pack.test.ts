@@ -61,10 +61,52 @@ describe("runtime adapter installer", () => {
 
   it("refuses an unsupported entry instead of partially editing it", () => {
     const root = makerProject();
-    fs.writeFileSync(path.join(root, "scripts", "main.lua"), "function Start()\nend\n", "utf8");
+    fs.writeFileSync(path.join(root, "scripts", "main.lua"), "print('no lifecycle')\n", "utf8");
     expect(() => installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root }))
       .toThrow("runtime_adapter_start_hook_not_found");
     expect(fs.existsSync(path.join(root, "scripts", "tapmakerwork", "TapMakerWorkBridge.lua"))).toBe(false);
+  });
+
+  it("moves the editor functions above an earlier update loop", () => {
+    const root = makerProject();
+    fs.writeFileSync(path.join(root, "scripts", "main.lua"), `function HandleUpdate(eventType, eventData)
+    local dt = eventData:GetFloat("TimeStep")
+    TapMakerWorkLiveEditorUpdate(dt) -- TapMakerWork managed
+end
+
+-- >>> TapMakerWork live editor (managed)
+local function TapMakerWorkLiveEditorUpdate(dt)
+end
+-- <<< TapMakerWork live editor (managed)
+
+function Start()
+    TapMakerWorkLiveEditorStart() -- TapMakerWork managed
+    UI.Init({})
+end
+`, "utf8");
+    const result = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    const entry = fs.readFileSync(result.entryPath, "utf8");
+    const definedAt = entry.indexOf("local function TapMakerWorkLiveEditorUpdate");
+    const calledAt = entry.indexOf("TapMakerWorkLiveEditorUpdate(dt) -- TapMakerWork managed");
+    expect(definedAt).toBeGreaterThanOrEqual(0);
+    expect(definedAt).toBeLessThan(calledAt);
+    expect(entry.match(/TapMakerWork live editor \(managed\)/g)).toHaveLength(2);
+  });
+
+  it("wires UI.Init projects that start from function Start", () => {
+    const root = makerProject();
+    fs.writeFileSync(path.join(root, "scripts", "main.lua"), `function Start()
+    UI.Init({ theme = "dark" })
+end
+
+function HandleUpdate(eventType, eventData)
+    local dt = eventData:GetFloat("TimeStep")
+end
+`, "utf8");
+    const result = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    const entry = fs.readFileSync(result.entryPath, "utf8");
+    expect(entry).toMatch(/function Start\(\)\r?\n {4}TapMakerWorkLiveEditorStart\(\) -- TapMakerWork managed/);
+    expect(entry).toMatch(/GetFloat\("TimeStep"\)\r?\n {4}TapMakerWorkLiveEditorUpdate\(dt\) -- TapMakerWork managed/);
   });
 
   it("wires the configured client entry instead of an unused shared entry", () => {

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { UiNode } from "@tapmakerwork/protocol";
+import { collectRuntimeBoxes } from "./RuntimeMirror.js";
 import { groupCenter, resizeRect, rotatePoint, scaleRatio, snapValue, toggleSelection, toolForShortcut } from "./runtime-transform.js";
 
 describe("runtime transform helpers", () => {
@@ -20,5 +22,33 @@ describe("runtime transform helpers", () => {
     expect(snapValue(23, 10)).toBe(20);
     expect(snapValue(28, 10)).toBe(30);
     expect(resizeRect({ x: 0, y: 0, w: 20, h: 20 }, "nw", 30, 30)).toEqual({ x: 16, y: 16, w: 4, h: 4 });
+  });
+});
+
+function node(id: string, children: UiNode[] = [], rect = { x: 0, y: 0, w: 720, h: 1280 }): UiNode {
+  return {
+    id,
+    type: "Panel",
+    name: id,
+    props: { $screen: rect },
+    children
+  };
+}
+
+describe("runtime hit order", () => {
+  it("keeps popup controls in front and lets clicks pass through the popup shell", () => {
+    const root = node("root", [
+      node("main", [node("panel", [node("deep-button", [], { x: 40, y: 40, w: 120, h: 48 })])]),
+      node("popup", [node("popup-button", [], { x: 40, y: 40, w: 120, h: 48 })])
+    ]);
+    const boxes = collectRuntimeBoxes(root);
+    const layerOf = (id: string) => {
+      const layer = boxes.find((box) => box.id === id)?.layer;
+      if (layer == null) throw new Error(`missing ${id}`);
+      return layer;
+    };
+    expect(layerOf("popup-button")).toBeGreaterThan(layerOf("deep-button"));
+    expect(layerOf("popup")).toBeLessThan(layerOf("deep-button"));
+    expect(layerOf("deep-button")).toBeGreaterThan(layerOf("panel"));
   });
 });

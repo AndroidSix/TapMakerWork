@@ -29,20 +29,20 @@ echo Windows 安装包已生成，请查看：%TAPMAKERWORK_ROOT%\outputs\instal
 pause
 exit /b 0
 
-::root_error
+:root_error
 echo TapMakerWork 启动失败：无法定位 IDE 源码目录。
 goto :failure
 
-::node_error
+:node_error
 echo TapMakerWork 启动失败：未找到 Node.js 或 npm，请先安装 Node.js 22 或更高版本。
 goto :failure
 
-::node_version_error
+:node_version_error
 echo TapMakerWork 启动失败：Node.js 版本过低（需要 22 或更高版本）。
 node --version
 goto :failure
 
-::build_error
+:build_error
 echo.
 echo 打包失败，npm 退出码：%BUILD_EXITCODE%
 echo 常见原因：
@@ -51,7 +51,7 @@ echo   2. 网络拉取 Electron 二进制失败（可设置 ELECTRON_MIRROR 走�
 echo   3. electron-builder 配置错误或源码未通过 typecheck
 echo 请保留上方日志以便排查。
 
-::failure
+:failure
 echo.
 pause
 exit /b 1

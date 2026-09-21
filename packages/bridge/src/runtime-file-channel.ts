@@ -27,8 +27,23 @@ function previewRoot(): string {
   return path.join(os.homedir(), ".taptap-maker", "preview");
 }
 
+const SKIP_DIRS = new Set(["assets", "node_modules", "shadercache_runtime", "Cache", "GPUCache", "Code Cache"]);
+
+export function runtimeFileSearchRoots(): string[] {
+  const roots = [previewRoot()];
+  try {
+    const temp = os.tmpdir();
+    for (const name of fs.readdirSync(temp)) {
+      if (name.startsWith("maker-cache")) roots.push(path.join(temp, name));
+    }
+  } catch {
+    // Temp may be unreadable; preview root still works on macOS.
+  }
+  return roots;
+}
+
 function walkStatusFiles(dir: string, found: string[] = [], depth = 0): string[] {
-  if (depth > 10 || found.length > 50) return found;
+  if (depth > 8 || found.length > 50) return found;
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -38,12 +53,13 @@ function walkStatusFiles(dir: string, found: string[] = [], depth = 0): string[]
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name)) continue;
       walkStatusFiles(full, found, depth + 1);
       continue;
     }
-    if (entry.name === "runtime-status.json" && full.includes(`${path.sep}tapmakerwork${path.sep}`)) {
-      found.push(full);
-    }
+    const flatStatus = entry.name === "tapmakerwork-runtime-status.json";
+    const nestedStatus = entry.name === "runtime-status.json" && full.includes(`${path.sep}tapmakerwork${path.sep}`);
+    if (flatStatus || nestedStatus) found.push(full);
   }
   return found;
 }
@@ -122,10 +138,17 @@ export function normalizeRuntimeSnapshot(snapshot: unknown): unknown {
   };
 }
 
+function snapshotStem(statusPath: string): string {
+  return path.basename(statusPath).startsWith("tapmakerwork-")
+    ? "tapmakerwork-runtime-snapshot.json"
+    : "runtime-snapshot.json";
+}
+
 function readSiblingSnapshot(statusPath: string): unknown {
   const dir = path.dirname(statusPath);
-  const metaPath = path.join(dir, "runtime-snapshot.json.meta.json");
-  const singlePath = path.join(dir, "runtime-snapshot.json");
+  const stem = snapshotStem(statusPath);
+  const metaPath = path.join(dir, `${stem}.meta.json`);
+  const singlePath = path.join(dir, stem);
   if (fs.existsSync(metaPath)) {
     try {
       const meta = JSON.parse(fs.readFileSync(metaPath, "utf8").split("\0")[0] || "{}") as { parts?: number; total?: number };
@@ -133,7 +156,7 @@ function readSiblingSnapshot(statusPath: string): unknown {
       if (parts > 0) {
         let text = "";
         for (let index = 1; index <= parts; index += 1) {
-          const partPath = path.join(dir, `runtime-snapshot.json.part${String(index).padStart(2, "0")}`);
+          const partPath = path.join(dir, `${stem}.part${String(index).padStart(2, "0")}`);
           if (!fs.existsSync(partPath)) return undefined;
           // Maker File 分片可能在中间插入 \0，必须全部去掉再拼接
           text += fs.readFileSync(partPath, "utf8").replace(/\0+/g, "");
@@ -152,10 +175,12 @@ function readSiblingSnapshot(statusPath: string): unknown {
   }
 }
 
-export function findRuntimeFileStatus(): RuntimeFileStatus | undefined {
-  const root = previewRoot();
-  if (!fs.existsSync(root)) return undefined;
-  const candidates = walkStatusFiles(root);
+export function findRuntimeFileStatus(roots = runtimeFileSearchRoots()): RuntimeFileStatus | undefined {
+  const candidates: string[] = [];
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    walkStatusFiles(root, candidates);
+  }
   if (!candidates.length) return undefined;
   let best: RuntimeFileStatus | undefined;
   let bestMtime = 0;
@@ -166,8 +191,9 @@ export function findRuntimeFileStatus(): RuntimeFileStatus | undefined {
       const parsed = parseFirstJsonObject(fs.readFileSync(file, "utf8"));
       if (!parsed || typeof parsed !== "object" || !parsed.sessionId) continue;
       const snapshot = readSiblingSnapshot(file);
-      const metaPath = path.join(path.dirname(file), "runtime-snapshot.json.meta.json");
-      const singlePath = path.join(path.dirname(file), "runtime-snapshot.json");
+      const stem = snapshotStem(file);
+      const metaPath = path.join(path.dirname(file), `${stem}.meta.json`);
+      const singlePath = path.join(path.dirname(file), stem);
       const snapshotPath = fs.existsSync(metaPath) ? metaPath : (fs.existsSync(singlePath) ? singlePath : undefined);
       best = {
         ...parsed,
@@ -186,7 +212,10 @@ export function findRuntimeFileStatus(): RuntimeFileStatus | undefined {
 export function writeIdeCommandsFile(status: RuntimeFileStatus, commands: Array<Record<string, unknown>>): string | undefined {
   const sourcePath = status.sourcePath;
   if (!sourcePath) return undefined;
-  const commandsPath = path.join(path.dirname(sourcePath), "ide-commands.json");
+  const commandsName = path.basename(sourcePath).startsWith("tapmakerwork-")
+    ? "tapmakerwork-ide-commands.json"
+    : "ide-commands.json";
+  const commandsPath = path.join(path.dirname(sourcePath), commandsName);
   const payload = {
     kind: "tapmakerwork.ide.commands",
     sessionId: status.sessionId,

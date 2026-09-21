@@ -30,20 +30,38 @@ local METHOD = {
     POST = HTTP_POST,
 }
 
+-- Windows savedata is a flat folder (savedata/0/*.json). Nested tapmakerwork/ writes
+-- do not show up there, and Maker's HTTP whitelist blocks 127.0.0.1, so the flat
+-- names are the only channel the IDE can poll.
 local FILE_DIR = "tapmakerwork"
-local STATUS_FILE = FILE_DIR .. "/runtime-status.json"
-local SNAPSHOT_FILE = FILE_DIR .. "/runtime-snapshot.json"
-local COMMANDS_FILE = FILE_DIR .. "/ide-commands.json"
+local USE_FLAT_FILES = package.config:sub(1, 1) == "\\"
+local cjson = rawget(_G, "cjson")
+if type(cjson) ~= "table" then
+    local loadedOk, loaded = pcall(require, "cjson")
+    if loadedOk and type(loaded) == "table" then cjson = loaded
+    elseif type(rawget(_G, "cjson")) == "table" then cjson = rawget(_G, "cjson") end
+end
+
+local function channelPath(name)
+    if USE_FLAT_FILES then return "tapmakerwork-" .. name, false end
+    return FILE_DIR .. "/" .. name, true
+end
+
+local writeFailureLogged = false
+local writeSuccessLogged = false
 
 local function closeFile(file)
     if file then pcall(function() file:Close() end) end
 end
 
-local function writeTextFile(path, text)
-    if not File or not FILE_WRITE or not fileSystem then return false end
-    pcall(function()
-        if not fileSystem:DirExists(FILE_DIR) then fileSystem:CreateDir(FILE_DIR) end
-    end)
+local function writeTextFile(path, text, makeDir)
+    if makeDir == nil then makeDir = string.find(path, "/", 1, true) ~= nil end
+    if not File or not FILE_WRITE then return false end
+    if makeDir and fileSystem then
+        pcall(function()
+            if not fileSystem:DirExists(FILE_DIR) then fileSystem:CreateDir(FILE_DIR) end
+        end)
+    end
     local ok, file = pcall(function() return File(path, FILE_WRITE) end)
     if not ok or not file then return false end
     local opened = false
@@ -74,6 +92,38 @@ local function readJsonFile(path)
     return decodeOk and value or nil
 end
 
+local function writeChannelFile(name, text)
+    local primary, makeDir = channelPath(name)
+    if writeTextFile(primary, text, makeDir) then
+        if not writeSuccessLogged then
+            writeSuccessLogged = true
+            print("[TapMakerWork] file channel -> " .. primary)
+        end
+        return true
+    end
+    local fallback = USE_FLAT_FILES and (FILE_DIR .. "/" .. name) or ("tapmakerwork-" .. name)
+    if writeTextFile(fallback, text, not USE_FLAT_FILES) then
+        if not writeSuccessLogged then
+            writeSuccessLogged = true
+            print("[TapMakerWork] file channel -> " .. fallback)
+        end
+        return true
+    end
+    if not writeFailureLogged then
+        writeFailureLogged = true
+        print("[TapMakerWork] savedata write failed: " .. primary)
+    end
+    return false
+end
+
+local function readChannelFile(name)
+    local primary = channelPath(name)
+    local value = readJsonFile(primary)
+    if value then return value end
+    local fallback = USE_FLAT_FILES and (FILE_DIR .. "/" .. name) or ("tapmakerwork-" .. name)
+    return readJsonFile(fallback)
+end
+
 local function writeStatus()
     local ok, encoded = pcall(cjson.encode, {
         kind = "tapmakerwork.runtime.status",
@@ -88,7 +138,7 @@ local function writeStatus()
         hasRootProvider = state.rootProvider ~= nil,
         updatedAt = os.time() * 1000,
     })
-    return ok and writeTextFile(STATUS_FILE, encoded)
+    return ok and writeChannelFile("runtime-status.json", encoded)
 end
 
 local function request(method, route, payload, callback)
@@ -101,7 +151,16 @@ local function request(method, route, payload, callback)
         :SetMethod(METHOD[method])
         :SetTimeout(2000)
         :AddHeader("Content-Type", "application/json")
-    if payload ~= nil then client:SetBody(cjson.encode(payload)) end
+    if payload ~= nil then
+        local encodedOk, encoded = pcall(function() return cjson.encode(payload) end)
+        if not encodedOk then
+            state.requestPending = false
+            state.httpEnabled = false
+            state.lastHttpError = "json_encode_failed"
+            return false
+        end
+        client:SetBody(encoded)
+    end
     client:OnSuccess(function(_, response)
         state.requestPending = false
         local ok, value = pcall(cjson.decode, response.dataAsString or "{}")
@@ -158,6 +217,10 @@ local function snapshotWidget(widget)
     end)
     appendChildren(okRender and renderChildren or widget.children)
     appendChildren(widget.bodyChildren_)
+    local okHit, hitChildren = pcall(function()
+        return widget.GetHitTestChildren and widget:GetHitTestChildren() or nil
+    end)
+    appendChildren(okHit and hitChildren or nil)
     local props = {}
     for key, value in pairs(widget.props or {}) do
         -- children contain live Widget objects and event handlers are functions;
@@ -174,10 +237,15 @@ local function snapshotWidget(widget)
         return nil
     end)
     if okScreen and screen then props["$screen"] = safeValue(screen, 0, {}) end
+    local explicitId = widget.props and widget.props.id
+    local title = widget.props and widget.props.title
+    if type(title) ~= "string" or title == "" then title = widget.title_ end
     return {
         id = id,
         type = widget.__tapmakerworkType or widget._className or "Widget",
-        name = (widget.props and widget.props.id) or (widget._className or "Widget"),
+        name = (type(explicitId) == "string" and explicitId ~= "" and explicitId)
+            or (type(title) == "string" and title ~= "" and title)
+            or (widget._className or "Widget"),
         props = props,
         source = { file = widget._sourceFile or "runtime", line = widget._sourceLine or 0 },
         children = children,
@@ -348,7 +416,7 @@ local function handleCommands(value)
 end
 
 local function handleFileCommands()
-    local value = readJsonFile(COMMANDS_FILE)
+    local value = readChannelFile("ide-commands.json")
     if not value or (value.sessionId and value.sessionId ~= state.sessionId) then return false end
     local changed = handleCommands(value)
     if changed then writeStatus() end
@@ -359,7 +427,7 @@ function Bridge.PushSnapshot()
     local snapshot = makeSnapshot()
     if not snapshot then return false end
     local encodedOk, encoded = pcall(cjson.encode, snapshot)
-    local wrote = encodedOk and writeTextFile(SNAPSHOT_FILE, encoded)
+    local wrote = encodedOk and writeChannelFile("runtime-snapshot.json", encoded)
     writeStatus()
     local sent = request("POST", "/api/runtime/snapshot", { snapshot = snapshot })
     return wrote or sent

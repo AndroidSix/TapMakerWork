@@ -24,6 +24,26 @@ const BOOTSTRAP_END = "-- <<< TapMakerWork live editor (managed)";
 const START_CALL = "TapMakerWorkLiveEditorStart() -- TapMakerWork managed";
 const UPDATE_CALL = "TapMakerWorkLiveEditorUpdate(dt) -- TapMakerWork managed";
 
+function editorUpdateIsInScope(source: string): boolean {
+  const definedAt = source.indexOf("local function TapMakerWorkLiveEditorUpdate");
+  const calledAt = source.indexOf(UPDATE_CALL);
+  return definedAt >= 0 && calledAt > definedAt;
+}
+
+function stripManagedEditor(source: string): string {
+  let next = source;
+  const start = next.indexOf(BOOTSTRAP_START);
+  const end = next.indexOf(BOOTSTRAP_END);
+  if (start >= 0 && end > start) {
+    let cut = end + BOOTSTRAP_END.length;
+    while (next[cut] === "\r" || next[cut] === "\n") cut += 1;
+    next = `${next.slice(0, start)}${next.slice(cut)}`;
+  }
+  return next
+    .replace(/^[ \t]*TapMakerWorkLiveEditorStart\(\) -- TapMakerWork managed\r?\n/gm, "")
+    .replace(/^[ \t]*TapMakerWorkLiveEditorUpdate\(dt\) -- TapMakerWork managed\r?\n/gm, "");
+}
+
 function timestampForPath(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
@@ -68,17 +88,17 @@ export function installRuntimeAdapter(options: {
   const projectRoot = path.resolve(options.projectRoot);
   const entryPath = resolveMakerClientEntry(projectRoot);
   const original = fs.readFileSync(entryPath, "utf8");
-  const alreadyManaged = original.includes(BOOTSTRAP_START)
+  const alreadyManaged = editorUpdateIsInScope(original)
+    && original.includes(BOOTSTRAP_START)
     && original.includes(START_CALL)
     && original.includes(UPDATE_CALL);
-  let next = original;
+  let next = alreadyManaged ? original : stripManagedEditor(original);
 
   if (!alreadyManaged) {
-    if (original.includes(BOOTSTRAP_START) || original.includes(BOOTSTRAP_END)) {
-      throw new Error("runtime_adapter_partial_install");
-    }
-    if (!/\bapp_:Init\(\)/.test(original)) throw new Error("runtime_adapter_start_hook_not_found");
-    if (!/local\s+dt\s*=\s*eventData:GetFloat\(["']TimeStep["']\)/.test(original)) {
+    const hasAppInit = /\bapp_:Init\(\)/.test(next);
+    const hasStart = /\bfunction\s+Start\s*\(/.test(next);
+    if (!hasAppInit && !hasStart) throw new Error("runtime_adapter_start_hook_not_found");
+    if (!/local\s+dt\s*=\s*eventData:GetFloat\(["']TimeStep["']\)/.test(next)) {
       throw new Error("runtime_adapter_update_hook_not_found");
     }
 
@@ -108,10 +128,10 @@ end
 ${BOOTSTRAP_END}
 
 `;
-    const startIndex = next.search(/\bfunction\s+Start\s*\(/);
-    if (startIndex < 0) throw new Error("maker_start_function_not_found");
-    next = next.slice(0, startIndex) + bootstrap + next.slice(startIndex);
-    next = next.replace(/(\bapp_:Init\(\)[^\n]*\n)/, `$1    ${START_CALL}\n`);
+    if (!/\bfunction\s+Start\s*\(/.test(next)) throw new Error("maker_start_function_not_found");
+    next = `${bootstrap}${next}`;
+    if (hasAppInit) next = next.replace(/(\bapp_:Init\(\)[^\n]*\n)/, `$1    ${START_CALL}\n`);
+    else next = next.replace(/(\bfunction\s+Start\s*\([^)]*\)[^\n]*\n)/, `$1    ${START_CALL}\n`);
     next = next.replace(
       /(local\s+dt\s*=\s*eventData:GetFloat\(["']TimeStep["']\)[^\n]*\n)/,
       `$1    ${UPDATE_CALL}\n`
