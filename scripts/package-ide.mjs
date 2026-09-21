@@ -20,6 +20,9 @@ function fail(message) {
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    // Node.js 20+ 在 Windows 上禁止直接 spawn .bat/.cmd 文件，会抛 EINVAL。
+    // 需要通过 cmd.exe 间接启动（与 npm/pnpm 等工具链一致）。
+    const useShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
     const child = spawn(command, args, {
       cwd: sourceRoot,
       env: {
@@ -28,6 +31,7 @@ function run(command, args, options = {}) {
       },
       stdio: "inherit",
       windowsHide: true,
+      shell: useShell,
       ...options
     });
     child.once("error", reject);
