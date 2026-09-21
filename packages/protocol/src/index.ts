@@ -95,7 +95,6 @@ export interface PreviewPanelState {
   autoRefreshMaker: boolean;
   transport: PreviewTransport;
   lastRefreshedAt?: string | undefined;
-  lastShotPath?: string | undefined;
   reloadToken: number;
 }
 
@@ -107,7 +106,6 @@ export type ProjectWorkflowAction =
   | "open-code"
   | "start-preview"
   | "open-preview"
-  | "capture-evidence"
   | "generate-qrcode"
   | "build";
 
@@ -130,7 +128,7 @@ export interface ProjectWorkflowStage {
 
 export interface ProjectWorkflowEvidence {
   id: string;
-  kind: "preview-shot" | "ui-sidecar" | "runtime-snapshot" | "qrcode";
+  kind: "ui-sidecar" | "runtime-snapshot" | "qrcode";
   label: string;
   detail: string;
   path?: string | undefined;

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, shell, systemPreferences, WebContentsView } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, shell, systemPreferences, WebContentsView } from "electron";
 import electronUpdater, { type UpdateInfo } from "electron-updater";
 import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runtimeViewportPoint, type RuntimeWindowBounds } from "./runtime-interaction.js";
 import { selectRuntimeWindow } from "./runtime-window.js";
+import { TelemetryController, formatDurationMs, type TelemetrySummary } from "./telemetry.js";
+import { GITEE_LATEST_RELEASE_API, GITEE_RELEASES_URL, giteeReleaseDownloadBase, isVersionNewer, normalizeReleaseVersion, type GiteeRelease } from "./release-update.js";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -47,7 +49,7 @@ interface DesktopUpdateState {
   transferred?: number | undefined;
   total?: number | undefined;
   message?: string | undefined;
-  updateUrl?: string | undefined;
+  releaseUrl?: string | undefined;
   packaged: boolean;
 }
 
@@ -57,6 +59,7 @@ let updateState: DesktopUpdateState = {
   packaged: app.isPackaged
 };
 let updateConfigured = false;
+let updaterReleaseReady = false;
 let updateCheckTimer: NodeJS.Timeout | undefined;
 
 function desktopLog(message: string): void {
@@ -112,10 +115,45 @@ function updateSettingsFile(): string {
 }
 
 interface DesktopSettings {
-  updateUrl?: string | undefined;
   hardwareAcceleration?: boolean | undefined;
   eulaAcceptedVersion?: string | undefined;
   eulaAcceptedAt?: string | undefined;
+  telemetryEnabled?: boolean | undefined;
+  telemetryEndpoint?: string | undefined;
+}
+
+let telemetry: TelemetryController | undefined;
+
+function resolveTelemetryEndpoint(settings = readDesktopSettings()): string {
+  return (process.env.TAPMAKERWORK_TELEMETRY_URL || settings.telemetryEndpoint || "").trim();
+}
+
+function telemetryEnabledSetting(settings = readDesktopSettings()): boolean {
+  return settings.telemetryEnabled !== false;
+}
+
+function ensureTelemetry(): TelemetryController {
+  if (telemetry) return telemetry;
+  const settings = readDesktopSettings();
+  telemetry = new TelemetryController({
+    userDataPath: app.getPath("userData"),
+    appVersion: app.getVersion(),
+    platform: process.platform,
+    enabled: telemetryEnabledSetting(settings),
+    endpoint: resolveTelemetryEndpoint(settings),
+    log: desktopLog
+  });
+  return telemetry;
+}
+
+function enrichTelemetrySummary(summary: TelemetrySummary) {
+  return {
+    ...summary,
+    sessionLabel: formatDurationMs(summary.sessionMs),
+    activeLabel: formatDurationMs(summary.activeMs),
+    lifetimeActiveLabel: formatDurationMs(summary.lifetimeActiveMs),
+    lifetimeSessionLabel: formatDurationMs(summary.lifetimeSessionMs)
+  };
 }
 
 function readDesktopSettings(): DesktopSettings {
@@ -132,54 +170,72 @@ function writeDesktopSettings(patch: Partial<DesktopSettings>): void {
   fs.writeFileSync(updateSettingsFile(), `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 }
 
-function readSavedUpdateUrl(): string | undefined {
-  return readDesktopSettings().updateUrl?.trim() || undefined;
-}
-
-function validUpdateUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || (url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname));
-  } catch {
-    return false;
-  }
-}
-
 function updateErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   const firstLine = raw.split(/\r?\n/, 1)[0]?.trim() || "更新服务暂时不可用";
   return firstLine.length > 240 ? `${firstLine.slice(0, 237)}…` : firstLine;
 }
 
-function configureUpdater(updateUrl = process.env.TAPMAKERWORK_UPDATE_URL || readSavedUpdateUrl()): DesktopUpdateState {
-  if (!updateUrl || !validUpdateUrl(updateUrl)) {
-    updateConfigured = false;
-    return sendUpdateState({ phase: "unconfigured", updateUrl: undefined, message: "尚未配置 HTTPS 更新地址" });
-  }
+function configureUpdater(): DesktopUpdateState {
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
-  autoUpdater.setFeedURL({ provider: "generic", url: updateUrl });
   updateConfigured = true;
-  return sendUpdateState({ phase: "idle", updateUrl, message: undefined });
+  return sendUpdateState({ phase: "idle", releaseUrl: GITEE_RELEASES_URL, message: "自动检查 Gitee 主仓发行版" });
 }
 
 async function checkForDesktopUpdates(silent = false): Promise<DesktopUpdateState> {
-  if (!app.isPackaged) return sendUpdateState({ phase: "unconfigured", message: "开发模式不会安装更新；请使用正式安装包验证。" });
   if (!updateConfigured) return configureUpdater();
-  if (!silent) sendUpdateState({ phase: "checking", message: undefined, percent: undefined });
+  if (!silent) sendUpdateState({ phase: "checking", message: undefined, percent: undefined, availableVersion: undefined });
   try {
-    await autoUpdater.checkForUpdates();
+    const response = await fetch(GITEE_LATEST_RELEASE_API, {
+      headers: { accept: "application/json", "user-agent": `TapMakerWork/${app.getVersion()}` },
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (response.status === 404) {
+      return sendUpdateState({ phase: "up-to-date", availableVersion: undefined, releaseUrl: GITEE_RELEASES_URL, message: "Gitee 主仓暂未发布发行版" });
+    }
+    if (!response.ok) throw new Error(`Gitee 发行版检查失败（HTTP ${response.status}）`);
+    const release = await response.json() as GiteeRelease;
+    const availableVersion = normalizeReleaseVersion(release.tag_name || "");
+    const releaseUrl = release.html_url || GITEE_RELEASES_URL;
+    if (!availableVersion) throw new Error("Gitee 最新发行版缺少版本标签");
+    if (!isVersionNewer(availableVersion, app.getVersion())) {
+      return sendUpdateState({ phase: "up-to-date", availableVersion, releaseUrl, percent: undefined, message: "当前已是最新版本" });
+    }
+    if (!app.isPackaged) {
+      updaterReleaseReady = false;
+      return sendUpdateState({ phase: "available", availableVersion, releaseUrl, percent: 0, message: "开发模式不自动安装，可打开 Gitee 发行版下载" });
+    }
+    autoUpdater.setFeedURL({ provider: "generic", url: giteeReleaseDownloadBase(release.tag_name) });
+    updaterReleaseReady = false;
+    try {
+      await autoUpdater.checkForUpdates();
+    } catch (error) {
+      return sendUpdateState({
+        phase: "available",
+        availableVersion,
+        releaseUrl,
+        percent: 0,
+        message: `发现新版本，但发行版缺少自动更新元数据：${updateErrorMessage(error)}`
+      });
+    }
   } catch (error) {
-    sendUpdateState({ phase: "error", message: updateErrorMessage(error) });
+    return sendUpdateState({ phase: "error", releaseUrl: GITEE_RELEASES_URL, message: updateErrorMessage(error) });
   }
   return updateState;
 }
 
 function installUpdaterEvents(): void {
   autoUpdater.on("checking-for-update", () => sendUpdateState({ phase: "checking", message: undefined }));
-  autoUpdater.on("update-available", (info: UpdateInfo) => sendUpdateState({ phase: "available", availableVersion: info.version, percent: 0, message: undefined }));
-  autoUpdater.on("update-not-available", (info: UpdateInfo) => sendUpdateState({ phase: "up-to-date", availableVersion: info.version, percent: undefined, message: "当前已是最新版本" }));
+  autoUpdater.on("update-available", (info: UpdateInfo) => {
+    updaterReleaseReady = true;
+    sendUpdateState({ phase: "available", availableVersion: info.version, percent: 0, message: undefined });
+  });
+  autoUpdater.on("update-not-available", (info: UpdateInfo) => {
+    updaterReleaseReady = false;
+    sendUpdateState({ phase: "up-to-date", availableVersion: info.version, percent: undefined, message: "当前已是最新版本" });
+  });
   autoUpdater.on("download-progress", (progress) => sendUpdateState({
     phase: "downloading",
     percent: Math.max(0, Math.min(100, progress.percent)),
@@ -188,7 +244,10 @@ function installUpdaterEvents(): void {
     message: undefined
   }));
   autoUpdater.on("update-downloaded", (info: UpdateInfo) => sendUpdateState({ phase: "downloaded", availableVersion: info.version, percent: 100, message: "更新已下载，重启后生效" }));
-  autoUpdater.on("error", (error) => sendUpdateState({ phase: "error", message: updateErrorMessage(error) }));
+  autoUpdater.on("error", (error) => {
+    updaterReleaseReady = false;
+    sendUpdateState({ phase: "error", message: updateErrorMessage(error) });
+  });
 }
 
 async function startPackagedBridge(): Promise<void> {
@@ -329,6 +388,8 @@ function createWindow(): void {
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
   });
+  window.on("focus", () => ensureTelemetry().setFocused(true));
+  window.on("blur", () => ensureTelemetry().setFocused(false));
   window.on("closed", () => {
     mainWindow = null;
     previewView = null;
@@ -336,6 +397,12 @@ function createWindow(): void {
 }
 
 ipcMain.handle("tapmakerwork:permissions-get", () => permissionState());
+ipcMain.handle("tapmakerwork:clipboard-write", (_event, value: unknown) => {
+  if (typeof value !== "string" || !value) return { ok: false, error: "clipboard_text_empty" };
+  if (Buffer.byteLength(value, "utf8") > 5 * 1024 * 1024) return { ok: false, error: "clipboard_text_too_large" };
+  clipboard.writeText(value);
+  return { ok: true };
+});
 ipcMain.handle("tapmakerwork:permissions-request", async (_event, permission: PermissionName) => {
   if (process.platform !== "darwin") return permissionState();
   if (permission === "accessibility") {
@@ -383,6 +450,7 @@ ipcMain.handle("tapmakerwork:legal-get", () => {
 ipcMain.handle("tapmakerwork:legal-accept", () => {
   const acceptedAt = new Date().toISOString();
   writeDesktopSettings({ eulaAcceptedVersion: EULA_VERSION, eulaAcceptedAt: acceptedAt });
+  ensureTelemetry().track("eula.accept", { version: EULA_VERSION });
   return { version: EULA_VERSION, accepted: true, acceptedAt };
 });
 ipcMain.handle("tapmakerwork:legal-decline", () => {
@@ -390,16 +458,43 @@ ipcMain.handle("tapmakerwork:legal-decline", () => {
   return { accepted: false, closing: true };
 });
 
-ipcMain.handle("tapmakerwork:update-get", () => updateState);
-ipcMain.handle("tapmakerwork:update-configure", (_event, value: string) => {
-  const updateUrl = value.trim();
-  if (!validUpdateUrl(updateUrl)) throw new Error("更新地址必须使用 HTTPS（本机调试可使用 localhost HTTP）");
-  writeDesktopSettings({ updateUrl });
-  return configureUpdater(updateUrl);
+ipcMain.handle("tapmakerwork:telemetry-get", () => enrichTelemetrySummary(ensureTelemetry().summary()));
+ipcMain.handle("tapmakerwork:telemetry-set-enabled", (_event, enabled: boolean) => {
+  writeDesktopSettings({ telemetryEnabled: Boolean(enabled) });
+  return enrichTelemetrySummary(ensureTelemetry().setEnabled(Boolean(enabled)));
 });
+ipcMain.handle("tapmakerwork:telemetry-set-endpoint", (_event, value: string) => {
+  const endpoint = String(value || "").trim();
+  if (endpoint) {
+    try {
+      const url = new URL(endpoint);
+      if (!(url.protocol === "https:" || (url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname)))) {
+        throw new Error("遥测地址仅支持 HTTPS，或本机 HTTP（127.0.0.1 / localhost）");
+      }
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  writeDesktopSettings({ telemetryEndpoint: endpoint || undefined });
+  return enrichTelemetrySummary(ensureTelemetry().setEndpoint(endpoint));
+});
+ipcMain.handle("tapmakerwork:telemetry-track", (_event, name: string, props?: Record<string, unknown>) => {
+  ensureTelemetry().track(String(name || ""), props);
+  return { ok: true };
+});
+ipcMain.handle("tapmakerwork:telemetry-flush", async () => {
+  const result = await ensureTelemetry().flush(true);
+  return { ...result, summary: enrichTelemetrySummary(ensureTelemetry().summary()) };
+});
+
+ipcMain.handle("tapmakerwork:update-get", () => updateState);
 ipcMain.handle("tapmakerwork:update-check", () => checkForDesktopUpdates(false));
 ipcMain.handle("tapmakerwork:update-download", async () => {
   if (updateState.phase !== "available") return updateState;
+  if (!app.isPackaged || !updaterReleaseReady) {
+    await shell.openExternal(updateState.releaseUrl || GITEE_RELEASES_URL);
+    return sendUpdateState({ message: "已打开 Gitee 发行版下载页面" });
+  }
   sendUpdateState({ phase: "downloading", percent: 0 });
   await autoUpdater.downloadUpdate();
   return updateState;
@@ -613,9 +708,13 @@ app.whenReady().then(async () => {
   }
   desktopLog("creating main window");
   createWindow();
+  ensureTelemetry().start();
   sendPermissionState();
   if (app.isPackaged && updateConfigured) {
-    setTimeout(() => void checkForDesktopUpdates(true), 8_000);
+    setTimeout(() => {
+      void checkForDesktopUpdates(true);
+      ensureTelemetry().track("update.check", { silent: true });
+    }, 8_000);
     updateCheckTimer = setInterval(() => void checkForDesktopUpdates(true), 30 * 60_000);
   }
   Menu.setApplicationMenu(Menu.buildFromTemplate([
@@ -633,16 +732,22 @@ app.whenReady().then(async () => {
     },
     {
       label: "文件",
-      submenu: [{
-        label: "打开项目…",
-        accelerator: "CmdOrCtrl+O",
-        click: async () => {
-          const window = BrowserWindow.getFocusedWindow();
-          if (!window) return;
-          const projectPath = await chooseProject(window);
-          if (projectPath) window.webContents.send("tapmakerwork:open-project", projectPath);
+      submenu: [
+        {
+          label: "打开项目…",
+          accelerator: "CmdOrCtrl+O",
+          click: async () => {
+            const window = BrowserWindow.getFocusedWindow();
+            if (!window) return;
+            const projectPath = await chooseProject(window);
+            if (projectPath) window.webContents.send("tapmakerwork:open-project", projectPath);
+          }
+        },
+        {
+          label: "关闭当前项目",
+          click: () => BrowserWindow.getFocusedWindow()?.webContents.send("tapmakerwork:close-project")
         }
-      }]
+      ]
     },
     {
       label: "编辑",
@@ -685,6 +790,11 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  try {
+    telemetry?.stop();
+  } catch {
+    // never block quit on telemetry
+  }
   bridgeProcess?.kill();
   bridgeProcess = null;
 });

@@ -6,9 +6,7 @@ import { describe, it } from "vitest";
 import {
   applyPreviewPanelPatch,
   bumpPreviewReload,
-  listPreviewShots,
-  resolvePreviewPanel,
-  savePreviewShot
+  resolvePreviewPanel
 } from "./preview-panel.js";
 
 function tempProject(): string {
@@ -46,16 +44,5 @@ describe("preview-panel", () => {
     const second = bumpPreviewReload(root, { autoRefreshMaker: true });
     assert.equal(second.reloadToken, 2);
     assert.equal(second.autoRefreshMaker, true);
-  });
-
-  it("savePreviewShot writes under outputs/preview-shots", () => {
-    const ideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tmw-ide-"));
-    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01]).toString("base64");
-    const saved = savePreviewShot(ideRoot, "demo-game", `data:image/png;base64,${png}`, "live-edit");
-    assert.ok(saved.path.includes(path.join("outputs", "preview-shots", "demo-game")));
-    assert.ok(fs.existsSync(saved.path));
-    const shots = listPreviewShots(ideRoot, "demo-game");
-    assert.equal(shots.length, 1);
-    assert.equal(shots[0]?.path, saved.path);
   });
 });

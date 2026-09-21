@@ -15,7 +15,7 @@ export interface DesktopUpdateState {
   transferred?: number | undefined;
   total?: number | undefined;
   message?: string | undefined;
-  updateUrl?: string | undefined;
+  releaseUrl?: string | undefined;
   packaged: boolean;
 }
 
@@ -29,4 +29,23 @@ export interface DesktopLegalState {
   version: string;
   accepted: boolean;
   acceptedAt?: string | undefined;
+}
+
+export interface DesktopTelemetryState {
+  enabled: boolean;
+  endpoint: string;
+  installId: string;
+  sessionId: string;
+  sessionMs: number;
+  activeMs: number;
+  lifetimeActiveMs: number;
+  lifetimeSessionMs: number;
+  sessionCount: number;
+  pendingEvents: number;
+  sessionLabel: string;
+  activeLabel: string;
+  lifetimeActiveLabel: string;
+  lifetimeSessionLabel: string;
+  lastFlushAt?: string | undefined;
+  lastFlushError?: string | undefined;
 }

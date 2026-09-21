@@ -33,7 +33,7 @@ describe("project workflow", () => {
     expect(assets.find((asset) => asset.name === "unused.png")?.status).toBe("unreferenced");
   });
 
-  it("builds a persistent evidence-oriented overview", () => {
+  it("builds a persistent validation-oriented overview", () => {
     const root = project();
     fs.writeFileSync(path.join(root, "scripts", "ui", "HomePage.ui.json"), "{}", "utf8");
     saveProjectWorkflow(root, { objective: "完成首页交付" });
@@ -57,13 +57,12 @@ describe("project workflow", () => {
         reloadToken: 1
       },
       qrcodeUrl: "https://example.test/qr",
-      git: { branch: "main", ahead: 0, behind: 0, dirty: false, changes: [] },
-      assets: listProjectAssets(root),
-      shots: [{ path: "/tmp/demo.png", bytes: 1024, mtimeMs: 1 }]
+      git: { branch: "main", ahead: 0, behind: 0, dirty: false, changes: [], commits: [] },
+      assets: listProjectAssets(root)
     });
     expect(overview.objective).toBe("完成首页交付");
     expect(overview.stages).toHaveLength(6);
-    expect(overview.evidence.map((item) => item.kind)).toEqual(expect.arrayContaining(["preview-shot", "ui-sidecar", "runtime-snapshot", "qrcode"]));
+    expect(overview.evidence.map((item) => item.kind)).toEqual(expect.arrayContaining(["ui-sidecar", "runtime-snapshot", "qrcode"]));
     expect(overview.assets.referenced).toBe(1);
   });
 });

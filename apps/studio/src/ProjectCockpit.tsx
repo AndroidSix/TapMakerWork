@@ -48,7 +48,6 @@ function stageProgress(stage: ProjectWorkflowStage): number {
 }
 
 function EvidenceIcon({ kind }: { kind: ProjectWorkflowOverview["evidence"][number]["kind"] }) {
-  if (kind === "preview-shot") return <Image size={15} aria-hidden="true" />;
   if (kind === "ui-sidecar") return <FileJson2 size={15} aria-hidden="true" />;
   if (kind === "runtime-snapshot") return <Activity size={15} aria-hidden="true" />;
   return <ScanSearch size={15} aria-hidden="true" />;
@@ -96,7 +95,7 @@ export function ProjectCockpit({ overview, loading, busyAction, onRefresh, onAct
         <div>
           <span className="eyebrow"><Rocket size={14} aria-hidden="true" /> Maker delivery loop</span>
           <h1>项目交付工作台</h1>
-          <p>把设计、运行、证据和发布放在同一条可复核链路里。</p>
+          <p>把设计、运行、验证和发布放在同一条项目链路里。</p>
         </div>
         <div className={`readiness-score status-${overview.status}`} aria-label={`交付就绪度 ${overview.score} 分`}>
           <strong>{overview.score}</strong>
@@ -164,7 +163,7 @@ export function ProjectCockpit({ overview, loading, busyAction, onRefresh, onAct
         </section>
 
         <section className="cockpit-card evidence-card">
-          <div className="section-heading"><div><span className="section-kicker">证据中心</span><h2>{overview.evidence.length} 项可复核证据</h2></div><ScanSearch size={18} aria-hidden="true" /></div>
+          <div className="section-heading"><div><span className="section-kicker">项目验证</span><h2>{overview.evidence.length} 项结构与运行状态</h2></div><ScanSearch size={18} aria-hidden="true" /></div>
           <div className="evidence-list">
             {overview.evidence.length ? overview.evidence.slice(0, 6).map((item) => (
               <div key={item.id} className="evidence-row" title={item.path || item.detail}>
@@ -172,7 +171,7 @@ export function ProjectCockpit({ overview, loading, busyAction, onRefresh, onAct
                 <div><strong>{item.label}</strong><small>{item.detail}</small></div>
                 {item.capturedAt && <time dateTime={item.capturedAt}>{new Date(item.capturedAt).toLocaleDateString()}</time>}
               </div>
-            )) : <p className="empty-state">还没有证据。启动预览并保存截图或 UI 旁路。</p>}
+            )) : <p className="empty-state">还没有验证信息。可先保存 UI 旁路或启动 Runtime。</p>}
           </div>
         </section>
       </div>

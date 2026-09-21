@@ -25,7 +25,8 @@
     "package:ide:mac": "node scripts/package-ide.mjs --mac",
     "package:ide:win": "node scripts/package-ide.mjs --win",
     "test": "npm run test -w @tapmakerwork/protocol && npm run test -w @tapmakerwork/bridge && npm run test -w @tapmakerwork/studio && npm run test -w @tapmakerwork/desktop",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "telemetry:receiver": "node scripts/telemetry-receiver.mjs"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",

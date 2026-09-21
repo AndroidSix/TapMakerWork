@@ -9,10 +9,17 @@
 
 ---
 
+## 官网
+
+**[androidsix.github.io/tapmakerwork-site](https://androidsix.github.io/tapmakerwork-site/)**
+
+产品介绍、下载入口与社区信息以官网为总览页。
+
 ## 下载
 
 | 平台 | 安装包 |
 |------|--------|
+| **官网** | [androidsix.github.io/tapmakerwork-site](https://androidsix.github.io/tapmakerwork-site/) |
 | **Gitee 发行版（主）** | [gitee.com/AndroidSUP/tap-maker-work/releases](https://gitee.com/AndroidSUP/tap-maker-work/releases) |
 | **GitHub Releases（镜像）** | [github.com/AndroidSix/TapMakerWork/releases](https://github.com/AndroidSix/TapMakerWork/releases) |
 
@@ -33,7 +40,7 @@
 |------|----------------|
 | 改 UI | 采样 **真 Runtime 画面**，画面内选控件、拖拽、改样式 |
 | 看效果 | 内嵌预览 + 真机窗口镜像，减少「改完再盲猜」 |
-| 管交付 | 环境 / 项目 / 内容 / Runtime / 证据 / 构建就绪度一条线 |
+| 管交付 | 环境 / 项目 / 内容 / Runtime / 验证 / 构建就绪度一条线 |
 | 管素材 | 图片、音频、视频、模型、字体引用审计 |
 | 接 AI | 项目级 **MCP**，供 Claude / Cursor / Codex 等读项目与控件状态 |
 
@@ -53,12 +60,86 @@ Electron 桌面 / 控制台
 
 | 角色 | 地址 | 用来做什么 |
 |------|------|------------|
+| **官网** | [tapmakerwork-site](https://androidsix.github.io/tapmakerwork-site/) | 产品介绍与下载总览 |
 | **主仓 · Gitee** | [AndroidSUP/tap-maker-work](https://gitee.com/AndroidSUP/tap-maker-work) | 开发、Issue、**全部 PR** |
 | **镜像 · GitHub** | [AndroidSix/TapMakerWork](https://github.com/AndroidSix/TapMakerWork) | 浏览提交、Releases 下载 |
 
 - Pull Request、缺陷反馈、功能讨论 → **只提 Gitee**  
 - GitHub 上的 PR **不会被合并**，详见 [CONTRIBUTING.md](./CONTRIBUTING.md)  
 - 安装依赖与贡献流程亦见该文档  
+
+## 社区交流
+
+**TapMakerWork 工具交流群**
+
+| 项 | 内容 |
+|----|------|
+| **群名称** | TapMakerWork工具交流群 |
+| **群号** | `1124103038` |
+| **一键入群** | [https://qm.qq.com/q/OCt1HAmHK2](https://qm.qq.com/q/OCt1HAmHK2) |
+
+```text
+点击链接加入群聊【TapMakerWork工具交流群】：
+https://qm.qq.com/q/OCt1HAmHK2
+```
+
+桌面版：标题栏「**交流群**」按钮、命令栏「**一键入群**」、设置 →「**社区交流**」均可跳转。
+
+---
+
+## 后续开发计划
+
+> 下列为规划中的能力，**尚未全部实现**；进度以 [docs/ROADMAP.md](./docs/ROADMAP.md) 与发行说明为准。欢迎在 Gitee Issue / 交流群提出优先级建议。
+
+### 资源与构建优化
+
+| 方向 | 说明 |
+|------|------|
+| **图片无损压缩** | 内置批量压缩工具，针对 Maker 项目图片资源，减小包体、尽量保持画质 |
+| **无用资源删除** | 结合源码/配置引用审计，识别未引用图片、音频等并安全清理 |
+| **代码混淆** | 对项目脚本提供混淆/加固选项，降低直接抄袭成本（与官方构建链兼容） |
+
+### 开发经验与 AI 提效
+
+| 方向 | 说明 |
+|------|------|
+| **经验沉淀** | 把常见 Maker 坑位、排错路径、交付清单做成 IDE 内可查的实践指南 |
+| **AI 开发技巧** | 常用提示词、工作流与「如何让 AI 正确改 Maker 项目」的方法 |
+| **Skills / 模板** | 可导入的技能与工程模板，方便 Claude / Cursor / Codex 等直接参考 |
+
+### 多平台打包（规划）
+
+| 方向 | 说明 |
+|------|------|
+| **H5 / Web** | 导出可浏览器运行的 H5 包，便于预览分享与渠道落地 |
+| **Android APK** | 安卓安装包打包链路与签名/渠道参数引导 |
+| **iOS** | iOS 产物导出与上架前检查清单（能力以官方与 Apple 侧要求为准） |
+| **macOS / Windows** | 桌面端游戏包打包入口与分发说明 |
+| **小游戏平台** | 抖音小游戏、微信小游戏等**各大小游戏平台**的目标配置、适配检查与打包向导 |
+
+说明：
+
+- IDE 侧提供**打包向导、配置模板、产物归档与检查清单**；能否导出某一目标取决于 **TapTap Maker / 官方构建能力与各平台资质**，本工具不替代官方上架与审核流程。  
+- 多平台配置会尽量做成可切换的工程预设，避免每换一个渠道就重改一套项目。
+
+### 游戏工程能力（规划）
+
+| 方向 | 说明 |
+|------|------|
+| **UI 安全区域** | 异形屏/刘海/底部指示条安全区标注与布局检查，统一多机型表现 |
+| **反作弊** | 常见客户端篡改检测思路与可选接入模块（与服务端校验配合） |
+| **强更新** | 强制拉起新版本、维护公告、灰度/分渠道更新的工程范式 |
+| **存档回退** | 游戏进度云存档、版本兼容与回退策略参考 |
+| **排行榜** | 排行榜接入与防刷的标杆实现参考 |
+| **广告接入模板** | 广告位设计、接入与体验平衡的**标杆项目源码模板**，便于 AI 与人工对照实现 |
+
+### 说明
+
+- **多平台打包**以向导/预设/检查为主；H5、APK、iOS、桌面、抖音/微信等小游戏目标受官方与平台规则约束。  
+- 上述规划服务 **TapTap Maker 个人开发者** 的提效与工程化，不替代官方平台能力。  
+- 反作弊、强更新、排行榜、广告等以 **模板 + 文档 + 可选工具** 形式提供参考，具体合规与平台规则以 TapTap 官方为准。  
+- 优先级可在交流群 `1124103038` 投票讨论。  
+
 
 ---
 
@@ -80,7 +161,8 @@ Electron 桌面 / 控制台
 <details>
 <summary><b>项目与交付</b></summary>
 
-- 交付驾驶舱与证据中心（预览截图、UI 旁路、Runtime 快照）
+- 原创交付工作台（项目阶段、UI 旁路、Runtime 状态与构建就绪度）
+- VS Code 风格 Git 管理（暂存、取消暂存、提交、同步、文件右键操作与提交图谱）
 - 语义资产审计与全项目 UI 发现
 - 官方 Preview 状态 / 日志 / 生命周期适配
 - 显式远程构建与测试码流程（就绪度不会自动发布）
@@ -92,7 +174,7 @@ Electron 桌面 / 控制台
 <summary><b>桌面与 AI 集成</b></summary>
 
 - Electron 宿主、一键打包 IDE、双平台安装包
-- electron-updater 更新链路（需自备 HTTPS 更新源）
+- 固定检查 Gitee 主仓发行版，支持安装包自动更新元数据与手动下载回退
 - Maker MCP 版本发现与 stable/Beta 切换
 - 系统 Node.js 发现（PATH / 登录 shell / Homebrew / Volta）
 - macOS Runtime 窗口采集与输入转发（需系统权限）
@@ -205,7 +287,6 @@ node /absolute/path/to/packages/bridge/dist/mcp.js
 - 请以 **Gitee 主仓** 本 README 中的收款码为准；镜像仓可能同步有延迟。
 - 个人收款码可能有单笔/日限额，适合小额支持。
 - 请勿将赞助理解为购买许可证或激活码；我们不在 GitHub 通过私聊售卖软件。
-- 亦可通过其它渠道赞助（如爱发电）：有稳定链接后可补充在此。
 
 ---
 
@@ -221,6 +302,8 @@ node /absolute/path/to/packages/bridge/dist/mcp.js
 
 <p align="center">
   <sub>
+    官网 · <a href="https://androidsix.github.io/tapmakerwork-site/">tapmakerwork-site</a>
+    &nbsp;|&nbsp;
     主仓 · <a href="https://gitee.com/AndroidSUP/tap-maker-work">Gitee</a>
     &nbsp;|&nbsp;
     镜像 · <a href="https://github.com/AndroidSix/TapMakerWork">GitHub</a>

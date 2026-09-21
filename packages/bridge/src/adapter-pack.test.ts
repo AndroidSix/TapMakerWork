@@ -6,11 +6,12 @@ import { installRuntimeAdapter } from "./adapter-pack.js";
 
 const temporary: string[] = [];
 
-function makerProject(): string {
+function makerProject(options: { clientEntry?: boolean } = {}): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-adapter-"));
   temporary.push(root);
   fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
-  fs.writeFileSync(path.join(root, "scripts", "main.lua"), `local app_ = nil
+  const entryName = options.clientEntry ? "client_main.lua" : "main.lua";
+  fs.writeFileSync(path.join(root, "scripts", entryName), `local app_ = nil
 
 function Start()
     local App = require("App")
@@ -23,6 +24,16 @@ function HandleAppUpdate(eventType, eventData)
     app_:Update(dt)
 end
 `, "utf8");
+  if (options.clientEntry) {
+    fs.mkdirSync(path.join(root, ".project"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".project", "project.json"), JSON.stringify({
+      entry: "main.lua",
+      "entry@client": "client_main.lua",
+      "entry@server": "server_main.lua"
+    }), "utf8");
+    fs.writeFileSync(path.join(root, "scripts", "main.lua"), "-- shared fallback entry\n", "utf8");
+    fs.writeFileSync(path.join(root, "scripts", "server_main.lua"), "-- server entry\n", "utf8");
+  }
   return root;
 }
 
@@ -54,5 +65,16 @@ describe("runtime adapter installer", () => {
     expect(() => installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root }))
       .toThrow("runtime_adapter_start_hook_not_found");
     expect(fs.existsSync(path.join(root, "scripts", "tapmakerwork", "TapMakerWorkBridge.lua"))).toBe(false);
+  });
+
+  it("wires the configured client entry instead of an unused shared entry", () => {
+    const root = makerProject({ clientEntry: true });
+    const result = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+
+    expect(result.entryPath).toBe(path.join(root, "scripts", "client_main.lua"));
+    expect(path.basename(result.backupPath || "")).toMatch(/^client_main\.lua\./);
+    expect(fs.readFileSync(result.entryPath, "utf8")).toContain("TapMakerWorkLiveEditorStart()");
+    expect(fs.readFileSync(path.join(root, "scripts", "main.lua"), "utf8")).toBe("-- shared fallback entry\n");
+    expect(fs.readFileSync(path.join(root, "scripts", "server_main.lua"), "utf8")).toBe("-- server entry\n");
   });
 });

@@ -9,7 +9,7 @@ import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 import JsonWorker from "monaco-editor/language/json/json.worker?worker";
 import TsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 import { App } from "./App";
-import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopUpdateState } from "./desktop-api";
+import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopTelemetryState, DesktopUpdateState } from "./desktop-api";
 import "./styles.css";
 
 self.MonacoEnvironment = {
@@ -27,7 +27,11 @@ declare global {
       platform: string;
       desktop: boolean;
       chooseProject?: () => Promise<string | undefined>;
+      clipboard?: {
+        writeText: (text: string) => Promise<{ ok: boolean; error?: string }>;
+      };
       onOpenProject?: (listener: (projectPath: string) => void) => () => void;
+      onCloseProject?: (listener: () => void) => () => void;
       onHistoryAction?: (listener: (action: "undo" | "redo") => void) => () => void;
       permissions?: {
         get: () => Promise<DesktopPermissionState>;
@@ -38,7 +42,6 @@ declare global {
       };
       updates?: {
         get: () => Promise<DesktopUpdateState>;
-        configure: (url: string) => Promise<DesktopUpdateState>;
         check: () => Promise<DesktopUpdateState>;
         download: () => Promise<DesktopUpdateState>;
         restart: () => Promise<DesktopUpdateState>;
@@ -53,6 +56,13 @@ declare global {
         get: () => Promise<DesktopLegalState>;
         accept: () => Promise<DesktopLegalState>;
         decline: () => Promise<{ accepted: false; closing: boolean }>;
+      };
+      telemetry?: {
+        get: () => Promise<DesktopTelemetryState>;
+        setEnabled: (enabled: boolean) => Promise<DesktopTelemetryState>;
+        setEndpoint: (endpoint: string) => Promise<DesktopTelemetryState>;
+        track: (name: string, props?: Record<string, unknown>) => Promise<{ ok: boolean }>;
+        flush: () => Promise<{ ok: boolean; sent: number; error?: string; summary: DesktopTelemetryState }>;
       };
       captureRuntime?: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) => Promise<{
         ok: boolean;

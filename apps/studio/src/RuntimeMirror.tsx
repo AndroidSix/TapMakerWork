@@ -18,7 +18,6 @@ interface RuntimeMirrorProps {
   mode: WorkspaceMode;
   onModeChange: (mode: WorkspaceMode) => void;
   onStart: () => void;
-  onRefreshRuntime: () => void;
   onInstallAdapter: () => void;
   onSelect: (nodeId: string, additive?: boolean) => void;
   onContextMenu: (nodeId: string, x: number, y: number) => void;
@@ -30,6 +29,7 @@ type Candidate = { id: string; name: string };
 type RuntimeBox = Rect & { id: string; name: string; type: string; depth: number; parentId?: string | undefined; props: Record<string, UiValue> };
 type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 type TransformDraft = { rect: Rect; rotate: number; scale: number };
+type StageSize = { width: number; height: number };
 type DragState = {
   historyGroup: string;
   kind: "move" | "rotate" | "scale" | "resize";
@@ -115,7 +115,6 @@ export function RuntimeMirror({
   mode,
   onModeChange,
   onStart,
-  onRefreshRuntime,
   onInstallAdapter,
   onSelect,
   onContextMenu,
@@ -139,9 +138,12 @@ export function RuntimeMirror({
   const captureInFlight = useRef(false);
   const frameRef = useRef("");
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const editorViewportRef = useRef<HTMLDivElement | null>(null);
+  const liveViewportRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const livePatchTimerRef = useRef<number | null>(null);
   const livePatchChainRef = useRef<Promise<void>>(Promise.resolve());
+  const [stageSizes, setStageSizes] = useState<{ editor?: StageSize; live?: StageSize }>({});
 
   const boxes = useMemo(() => snapshot && snapshotSource === "runtime" ? collectRuntimeBoxes(snapshot.root) : [], [snapshot, snapshotSource]);
   const boxMap = useMemo(() => new Map(boxes.map((box) => [box.id, box])), [boxes]);
@@ -153,6 +155,42 @@ export function RuntimeMirror({
     height: snapshot?.viewport?.height || rootRect?.h || (orientation === "portrait" ? 844 : 390)
   };
   const editable = runtimeLive && runtimeConnected && snapshotSource === "runtime" && boxes.length > 0;
+
+  useEffect(() => {
+    const fit = (element: HTMLDivElement | null): StageSize | undefined => {
+      if (!element || viewport.width <= 0 || viewport.height <= 0) return undefined;
+      const availableWidth = Math.max(1, element.clientWidth - 20);
+      const availableHeight = Math.max(1, element.clientHeight - 34);
+      const scale = Math.min(availableWidth / viewport.width, availableHeight / viewport.height);
+      return {
+        width: Math.max(1, Math.floor(viewport.width * scale)),
+        height: Math.max(1, Math.floor(viewport.height * scale))
+      };
+    };
+    const update = () => {
+      const next: { editor?: StageSize; live?: StageSize } = {};
+      const editor = fit(editorViewportRef.current);
+      const live = mode === "live-edit" ? fit(liveViewportRef.current) : undefined;
+      if (editor) next.editor = editor;
+      if (live) next.live = live;
+      setStageSizes((current) => {
+        const same = current.editor?.width === next.editor?.width
+          && current.editor?.height === next.editor?.height
+          && current.live?.width === next.live?.width
+          && current.live?.height === next.live?.height;
+        return same ? current : next;
+      });
+    };
+    update();
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(update);
+    if (editorViewportRef.current) observer?.observe(editorViewportRef.current);
+    if (liveViewportRef.current) observer?.observe(liveViewportRef.current);
+    window.addEventListener("resize", update);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [mode, viewport.height, viewport.width]);
 
   const setDraftValues = (value: Record<string, TransformDraft>) => {
     draftsRef.current = value;
@@ -446,7 +484,13 @@ export function RuntimeMirror({
         <div className="runtime-edit-modes" aria-label="运行时画布模式">
           <button type="button" className={mode === "play" ? "active" : ""} disabled={!frame} onClick={() => onModeChange("play")}><CirclePlay size={13} />游玩</button>
           <button type="button" className={mode === "inspect" ? "active" : ""} onClick={() => onModeChange("inspect")}><Crosshair size={13} />检查</button>
-          <button type="button" className={mode === "live-edit" ? "active" : ""} disabled={!editable} onClick={() => onModeChange("live-edit")}><Move size={13} />编辑</button>
+          <button
+            type="button"
+            className={mode === "live-edit" ? "active" : ""}
+            disabled={!frame || installBusy || runtimeBusy}
+            title={editable ? "编辑真实 Runtime 控件" : "重新接入编辑桥并连接 Runtime"}
+            onClick={() => editable ? onModeChange("live-edit") : onInstallAdapter()}
+          ><Move size={13} />编辑</button>
         </div>
         {mode === "live-edit" && <div className="runtime-transform-tools" role="toolbar" aria-label="变换工具">
           <button type="button" className={tool === "select" ? "active" : ""} aria-pressed={tool === "select"} aria-label="选择工具，快捷键 Q" title="选择 (Q)" onClick={() => setTool("select")}><MousePointer2 size={14} aria-hidden="true" /><kbd>Q</kbd></button>
@@ -476,15 +520,19 @@ export function RuntimeMirror({
       <div className={`runtime-editor-shell ${mode === "live-edit" ? "runtime-editor-split" : ""}`}>
         <section className="runtime-editor-pane">
           <header><strong>{mode === "live-edit" ? "编辑视图" : mode === "play" ? "实际 Runtime" : "Runtime 场景"}</strong><span>{mode === "live-edit" ? "移动、旋转、缩放、Shift 多选" : mode === "play" ? "点击会传入真正的游戏窗口" : "单击检查节点"}</span></header>
-          <div
-            ref={stageRef}
-            className={`runtime-mirror-stage runtime-editor-stage orientation-${orientation} ${mode === "live-edit" ? "is-editing" : mode === "play" ? "is-playing runtime-live-interactive" : "is-inspecting"}`}
-            style={{ aspectRatio: `${viewport.width}/${viewport.height}` }}
-            role={mode === "play" ? "application" : undefined}
-            tabIndex={mode === "play" ? 0 : undefined}
-            aria-label={mode === "play" ? "实际 Runtime，可直接点击游玩" : undefined}
-            onPointerUp={mode === "play" ? (event) => void interactWithRuntime(event) : undefined}
-          >
+          <div className="runtime-stage-viewport" ref={editorViewportRef}>
+            <div
+              ref={stageRef}
+              className={`runtime-mirror-stage runtime-editor-stage orientation-${orientation} ${mode === "live-edit" ? "is-editing" : mode === "play" ? "is-playing runtime-live-interactive" : "is-inspecting"}`}
+              style={{
+                aspectRatio: `${viewport.width}/${viewport.height}`,
+                ...(stageSizes.editor ? { width: stageSizes.editor.width, height: stageSizes.editor.height } : {})
+              }}
+              role={mode === "play" ? "application" : undefined}
+              tabIndex={mode === "play" ? 0 : undefined}
+              aria-label={mode === "play" ? "实际 Runtime，可直接点击游玩" : undefined}
+              onPointerUp={mode === "play" ? (event) => void interactWithRuntime(event) : undefined}
+            >
           {frame ? <img src={frame} alt={`Maker Runtime 实际运行画面：${sourceName}`} draggable={false} /> : (
             <div className="runtime-mirror-empty">
               <MonitorUp size={36} aria-hidden="true" />
@@ -554,26 +602,32 @@ export function RuntimeMirror({
             );
           })}
 
-          {(editable || mode === "play") && <span className="runtime-mirror-badge">{frame ? "真实帧" : "Runtime 布局"} · {mode === "live-edit" ? "编辑视图实时同步 · Shift 多选" : mode === "play" ? inputSending ? "正在传入点击…" : "点击直接游玩" : "控件树已对齐"}</span>}
+            {(editable || mode === "play") && <span className="runtime-mirror-badge">{frame ? "真实帧" : "Runtime 布局"} · {mode === "live-edit" ? "编辑视图实时同步 · Shift 多选" : mode === "play" ? inputSending ? "正在传入点击…" : "点击直接游玩" : "控件树已对齐"}</span>}
+            </div>
           </div>
         </section>
 
         {mode === "live-edit" && (
           <section className="runtime-editor-pane runtime-live-pane" aria-label="实际 Runtime 实时画面">
             <header><strong>实际 Runtime</strong><span><i />约 220ms 刷新</span></header>
-            <div
-              className={`runtime-live-stage runtime-live-interactive orientation-${orientation} ${inputSending ? "is-sending" : ""}`}
-              style={{ aspectRatio: `${viewport.width}/${viewport.height}` }}
-              role="application"
-              tabIndex={0}
-              aria-label="实际 Runtime，可直接点击游玩"
-              title="点击会转发到真正的 Runtime 窗口"
-              onPointerUp={(event) => void interactWithRuntime(event)}
-            >
-              {liveFrame || frame
-                ? <img src={liveFrame || frame} alt={`实际 Runtime 实时画面：${sourceName}`} draggable={false} />
-                : <div className="runtime-live-empty"><MonitorUp size={30} /><strong>实际窗口暂不可采样</strong><small>Runtime 活树仍可编辑；允许 macOS 屏幕录制后会自动恢复画面。</small></div>}
-              {(liveFrame || frame) && <span>{inputSending ? "正在传入点击…" : inputError ? "点击转发需授权" : "可交互 · 点击游玩"}</span>}
+            <div className="runtime-stage-viewport" ref={liveViewportRef}>
+              <div
+                className={`runtime-live-stage runtime-live-interactive orientation-${orientation} ${inputSending ? "is-sending" : ""}`}
+                style={{
+                  aspectRatio: `${viewport.width}/${viewport.height}`,
+                  ...(stageSizes.live ? { width: stageSizes.live.width, height: stageSizes.live.height } : {})
+                }}
+                role="application"
+                tabIndex={0}
+                aria-label="实际 Runtime，可直接点击游玩"
+                title="点击会转发到真正的 Runtime 窗口"
+                onPointerUp={(event) => void interactWithRuntime(event)}
+              >
+                {liveFrame || frame
+                  ? <img src={liveFrame || frame} alt={`实际 Runtime 实时画面：${sourceName}`} draggable={false} />
+                  : <div className="runtime-live-empty"><MonitorUp size={30} /><strong>实际窗口暂不可采样</strong><small>Runtime 活树仍可编辑；允许 macOS 屏幕录制后会自动恢复画面。</small></div>}
+                {(liveFrame || frame) && <span>{inputSending ? "正在传入点击…" : inputError ? "点击转发需授权" : "可交互 · 点击游玩"}</span>}
+              </div>
             </div>
           </section>
         )}
@@ -584,12 +638,12 @@ export function RuntimeMirror({
             <div>
               <strong>{adapterInstalled ? "运行时编辑桥尚未连接" : "启用所见即所得编辑"}</strong>
               <p>{adapterInstalled
-                ? "适配器已经写入项目，刷新一次 Runtime 后即可读取真实控件树并拖拽编辑。"
+                ? "将重新校验客户端入口并重启 Runtime；连接成功后即可读取真实控件树并拖拽编辑。"
                 : "安装项目内编辑桥后，画面上的选择框来自引擎实际布局，不再使用 HTML 模拟布局。"}</p>
             </div>
-            <button type="button" disabled={installBusy || runtimeBusy} onClick={adapterInstalled ? onRefreshRuntime : onInstallAdapter}>
+            <button type="button" disabled={installBusy || runtimeBusy} onClick={onInstallAdapter}>
               {adapterInstalled ? <RefreshCw size={14} /> : <BoxSelect size={14} />}
-              {installBusy ? "接入中…" : adapterInstalled ? "刷新并连接" : "接入当前项目"}
+              {installBusy ? "接入中…" : adapterInstalled ? "重新接入并连接" : "接入当前项目"}
             </button>
           </div>
         )}

@@ -64,7 +64,16 @@ import {
   Cpu,
   ScrollText,
   AlertTriangle,
-  XCircle
+  XCircle,
+  X,
+  Heart,
+  Gamepad2,
+  Clock3,
+  Users,
+  MessageCircle,
+  Map,
+  Package,
+  ShieldCheck
 } from "lucide-react";
 import {
   DEFAULT_DEVICE_PROFILES,
@@ -90,8 +99,15 @@ import { ProjectCockpit } from "./ProjectCockpit";
 import { RuntimeMirror } from "./RuntimeMirror";
 import { rgbaCss, rgbaFromHex, rgbaFromValue, rgbaToHex, type RgbaColor } from "./color-utils";
 import { angleBetween, resizeRect, scaleRatio, snapValue, toolForShortcut, type TransformTool } from "./runtime-transform";
-import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopUpdateState } from "./desktop-api";
+import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopTelemetryState, DesktopUpdateState } from "./desktop-api";
 import { extractRuntimeErrorReport, type RuntimeErrorReport } from "./runtime-error";
+import wechatPayImage from "../../../docs/sponsor/wechat-pay.png";
+
+const QQ_GROUP_ID = "1124103038";
+const QQ_GROUP_NAME = "TapMakerWork工具交流群";
+const QQ_GROUP_JOIN_URL = "https://qm.qq.com/q/OCt1HAmHK2";
+const OFFICIAL_SITE_URL = "https://androidsix.github.io/tapmakerwork-site/";
+import alipayImage from "../../../docs/sponsor/alipay.png";
 
 const API = "http://127.0.0.1:43121";
 declare const __APP_VERSION__: string;
@@ -192,7 +208,19 @@ interface GitStatusState {
   ahead?: number;
   behind?: number;
   dirty?: boolean;
-  changes?: Array<{ path: string; status: string }>;
+  changes?: GitChangeState[];
+  commits?: Array<{ hash: string; shortHash: string; subject: string; author: string; relativeDate: string; refs: string[] }>;
+}
+
+interface GitChangeState {
+  path: string;
+  status: string;
+  indexStatus: string;
+  workTreeStatus: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  conflicted: boolean;
 }
 
 const channels: Array<{ id: LogChannel; label: string }> = [
@@ -381,6 +409,32 @@ function ToastStack({ items }: { items: ToastItem[] }) {
       ))}
     </div>
   );
+}
+
+function legacyCopyText(text: string): boolean {
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.readOnly = true;
+  field.setAttribute("aria-hidden", "true");
+  Object.assign(field.style, {
+    position: "fixed",
+    left: "-9999px",
+    top: "0",
+    opacity: "0",
+    pointerEvents: "none"
+  });
+  document.body.appendChild(field);
+  field.select();
+  field.setSelectionRange(0, field.value.length);
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    field.remove();
+    active?.focus();
+  }
+  return copied;
 }
 
 function Tip({ label, children }: { label: string; children: ReactNode }) {
@@ -601,9 +655,13 @@ function HierarchyNode({ node, selectedId, selectedIds, onSelect, onContextMenuI
   const [expanded, setExpanded] = useState(true);
   const kids = uiChildren(node);
   const dropClass = dropHint?.id === node.id ? `drop-${dropHint.pos}` : "";
+  useEffect(() => {
+    if (selectedId && kids.length > 0 && findUiNode(node, selectedId)) setExpanded(true);
+  }, [kids.length, node, selectedId]);
   return (
     <>
       <div
+        data-hierarchy-node-id={node.id}
         className={`tree-row ${selectedIds.includes(node.id) ? "active" : ""} ${selectedId === node.id ? "primary" : ""} ${dropClass} ${dragId === node.id ? "dragging" : ""} ${node.props.visible === false ? "is-hidden" : ""}`}
         style={{ paddingLeft: 8 + depth * 14 }}
         draggable={renamingId !== node.id}
@@ -874,10 +932,11 @@ function keepValidSelection(current: UiSnapshot | undefined, incoming: UiSnapsho
   return withoutSelection;
 }
 
-function PermissionGuide({ state, busy, onAction, onClose }: {
+function PermissionGuide({ state, busy, confirmed, onAction, onClose }: {
   state: DesktopPermissionState;
   busy: string;
-  onAction: (permission: "screen" | "accessibility" | "restart" | "refresh") => void;
+  confirmed: boolean;
+  onAction: (permission: "screen" | "accessibility" | "restart" | "refresh" | "confirm") => void;
   onClose: () => void;
 }) {
   const permissionRows = [
@@ -905,7 +964,8 @@ function PermissionGuide({ state, busy, onAction, onClose }: {
         <div className="permission-guide-actions">
           <button className="secondary" onClick={onClose}>稍后设置</button>
           <button className="secondary" disabled={Boolean(busy)} onClick={() => onAction("refresh")}><RefreshCw size={14} />重新检测</button>
-          <button className="primary" disabled={!state.ready || Boolean(busy)} onClick={() => onAction("restart")}>重启应用并继续</button>
+          <button className={confirmed ? "secondary confirmed" : "secondary"} disabled={Boolean(busy)} onClick={() => onAction("confirm")}><CheckCircle2 size={14} />{confirmed ? "已确认授权" : "我已授权"}</button>
+          <button className="primary" disabled={(!state.ready && !confirmed) || Boolean(busy)} onClick={() => onAction("restart")}>重启应用并继续</button>
         </div>
       </section>
     </div>
@@ -928,7 +988,7 @@ function LegalConsentDialog({ state, busy, onAccept, onDecline, onClose }: {
       </header>
       <div className="legal-document" tabIndex={0}>
         <section><h3>最终用户许可协议</h3><p>TapMakerWork 是面向 TapTap Maker 项目可视化编辑与研究验证的本地开发工具。激活、继续使用或点击“同意并激活”即表示你同意本协议与下方隐私政策。</p><p>本项目出于研究与开发辅助目的，不以盗取用户数据、篡改或破坏 TapTap Maker、项目文件及其完整性为目的。工具只会在你主动打开的项目范围内执行编辑、预览、Git 与构建操作。</p></section>
-        <section><h3>屏幕录制与辅助功能权限</h3><p><strong>屏幕录制</strong>仅用于捕获本机 TapTap Maker Runtime 游戏窗口，将真实运行画面显示在 IDE 中，并用于用户主动触发的本地截图证据。TapMakerWork 不会自行录制整块屏幕，也不会自行上传捕获的画面。</p><p><strong>辅助功能</strong>仅用于把你在 Runtime 镜像上的点击坐标转发到真实游戏窗口。没有你的交互，不会自动控制其他应用。</p></section>
+        <section><h3>屏幕录制与辅助功能权限</h3><p><strong>屏幕录制</strong>仅用于捕获本机 TapTap Maker Runtime 游戏窗口，并将真实运行画面显示在 IDE 中。TapMakerWork 不会自行录制整块屏幕，也不会自行上传捕获的画面。</p><p><strong>辅助功能</strong>仅用于把你在 Runtime 镜像上的点击坐标转发到真实游戏窗口。没有你的交互，不会自动控制其他应用。</p></section>
         <section><h3>本地数据与网络</h3><p>应用会在本机保存设置、最近项目路径、协议接受状态、预览配置与必要日志。项目修改只发生在你选择的目录中。只有当你主动使用 Maker 构建、二维码、更新检查、Git 推送或外部链接时，才会连接对应服务；这些服务适用其各自条款。</p></section>
         <section><h3>风险与责任</h3><p>请在编辑和 Git 操作前保留备份。研究工具按现状提供，不承诺适用于所有项目或硬件环境；应用不会在未经确认的情况下执行强制推送、硬重置或删除整个项目。</p></section>
       </div>
@@ -943,8 +1003,9 @@ function LegalConsentDialog({ state, busy, onAccept, onDecline, onClose }: {
   </div>;
 }
 
-function RuntimeErrorDialog({ report, onCopy, onOpenLogs, onDismiss }: {
+function RuntimeErrorDialog({ report, copying, onCopy, onOpenLogs, onDismiss }: {
   report: RuntimeErrorReport;
+  copying: boolean;
   onCopy: () => void;
   onOpenLogs: () => void;
   onDismiss: () => void;
@@ -953,7 +1014,7 @@ function RuntimeErrorDialog({ report, onCopy, onOpenLogs, onDismiss }: {
     <section className="runtime-error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="runtime-error-title" aria-describedby="runtime-error-description">
       <header><span><AlertTriangle size={20} /></span><div><h2 id="runtime-error-title">TapTap Maker 运行时错误</h2><p id="runtime-error-description">请修复游戏中的以下错误。请定位根因并修改代码，完成后验证游戏不再报错。</p></div></header>
       <pre>{report.errorText}</pre>
-      <footer><button onClick={onOpenLogs}>查看 Runtime 日志</button><button onClick={onDismiss}>暂时忽略</button><button className="primary" autoFocus onClick={onCopy}><Copy size={14} />复制错误报告</button></footer>
+      <footer><button onClick={onOpenLogs}>查看 Runtime 日志</button><button onClick={onDismiss}>暂时忽略</button><button className="primary" autoFocus disabled={copying} onClick={onCopy}><Copy size={14} />{copying ? "正在复制…" : "复制错误报告"}</button></footer>
     </section>
   </div>;
 }
@@ -964,6 +1025,113 @@ function ProjectRejectDialog({ path, message, onClose }: { path: string; message
       <span className="project-reject-icon"><FolderOpen size={24} /></span>
       <div><h2 id="project-reject-title">无法打开此文件夹</h2><p>{message}</p><code title={path}>{path}</code></div>
       <button className="primary" autoFocus onClick={onClose}>重新选择</button>
+    </section>
+  </div>;
+}
+
+const ROADMAP_SECTIONS: Array<{ title: string; icon: ReactNode; items: string[] }> = [
+  {
+    title: "资源与构建优化",
+    icon: <Package size={15} aria-hidden="true" />,
+    items: [
+      "内置图片无损/近无损批量压缩，面板内预览体积收益",
+      "无用资源清理：基于引用审计列清单，可撤销",
+      "代码混淆选项：与官方构建链兼容，可开关",
+      "构建包体报告：资源占比与压缩收益"
+    ]
+  },
+  {
+    title: "开发经验与 AI 提效",
+    icon: <Sparkles size={15} aria-hidden="true" />,
+    items: [
+      "IDE 内实践指南：常见坑、排错路径、交付检查清单",
+      "AI 开发技巧库：提示词与安全修改 Maker 项目的方法",
+      "可导入 Skills / 工程模板，供 Claude、Cursor、Codex 参考",
+      "指南暴露为项目 MCP resource，便于 Agent 检索"
+    ]
+  },
+  {
+    title: "多平台打包",
+    icon: <Map size={15} aria-hidden="true" />,
+    items: [
+      "H5 / Web 导出工作流（预览与分享）",
+      "Android APK 打包向导（签名、包名、渠道参数）",
+      "iOS 产物导出引导与上架前检查清单",
+      "macOS / Windows 桌面游戏包入口",
+      "抖音小游戏、微信小游戏等目标预设与适配检查",
+      "多平台工程预设切换与打包产物归档"
+    ]
+  },
+  {
+    title: "游戏工程能力参考",
+    icon: <ShieldCheck size={15} aria-hidden="true" />,
+    items: [
+      "UI 安全区域：异形屏可视化与布局检查",
+      "反作弊参考：客户端检测思路与服务端校验配合",
+      "强更新范式：强制升级、维护公告、灰度/分渠道",
+      "游戏数据存档回退：云存档与版本兼容策略",
+      "排行榜标杆实现与防刷参考",
+      "广告接入标杆项目源码模板（供 AI/人工对照）"
+    ]
+  }
+];
+
+function RoadmapDialog({ onClose, onOpenSite, onJoinGroup }: { onClose: () => void; onOpenSite: () => void; onJoinGroup: () => void }) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+  return <div className="sponsor-backdrop roadmap-backdrop" role="presentation">
+    <section className="sponsor-dialog roadmap-dialog" role="dialog" aria-modal="true" aria-labelledby="roadmap-dialog-title">
+      <header>
+        <div>
+          <span>规划中 · 尚未全部实现</span>
+          <h2 id="roadmap-dialog-title">TapMakerWork 后续开发规划</h2>
+          <p>下列能力会按迭代推进；具体上线时间以发行说明为准。欢迎在交流群提出优先级建议。部分导出/上架仍依赖 TapTap 官方与各平台规则。</p>
+        </div>
+        <button className="icon-command" aria-label="关闭后续规划" onClick={onClose}><X size={18} /></button>
+      </header>
+      <div className="roadmap-body">
+        {ROADMAP_SECTIONS.map((section) => (
+          <section key={section.title} className="roadmap-section">
+            <h3>{section.icon}{section.title}</h3>
+            <ul>
+              {section.items.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </section>
+        ))}
+      </div>
+      <footer>
+        <button onClick={onJoinGroup}><Users size={15} />加入交流群</button>
+        <button onClick={onOpenSite}><ExternalLink size={15} />官网</button>
+        <button className="primary" autoFocus onClick={onClose}>知道了</button>
+      </footer>
+    </section>
+  </div>;
+}
+
+function SponsorDialog({ onClose, onOpenWorks }: { onClose: () => void; onOpenWorks: () => void }) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+  return <div className="sponsor-backdrop" role="presentation">
+    <section className="sponsor-dialog" role="dialog" aria-modal="true" aria-labelledby="sponsor-dialog-title">
+      <header>
+        <div><span>自愿支持 · 不影响任何功能</span><h2 id="sponsor-dialog-title">赞赏 TapMakerWork 作者</h2><p>感谢支持研究与持续维护。赞赏完全自愿，与软件功能及开源授权无关。</p></div>
+        <button className="icon-command" aria-label="关闭赞赏窗口" onClick={onClose}><X size={18} /></button>
+      </header>
+      <div className="sponsor-codes">
+        <figure><div><img src={wechatPayImage} alt="作者微信赞赏收款码" /></div><figcaption>微信赞赏</figcaption></figure>
+        <figure><div><img src={alipayImage} alt="作者支付宝赞赏收款码" /></div><figcaption>支付宝赞赏</figcaption></figure>
+      </div>
+      <footer><button onClick={onOpenWorks}><Gamepad2 size={15} />作者游戏品鉴</button><button className="primary" autoFocus onClick={onClose}>完成</button></footer>
     </section>
   </div>;
 }
@@ -1020,10 +1188,20 @@ export function App() {
   const [gitBusy, setGitBusy] = useState<"pull" | "commit" | "push-build" | "">("");
   const [gitCommitMessage, setGitCommitMessage] = useState("chore: update Maker project");
   const [gitConflictPlan, setGitConflictPlan] = useState("");
+  const [gitFileMenu, setGitFileMenu] = useState<{ change: GitChangeState; scope: "staged" | "unstaged"; x: number; y: number } | null>(null);
   const [systemInfo, setSystemInfo] = useState<Record<string, unknown>>();
   const [adapterExport, setAdapterExport] = useState<string>("");
   const [revealLine, setRevealLine] = useState<number | null>(null);
-  const [sidecarInfo, setSidecarInfo] = useState<{ path: string; exists: boolean; savedAt?: string | undefined; dirty?: boolean | undefined }>({ path: "", exists: false });
+  const [sidecarInfo, setSidecarInfo] = useState<{
+    path: string;
+    exists: boolean;
+    savedAt?: string | undefined;
+    dirty?: boolean | undefined;
+    saveMode?: "static-tree" | "template-overrides" | undefined;
+    overrideCount?: number | undefined;
+    skippedInstances?: number | undefined;
+  }>({ path: "", exists: false });
+  const [sidecarEditRevision, setSidecarEditRevision] = useState(0);
   const [makerMeta, setMakerMeta] = useState<MakerProjectMeta>({});
   const [makerPreviewStatus, setMakerPreviewStatus] = useState<MakerPreviewStatus>();
   const [makerBusy, setMakerBusy] = useState<"" | "build" | "qrcode" | "doctor">("");
@@ -1033,14 +1211,17 @@ export function App() {
   const [desktopPermissions, setDesktopPermissions] = useState<DesktopPermissionState>();
   const [permissionGuideOpen, setPermissionGuideOpen] = useState(false);
   const [permissionBusy, setPermissionBusy] = useState("");
+  const [permissionConfirmed, setPermissionConfirmed] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState>();
-  const [updateUrlDraft, setUpdateUrlDraft] = useState("");
   const [desktopUpdateBusy, setDesktopUpdateBusy] = useState("");
   const [desktopHardware, setDesktopHardware] = useState<DesktopHardwareAccelerationState>();
   const [hardwareBusy, setHardwareBusy] = useState(false);
   const [desktopLegal, setDesktopLegal] = useState<DesktopLegalState>();
   const [legalDialogOpen, setLegalDialogOpen] = useState(Boolean(window.tapMakerWork?.legal));
   const [legalBusy, setLegalBusy] = useState<"accept" | "decline" | "">("");
+  const [desktopTelemetry, setDesktopTelemetry] = useState<DesktopTelemetryState>();
+  const [telemetryEndpointDraft, setTelemetryEndpointDraft] = useState("");
+  const [telemetryBusy, setTelemetryBusy] = useState(false);
   const [workflow, setWorkflow] = useState<ProjectWorkflowOverview>();
   const [workflowLoading, setWorkflowLoading] = useState(false);
   const [workflowBusyAction, setWorkflowBusyAction] = useState<ProjectWorkflowAction>();
@@ -1048,8 +1229,11 @@ export function App() {
   const [qrImageFailed, setQrImageFailed] = useState(false);
   const [projectReject, setProjectReject] = useState<{ path: string; message: string }>();
   const [runtimeErrorReport, setRuntimeErrorReport] = useState<RuntimeErrorReport>();
+  const [sponsorOpen, setSponsorOpen] = useState(false);
+  const [roadmapOpen, setRoadmapOpen] = useState(false);
   const [qrMenuOpen, setQrMenuOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [copyBusy, setCopyBusy] = useState(false);
   const [newNodeType, setNewNodeType] = useState<UiNodeType>("Panel");
   const [hierDragId, setHierDragId] = useState<string | null>(null);
   const [hierDrop, setHierDrop] = useState<{ id: string; pos: "before" | "after" | "inside" } | null>(null);
@@ -1058,22 +1242,39 @@ export function App() {
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const toast = useCallback((message: string, kind: ToastKind = "info") => {
     const id = Date.now() + Math.random();
-    setToasts((list) => [...list, { id, kind, message }]);
+    setToasts((list) => list.some((item) => item.kind === kind && item.message === message)
+      ? list
+      : [...list, { id, kind, message }]);
     window.setTimeout(() => setToasts((list) => list.filter((item) => item.id !== id)), 2800);
   }, []);
+  const markSidecarDirty = useCallback(() => {
+    setSidecarInfo((current) => ({ ...current, dirty: true }));
+    setSidecarEditRevision((revision) => revision + 1);
+  }, []);
+
+  const trackTelemetry = useCallback((name: string, props?: Record<string, unknown>) => {
+    void window.tapMakerWork?.telemetry?.track(name, props).catch(() => undefined);
+  }, []);
   const qrCloseTimer = useRef<number | null>(null);
+  const copyInFlightRef = useRef(false);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const modeRef = useRef<WorkspaceMode>(mode);
   const centerTabRef = useRef<CenterTab>(centerTab);
   const selectedNodeIdRef = useRef<string | undefined>(undefined);
+  const snapshotRef = useRef<UiSnapshot | undefined>(undefined);
   const runtimeEditSyncTimerRef = useRef<number | null>(null);
   const dismissedRuntimeErrorsRef = useRef(new Set<string>());
+  const hierarchyTreeRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [stageScale, setStageScale] = useState(1);
   const [canvasAutoFit, setCanvasAutoFit] = useState(true);
   const [canvasTool, setCanvasTool] = useState<TransformTool>("move");
   const [canvasSnapEnabled, setCanvasSnapEnabled] = useState(false);
+
+  useEffect(() => {
+    snapshotRef.current = snapshot;
+  }, [snapshot]);
   const canvasViewportRef = useRef<HTMLDivElement | null>(null);
   const documentTabsRef = useRef<HTMLElement | null>(null);
   const floatingWorkspaceDragRef = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null);
@@ -1207,12 +1408,14 @@ export function App() {
     const updatesApi = window.tapMakerWork?.updates;
     const hardwareApi = window.tapMakerWork?.hardwareAcceleration;
     const legalApi = window.tapMakerWork?.legal;
-    if (!permissionsApi && !updatesApi && !hardwareApi && !legalApi) return;
+    const telemetryApi = window.tapMakerWork?.telemetry;
+    if (!permissionsApi && !updatesApi && !hardwareApi && !legalApi && !telemetryApi) return;
     let active = true;
     if (permissionsApi) {
       void permissionsApi.get().then((state) => {
         if (!active) return;
         setDesktopPermissions(state);
+        if (state.ready) setPermissionConfirmed(true);
         const dismissed = localStorage.getItem("tapmakerwork.permissions.dismissed") === "1";
         if (state.platform === "darwin" && !state.ready && !dismissed) setPermissionGuideOpen(true);
       });
@@ -1221,7 +1424,6 @@ export function App() {
       void updatesApi.get().then((state) => {
         if (!active) return;
         setDesktopUpdate(state);
-        if (state.updateUrl) setUpdateUrlDraft(state.updateUrl);
       });
     }
     if (hardwareApi) {
@@ -1238,22 +1440,39 @@ export function App() {
         if (active) toast(`无法读取用户协议状态：${error instanceof Error ? error.message : String(error)}`, "error");
       });
     }
+    if (telemetryApi) {
+      void telemetryApi.get().then((state) => {
+        if (!active) return;
+        setDesktopTelemetry(state);
+        setTelemetryEndpointDraft(state.endpoint || "");
+      }).catch(() => undefined);
+    }
     const removePermissionListener = permissionsApi?.onChanged((state) => {
       setDesktopPermissions(state);
-      if (state.ready) localStorage.removeItem("tapmakerwork.permissions.dismissed");
+      if (state.ready) {
+        setPermissionConfirmed(true);
+        localStorage.removeItem("tapmakerwork.permissions.dismissed");
+      }
     });
     const removeUpdateListener = updatesApi?.onState((state) => {
       setDesktopUpdate(state);
-      if (state.updateUrl) setUpdateUrlDraft(state.updateUrl);
     });
+    const telemetryTimer = telemetryApi
+      ? window.setInterval(() => {
+        void telemetryApi.get().then((state) => {
+          if (active) setDesktopTelemetry(state);
+        }).catch(() => undefined);
+      }, 15_000)
+      : undefined;
     return () => {
       active = false;
+      if (telemetryTimer) window.clearInterval(telemetryTimer);
       removePermissionListener?.();
       removeUpdateListener?.();
     };
   }, [toast]);
 
-  const runPermissionAction = useCallback(async (action: "screen" | "accessibility" | "restart" | "refresh") => {
+  const runPermissionAction = useCallback(async (action: "screen" | "accessibility" | "restart" | "refresh" | "confirm") => {
     const api = window.tapMakerWork?.permissions;
     if (!api) return;
     setPermissionBusy(action);
@@ -1262,9 +1481,21 @@ export function App() {
         await api.restart();
         return;
       }
+      if (action === "confirm") {
+        const state = await api.get();
+        setDesktopPermissions(state);
+        setPermissionConfirmed(true);
+        toast(state.ready ? "系统权限已检测为就绪，可以重启应用" : "已记录你的授权确认；现在可以重启应用完成系统状态刷新", "success");
+        return;
+      }
       const state = action === "refresh" ? await api.get() : await api.request(action);
       setDesktopPermissions(state);
-      if (state.ready) toast("系统权限已就绪，可以使用真实 Runtime 预览与交互", "success");
+      if (state.ready) {
+        setPermissionConfirmed(true);
+        toast("系统权限已就绪，可以使用真实 Runtime 预览与交互", "success");
+      } else if (action === "refresh") {
+        toast("系统尚未返回最新授权状态；若你已在设置中开启，可点击“我已授权”后重启", "warn");
+      }
     } catch (error) {
       toast(`权限操作失败：${error instanceof Error ? error.message : String(error)}`, "error");
     } finally {
@@ -1276,21 +1507,6 @@ export function App() {
     localStorage.setItem("tapmakerwork.permissions.dismissed", "1");
     setPermissionGuideOpen(false);
   }, []);
-
-  const configureDesktopUpdates = useCallback(async () => {
-    const api = window.tapMakerWork?.updates;
-    if (!api) return;
-    setDesktopUpdateBusy("configure");
-    try {
-      const state = await api.configure(updateUrlDraft);
-      setDesktopUpdate(state);
-      toast("更新地址已保存", "success");
-    } catch (error) {
-      toast(error instanceof Error ? error.message : String(error), "error");
-    } finally {
-      setDesktopUpdateBusy("");
-    }
-  }, [toast, updateUrlDraft]);
 
   const runDesktopUpdateAction = useCallback(async (action: "check" | "download" | "restart") => {
     const api = window.tapMakerWork?.updates;
@@ -1334,6 +1550,54 @@ export function App() {
       toast(`协议状态保存失败：${error instanceof Error ? error.message : String(error)}`, "error");
     } finally {
       setLegalBusy("");
+    }
+  }, [toast]);
+
+  const setTelemetryEnabled = useCallback(async (enabled: boolean) => {
+    const api = window.tapMakerWork?.telemetry;
+    if (!api) return;
+    setTelemetryBusy(true);
+    try {
+      const state = await api.setEnabled(enabled);
+      setDesktopTelemetry(state);
+      toast(enabled ? "已开启匿名使用统计" : "已关闭匿名使用统计", "success");
+    } catch (error) {
+      toast(`遥测设置失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setTelemetryBusy(false);
+    }
+  }, [toast]);
+
+  const saveTelemetryEndpoint = useCallback(async () => {
+    const api = window.tapMakerWork?.telemetry;
+    if (!api) return;
+    setTelemetryBusy(true);
+    try {
+      const state = await api.setEndpoint(telemetryEndpointDraft.trim());
+      setDesktopTelemetry(state);
+      setTelemetryEndpointDraft(state.endpoint || "");
+      toast(state.endpoint ? "遥测上报地址已保存" : "已改为仅本机统计（不上报）", "success");
+    } catch (error) {
+      toast(`遥测地址无效：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setTelemetryBusy(false);
+    }
+  }, [telemetryEndpointDraft, toast]);
+
+  const flushTelemetry = useCallback(async () => {
+    const api = window.tapMakerWork?.telemetry;
+    if (!api) return;
+    setTelemetryBusy(true);
+    try {
+      const result = await api.flush();
+      setDesktopTelemetry(result.summary);
+      toast(result.ok
+        ? (result.sent > 0 ? `已上报 ${result.sent} 条事件` : "暂无待上报事件或未配置地址")
+        : `上报失败：${result.error || "unknown"}`, result.ok ? "success" : "error");
+    } catch (error) {
+      toast(`上报失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setTelemetryBusy(false);
     }
   }, [toast]);
 
@@ -1401,6 +1665,22 @@ export function App() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [nodeContextMenu]);
+
+  useEffect(() => {
+    if (!gitFileMenu) return;
+    const close = () => setGitFileMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [gitFileMenu]);
 
   const persistLayout = useCallback((next: WorkspaceLayout) => {
     setLayout(next);
@@ -1502,7 +1782,7 @@ export function App() {
       });
       const openResult = await openRes.json() as {
         snapshot?: UiSnapshot;
-        sidecar?: { path?: string; exists?: boolean; savedAt?: string };
+        sidecar?: { path?: string; exists?: boolean; savedAt?: string; saveMode?: "static-tree" | "template-overrides"; overrideCount?: number };
         error?: string;
       };
       if (openRes.ok && openResult.snapshot) {
@@ -1513,6 +1793,8 @@ export function App() {
           path: openResult.sidecar?.path || targetPath.replace(/\.lua$/i, ".ui.json"),
           exists: Boolean(openResult.sidecar?.exists),
           ...(openResult.sidecar?.savedAt ? { savedAt: openResult.sidecar.savedAt } : {}),
+          ...(openResult.sidecar?.saveMode ? { saveMode: openResult.sidecar.saveMode } : {}),
+          ...(typeof openResult.sidecar?.overrideCount === "number" ? { overrideCount: openResult.sidecar.overrideCount } : {}),
           dirty: false
         });
         setCenterTab("visual");
@@ -1605,7 +1887,7 @@ export function App() {
     const result = await response.json() as {
       snapshot?: UiSnapshot;
       error?: string;
-      sidecar?: { path?: string; exists?: boolean; savedAt?: string };
+      sidecar?: { path?: string; exists?: boolean; savedAt?: string; saveMode?: "static-tree" | "template-overrides"; overrideCount?: number };
     };
     if (!response.ok || !result.snapshot) {
       setLogs((current) => ({ ...current, agent: [...current.agent, `界面无法预览：${result.error ?? "转换失败"}`] }));
@@ -1625,6 +1907,8 @@ export function App() {
       path: result.sidecar?.path || screenPath.replace(/\.lua$/i, ".ui.json"),
       exists: Boolean(result.sidecar?.exists),
       ...(result.sidecar?.savedAt ? { savedAt: result.sidecar.savedAt } : {}),
+      ...(result.sidecar?.saveMode ? { saveMode: result.sidecar.saveMode } : {}),
+      ...(typeof result.sidecar?.overrideCount === "number" ? { overrideCount: result.sidecar.overrideCount } : {}),
       dirty: false
     });
     if (/MainShell|HomePage|LoadingScreen/i.test(screenPath)) {
@@ -1653,9 +1937,36 @@ export function App() {
   }, []);
 
   const selectCanvasNode = useCallback((nodeId: string, additive = false) => {
+    const node = snapshot ? findUiNode(snapshot.root, nodeId) : undefined;
     selectNode(nodeId, additive);
     setLeftTab("hierarchy");
-  }, [selectNode]);
+    if (additive) return;
+    const sourceFile = node?.source?.file;
+    if (!sourceFile) return;
+    setActiveUiPath(sourceFile);
+    if (node.source?.line) setRevealLine(node.source.line);
+    if (sourceFile !== selectedFile) {
+      void readFile(sourceFile, false).catch((error) => {
+        toast(`打开节点对应 UI 文件失败：${error instanceof Error ? error.message : String(error)}`, "error");
+      });
+    }
+  }, [readFile, selectNode, selectedFile, snapshot, toast]);
+
+  useEffect(() => {
+    if (leftTab !== "hierarchy" || !snapshot?.selectedId) return;
+    const frame = window.requestAnimationFrame(() => {
+      const scroller = hierarchyTreeRef.current;
+      if (!scroller) return;
+      const row = Array.from(scroller.querySelectorAll<HTMLElement>("[data-hierarchy-node-id]"))
+        .find((item) => item.dataset.hierarchyNodeId === snapshot.selectedId);
+      if (!row) return;
+      const scrollRect = scroller.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      if (rowRect.top < scrollRect.top) scroller.scrollTop -= scrollRect.top - rowRect.top;
+      else if (rowRect.bottom > scrollRect.bottom) scroller.scrollTop += rowRect.bottom - scrollRect.bottom;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [leftTab, snapshot?.selectedId]);
 
   const openNodeContextMenu = useCallback((nodeId: string, x: number, y: number) => {
     const width = 232;
@@ -1706,7 +2017,7 @@ export function App() {
       const next = { ...(result as UiSnapshot), selectedId: nodeId };
       setSnapshot(next);
       if (mode === "live-edit" || centerTab === "visual") {
-        setSidecarInfo((current) => ({ ...current, dirty: true }));
+        markSidecarDirty();
       }
       scheduleRuntimeEditSync(120);
     } else {
@@ -1766,6 +2077,7 @@ export function App() {
       void loadPreviewPanel();
       void loadWorkflow();
       setCenterTab("workflow");
+      trackTelemetry("project.open", {});
       setRecentProjects((current) => {
         const next = [{ root: result.project!.root, name: result.project!.name }, ...current.filter((item) => item.root !== result.project!.root)].slice(0, 8);
         localStorage.setItem("tapmakerwork.recentProjects", JSON.stringify(next));
@@ -1773,11 +2085,12 @@ export function App() {
       });
     } catch (error) {
       setProjectError(error instanceof Error ? error.message : String(error));
+      trackTelemetry("project.open_fail", {});
     } finally {
       setProjectLoaded(true);
       setProjectOpening(false);
     }
-  }, [loadProjectContents, loadWorkflow]);
+  }, [loadProjectContents, loadWorkflow, trackTelemetry]);
 
   const chooseProject = useCallback(async () => {
     if (window.tapMakerWork?.chooseProject) {
@@ -1787,6 +2100,65 @@ export function App() {
     }
     setProjectError("请使用桌面版的“文件 → 打开项目…”选择项目目录。");
   }, [openProjectPath]);
+
+  const closeCurrentProject = useCallback(async () => {
+    if (!project) return;
+    if (codeDirty && !window.confirm("当前代码文件还有未保存修改。关闭项目将丢失这些修改，是否继续？")) return;
+    setProjectOpening(true);
+    try {
+      if (makerPreviewStatus?.process_alive) {
+        await fetch(`${API}/api/maker/preview/stop`, { method: "POST" }).catch(() => undefined);
+      }
+      const response = await fetch(`${API}/api/project/close`, { method: "POST" });
+      const result = await response.json() as { ok?: boolean; error?: string };
+      if (!response.ok || !result.ok) throw new Error(result.error || "关闭项目失败");
+      await window.tapMakerWork?.preview?.unmount().catch(() => undefined);
+      setProject(undefined);
+      setProjectLoaded(true);
+      setProjectError("");
+      setFiles([]);
+      setScreens([]);
+      setAssets([]);
+      setSnapshot(undefined);
+      setSnapshotSource(undefined);
+      setSelectedNodeIds([]);
+      selectedNodeIdRef.current = undefined;
+      setActiveUiPath("scripts/ui/HomePage.lua");
+      setSelectedFile("scripts/ui/HomePage.lua");
+      setCode("-- 请先打开一个 TapTap Maker 项目…");
+      setCodeDirty(false);
+      setSaveState("idle");
+      setGitStatus(undefined);
+      setGitConflictPlan("");
+      setMakerMeta({});
+      setMakerPreviewStatus(undefined);
+      setPreviewPanel(undefined);
+      setPreviewDockOpen(false);
+      setWorkflow(undefined);
+      setSidecarInfo({ path: "", exists: false });
+      setRuntimeErrorReport(undefined);
+      dismissedRuntimeErrorsRef.current.clear();
+      setSearchOpen(false);
+      setSettingsOpen(false);
+      setQrOpen(false);
+      setQrMenuOpen(false);
+      setToolsMenuOpen(false);
+      setSponsorOpen(false);
+      setNodeContextMenu(null);
+      setFloatingWorkspace(null);
+      setMode("inspect");
+      setCenterTab("workflow");
+      setHealth((current) => {
+        if (!current) return current;
+        const { runtimeSessionId: _runtimeSessionId, runtimeConnectedAt: _runtimeConnectedAt, makerProjectMeta: _makerProjectMeta, ...rest } = current;
+        return { ...rest, runtimeScene: "idle", snapshotSource: "empty" };
+      });
+    } catch (error) {
+      toast(`关闭项目失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setProjectOpening(false);
+    }
+  }, [codeDirty, makerPreviewStatus?.process_alive, project, toast]);
 
   const removeRecentProject = useCallback((projectPath: string) => {
     setRecentProjects((current) => {
@@ -1889,6 +2261,24 @@ export function App() {
       setGitBusy("");
     }
   }, [gitCommitMessage, loadGitStatus, toast]);
+
+  const runGitFileAction = useCallback(async (action: "stage" | "unstage" | "discard" | "stage-all" | "unstage-all", change?: GitChangeState) => {
+    if (action === "discard" && change && !window.confirm(`确定丢弃 ${change.path} 的本地修改吗？此操作无法撤销。`)) return;
+    setGitFileMenu(null);
+    try {
+      const response = await fetch(`${API}/api/git/mutate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, ...(change ? { path: change.path } : {}) })
+      });
+      const result = await response.json() as { status?: GitStatusState; error?: string };
+      if (!response.ok || !result.status) throw new Error(result.error || "Git 文件操作失败");
+      setGitStatus(result.status);
+      toast(action === "stage" || action === "stage-all" ? "已暂存修改" : action === "unstage" || action === "unstage-all" ? "已取消暂存" : "已丢弃本地修改", "success");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
+    }
+  }, [toast]);
 
   const loadSystemInfo = useCallback(async () => {
     try {
@@ -2092,16 +2482,19 @@ export function App() {
       const result = await response.json() as { error?: string };
       if (!response.ok) {
         setLogs((current) => ({ ...current, build: [...current.build, `构建失败：${result.error ?? response.statusText}`] }));
+        trackTelemetry("build.trigger", { result: "fail" });
       } else {
         setLogs((current) => ({ ...current, build: [...current.build, "构建请求已完成，详情见构建终端。"] }));
+        trackTelemetry("build.trigger", { result: "ok" });
         void refreshRuntimeLogs();
       }
     } catch (error) {
       setLogs((current) => ({ ...current, build: [...current.build, `构建异常：${error instanceof Error ? error.message : String(error)}`] }));
+      trackTelemetry("build.trigger", { result: "error" });
     } finally {
       setMakerBusy("");
     }
-  }, [refreshRuntimeLogs]);
+  }, [refreshRuntimeLogs, trackTelemetry]);
 
   const runMakerQrcode = useCallback(async () => {
     setMakerBusy("qrcode");
@@ -2162,13 +2555,41 @@ export function App() {
       toast("没有可复制的内容", "warn");
       return;
     }
+    if (copyInFlightRef.current) return;
+    copyInFlightRef.current = true;
+    setCopyBusy(true);
+    const failures: string[] = [];
     try {
-      await navigator.clipboard.writeText(text);
+      let copied = false;
+      const desktopClipboard = window.tapMakerWork?.clipboard;
+      if (desktopClipboard) {
+        try {
+          const result = await desktopClipboard.writeText(text);
+          copied = result.ok;
+          if (!result.ok) failures.push(result.error || "desktop_clipboard_failed");
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      if (!copied && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      if (!copied) copied = legacyCopyText(text);
+      if (!copied) throw new Error(failures.filter(Boolean).join(" · ") || "clipboard_unavailable");
       toast("已复制到剪贴板", "success");
-      setLogs((current) => ({ ...current, qrcode: [...current.qrcode, `已复制：${text}`] }));
-    } catch {
-      toast("复制失败，请手动选择", "error");
-      setLogs((current) => ({ ...current, qrcode: [...current.qrcode, `复制失败：${text}`] }));
+      setLogs((current) => ({ ...current, qrcode: [...current.qrcode, `已复制 ${text.length} 个字符到剪贴板`] }));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      toast("复制失败，请在文本框中按 ⌘C / Ctrl+C", "error");
+      setLogs((current) => ({ ...current, qrcode: [...current.qrcode, `复制失败：${reason}`] }));
+    } finally {
+      copyInFlightRef.current = false;
+      setCopyBusy(false);
     }
   }, [toast]);
 
@@ -2189,14 +2610,14 @@ export function App() {
         return;
       }
       setSnapshot(result as UiSnapshot);
-      if (mode === "live-edit" || centerTab === "visual") setSidecarInfo((current) => ({ ...current, dirty: true }));
+      if (mode === "live-edit" || centerTab === "visual") markSidecarDirty();
       scheduleRuntimeEditSync(140);
       toast(`${label}成功`, "success");
       setLeftTab("hierarchy");
     } catch (error) {
       toast(`${label}失败：${error instanceof Error ? error.message : String(error)}`, "error");
     }
-  }, [snapshot, mode, centerTab, scheduleRuntimeEditSync, toast]);
+  }, [snapshot, mode, centerTab, markSidecarDirty, scheduleRuntimeEditSync, toast]);
 
   const beginRenameSelected = useCallback(() => {
     const node = snapshot?.selectedId ? findUiNode(snapshot.root, snapshot.selectedId) : undefined;
@@ -2286,7 +2707,7 @@ export function App() {
   };
 
   const saveUiSidecar = useCallback(async (snapshotOverride?: UiSnapshot) => {
-    const snap = snapshotOverride ?? snapshot;
+    const snap = snapshotOverride ?? snapshotRef.current;
     if (!snap || !activeUiPath) return;
     try {
       const response = await fetch(`${API}/api/ui/sidecar`, {
@@ -2298,6 +2719,7 @@ export function App() {
         path?: string;
         savedAt?: string;
         error?: string;
+        persistence?: { mode?: "static-tree" | "template-overrides"; overrideCount?: number; skippedInstances?: number };
         preview?: { reloadToken?: number; autoRefreshIframe?: boolean; autoRefreshMaker?: boolean; makerRefresh?: { error?: string } };
       };
       if (!response.ok) throw new Error(result.error || "写入 .ui.json 失败");
@@ -2305,6 +2727,9 @@ export function App() {
         path: result.path || "",
         exists: true,
         ...(result.savedAt ? { savedAt: result.savedAt } : {}),
+        ...(result.persistence?.mode ? { saveMode: result.persistence.mode } : {}),
+        ...(typeof result.persistence?.overrideCount === "number" ? { overrideCount: result.persistence.overrideCount } : {}),
+        ...(typeof result.persistence?.skippedInstances === "number" ? { skippedInstances: result.persistence.skippedInstances } : {}),
         dirty: false
       });
       if (typeof result.preview?.reloadToken === "number") {
@@ -2313,17 +2738,20 @@ export function App() {
       if (result.preview?.makerRefresh?.error) {
         setLogs((current) => ({ ...current, runtime: [...current.runtime, `live-edit Maker refresh：${result.preview!.makerRefresh!.error}`] }));
       }
-      setLogs((current) => ({ ...current, agent: [...current.agent, `视觉已同步 → ${result.path}${result.preview?.autoRefreshIframe ? " · 预览自动刷新" : ""}`] }));
+      const persistenceSummary = result.persistence?.mode === "template-overrides"
+        ? ` · ${result.persistence.overrideCount || 0} 条模板覆盖${result.persistence.skippedInstances ? ` · 已忽略 ${result.persistence.skippedInstances} 个不稳定实例/结构操作` : ""}`
+        : " · 静态结构";
+      setLogs((current) => ({ ...current, agent: [...current.agent, `视觉已同步 → ${result.path}${persistenceSummary}${result.preview?.autoRefreshIframe ? " · 预览自动刷新" : ""}`] }));
     } catch (error) {
       setLogs((current) => ({ ...current, agent: [...current.agent, `同步 .ui.json 失败：${error instanceof Error ? error.message : String(error)}`] }));
     }
-  }, [activeUiPath, snapshot]);
+  }, [activeUiPath]);
 
   useEffect(() => {
     if (!sidecarInfo.dirty) return;
     const timer = window.setTimeout(() => { void saveUiSidecar(); }, 700);
     return () => window.clearTimeout(timer);
-  }, [sidecarInfo.dirty, snapshot, saveUiSidecar]);
+  }, [sidecarEditRevision, sidecarInfo.dirty, saveUiSidecar]);
 
   useEffect(() => {
     if (centerTab !== "code" || !revealLine || !editorRef.current) return;
@@ -2395,6 +2823,7 @@ export function App() {
   }, [loadProjectContents, loadAssets, loadGitStatus, refreshRuntimeLogs, loadMakerMeta, loadPreviewPanel, loadWorkflow]);
 
   useEffect(() => window.tapMakerWork?.onOpenProject?.((projectPath) => { void openProjectPath(projectPath); }), [openProjectPath]);
+  useEffect(() => window.tapMakerWork?.onCloseProject?.(() => { void closeCurrentProject(); }), [closeCurrentProject]);
 
   useEffect(() => {
     if (centerTab !== "visual") return;
@@ -2617,7 +3046,7 @@ export function App() {
         if (response.ok) {
           const next = await response.json() as UiSnapshot;
           setSnapshot({ ...next, selectedId: nodeId });
-          setSidecarInfo((current) => ({ ...current, dirty: true }));
+          markSidecarDirty();
           scheduleRuntimeEditSync(120);
         } else {
           const result = await response.json().catch(() => ({})) as { error?: string };
@@ -2633,7 +3062,7 @@ export function App() {
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [canvasSnapEnabled, scheduleRuntimeEditSync, stageScale, toast]);
+  }, [canvasSnapEnabled, markSidecarDirty, scheduleRuntimeEditSync, stageScale, toast]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -2666,12 +3095,12 @@ export function App() {
     if (response.ok) {
       const next = await response.json() as UiSnapshot;
       setSnapshot((current) => keepValidSelection(current, next, selectedNodeIdRef.current));
-      if (mode === "live-edit" || centerTab === "visual") setSidecarInfo((current) => ({ ...current, dirty: true }));
+      if (mode === "live-edit" || centerTab === "visual") markSidecarDirty();
       scheduleRuntimeEditSync(0);
       setRuntimeEditRevision((revision) => revision + 1);
       toast(action === "undo" ? "已撤销上一步编辑" : "已重做编辑", "success");
     }
-  }, [mode, centerTab, scheduleRuntimeEditSync, toast]);
+  }, [mode, centerTab, markSidecarDirty, scheduleRuntimeEditSync, toast]);
 
   useEffect(() => window.tapMakerWork?.onHistoryAction?.((action) => {
     const active = document.activeElement as HTMLElement | null;
@@ -2692,7 +3121,9 @@ export function App() {
       if (!response.ok) {
         setLogs((current) => ({ ...current, runtime: [...current.runtime, `Runtime 操作失败：${result.error ?? response.statusText}`] }));
         toast(result.error || "Runtime 操作失败", "error");
+        trackTelemetry("preview.action", { action, result: "fail" });
       } else {
+        trackTelemetry("preview.action", { action, result: "ok" });
         setMakerPreviewStatus((current) => ({
           ...current,
           state: result.state || (action === "stop" ? "stopped" : "running"),
@@ -2737,23 +3168,24 @@ export function App() {
     setAdapterInstallBusy(true);
     try {
       const response = await fetch(`${API}/api/runtime/adapter/install`, { method: "POST" });
-      const result = await response.json() as { changed?: boolean; adapterPath?: string; backupPath?: string; error?: string };
+      const result = await response.json() as { changed?: boolean; adapterPath?: string; entryPath?: string; backupPath?: string; error?: string };
       if (!response.ok) throw new Error(result.error || "运行时编辑桥接入失败");
-      setAdapterExport(`已接入：${result.adapterPath || "scripts/tapmakerwork/TapMakerWorkBridge.lua"}${result.backupPath ? `\n入口备份：${result.backupPath}` : ""}`);
+      setAdapterExport(`已接入：${result.adapterPath || "scripts/tapmakerwork/TapMakerWorkBridge.lua"}${result.entryPath ? `\n客户端入口：${result.entryPath}` : ""}${result.backupPath ? `\n入口备份：${result.backupPath}` : ""}`);
       setHealth((current) => current ? {
         ...current,
         runtimeAdapter: { installed: true, paths: ["scripts/tapmakerwork/TapMakerWorkBridge.lua"] }
       } : current);
       setLogs((current) => ({
         ...current,
-        runtime: [...current.runtime, `实时编辑桥已接入当前项目${result.changed ? "；需要刷新 Runtime" : ""}`]
+        runtime: [...current.runtime, `实时编辑桥已接入${result.entryPath ? `客户端入口 ${result.entryPath}` : "当前项目"}${result.changed ? "；需要重启 Runtime" : ""}`]
       }));
-      toast("实时编辑桥已接入，正在刷新 Runtime…", "success");
-      if (runtimeLive) await runtimeAction("refresh");
-      else await runtimeAction("start");
+      toast("实时编辑桥已接入，正在重启 Runtime 并建立连接…", "success");
+      trackTelemetry("adapter.install", { result: "ok" });
+      if (runtimeLive) await runtimeAction("stop");
+      await runtimeAction("start");
       setMode("live-edit");
       setCenterTab("runtime");
-      window.setTimeout(() => void syncFromRuntime(), 1800);
+      [1200, 2500, 4500, 7000].forEach((delay) => window.setTimeout(() => void syncFromRuntime(), delay));
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), "error");
     } finally {
@@ -2804,45 +3236,6 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [health?.runtimeSessionId, health?.runtimeScene, syncFromRuntime, toast]);
 
-  const captureWorkflowEvidence = async () => {
-    const captureRuntime = window.tapMakerWork?.captureRuntime || window.tapMakerWork?.runtime?.capture;
-    if (runtimeLive && captureRuntime) {
-      const actual = await captureRuntime({
-        projectName: project?.name || "",
-        orientation: previewPanel?.orientation || (makerMeta.orientation === "landscape" ? "landscape" : "portrait")
-      });
-      if (actual.ok && actual.dataUrl) {
-        const response = await fetch(`${API}/api/preview/panel/shot`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ dataUrl: actual.dataUrl, note: "runtime-evidence" })
-        });
-        const result = await response.json() as { path?: string; error?: string };
-        if (!response.ok || !result.path) throw new Error(result.error || "真实运行截图保存失败");
-        setLogs((current) => ({ ...current, runtime: [...current.runtime, `真实运行证据：${result.path}`] }));
-        toast("真实运行证据已保存", "success");
-        return;
-      }
-    }
-    if (!previewDockOpen || !window.tapMakerWork?.preview) {
-      setPreviewDockOpen(true);
-      await loadPreviewPanel();
-      toast("未能捕获 Runtime 窗口；已打开 Web 预览，请等待加载后再次截图", "warn");
-      return;
-    }
-    const captured = await window.tapMakerWork.preview.capture();
-    if (!captured.ok || !captured.dataUrl) throw new Error(captured.error || "桌面预览尚未挂载");
-    const response = await fetch(`${API}/api/preview/panel/shot`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ dataUrl: captured.dataUrl, note: "workflow-evidence" })
-    });
-    const result = await response.json() as { path?: string; error?: string };
-    if (!response.ok || !result.path) throw new Error(result.error || "截图保存失败");
-    setLogs((current) => ({ ...current, runtime: [...current.runtime, `交付证据：${result.path}`] }));
-    toast("预览证据已保存", "success");
-  };
-
   const runWorkflowAction = async (action: ProjectWorkflowAction) => {
     setWorkflowBusyAction(action);
     try {
@@ -2856,8 +3249,7 @@ export function App() {
       else if (action === "open-preview") {
         setPreviewDockOpen(true);
         await loadPreviewPanel();
-      } else if (action === "capture-evidence") await captureWorkflowEvidence();
-      else if (action === "generate-qrcode") await runMakerQrcode();
+      } else if (action === "generate-qrcode") await runMakerQrcode();
       else if (action === "build") await runMakerBuild();
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), "error");
@@ -2917,6 +3309,7 @@ export function App() {
   const runtimeErrorOverlay = runtimeErrorReport
     ? <RuntimeErrorDialog
       report={runtimeErrorReport}
+      copying={copyBusy}
       onCopy={() => void copyText(runtimeErrorReport.clipboardText)}
       onOpenLogs={() => {
         setActiveTerminal("runtime");
@@ -2926,8 +3319,21 @@ export function App() {
       onDismiss={dismissRuntimeError}
     />
     : null;
+  const sponsorOverlay = sponsorOpen
+    ? <SponsorDialog
+      onClose={() => setSponsorOpen(false)}
+      onOpenWorks={() => openExternalUrl("https://www.taptap.cn/user/59693183/works")}
+    />
+    : null;
+  const roadmapOverlay = roadmapOpen
+    ? <RoadmapDialog
+      onClose={() => setRoadmapOpen(false)}
+      onOpenSite={() => openExternalUrl(OFFICIAL_SITE_URL)}
+      onJoinGroup={() => openExternalUrl(QQ_GROUP_JOIN_URL)}
+    />
+    : null;
   const permissionOverlay = !legalDialogOpen && permissionGuideOpen && desktopPermissions
-    ? <PermissionGuide state={desktopPermissions} busy={permissionBusy} onAction={(action) => void runPermissionAction(action)} onClose={closePermissionGuide} />
+    ? <PermissionGuide state={desktopPermissions} busy={permissionBusy} confirmed={permissionConfirmed} onAction={(action) => void runPermissionAction(action)} onClose={closePermissionGuide} />
     : null;
 
   if (!projectLoaded || !project) {
@@ -2972,7 +3378,7 @@ export function App() {
     >
       <header className="titlebar">
         <div className="brand"><span className="brand-mark">T</span><strong>TapMakerWork</strong><span className="phase-badge">v{__APP_VERSION__}</span></div>
-        <div className="project-chip" title={project.root}><Folder size={14} aria-hidden="true" /><span>{project.name}</span><GitBranch size={13} aria-hidden="true" /><small>{gitStatus?.branch || "—"}</small>{gitStatus?.dirty ? <small className="dirty-branch">•</small> : null}</div>
+        <div className="project-chip" title={project.root}><Folder size={14} aria-hidden="true" /><span>{project.name}</span><GitBranch size={13} aria-hidden="true" /><small>{gitStatus?.branch || "—"}</small>{gitStatus?.dirty ? <small className="dirty-branch">•</small> : null}<button className="project-close-button" aria-label={`关闭项目 ${project.name}`} title="关闭当前项目" disabled={projectOpening} onClick={() => void closeCurrentProject()}><X size={14} /></button></div>
         <div className="runtime-status" role="status">{connected ? <Wifi size={14} aria-hidden="true" /> : <WifiOff size={14} aria-hidden="true" />}<span>{connected ? "Bridge 已连接" : "Bridge 断开"}</span>{runtimeLive ? <small className="runtime-live">Runtime 运行中</small> : <small>Runtime 未启动</small>}</div>
         <div className="title-actions">
           <Tip label="在项目文件中全文搜索。输入关键词后回车，点击结果可跳转到源码行。">
@@ -2993,7 +3399,7 @@ export function App() {
             <button aria-pressed={mode === "inspect" && centerTab === "visual"} className={mode === "inspect" && centerTab === "visual" ? "active" : ""} onClick={() => { setMode("inspect"); setCanvasAutoFit(true); setCenterTab("visual"); }}><Pause size={14} />结构编辑</button>
           </Tip>
           <Tip label="直接在 Runtime 最终画面上拖动、缩放并回写引擎控件">
-            <button aria-pressed={mode === "live-edit"} className={mode === "live-edit" ? "active" : ""} onClick={() => { setMode("live-edit"); setCenterTab("runtime"); setPreviewDockOpen(false); }}><SlidersHorizontal size={14} />实时编辑</button>
+            <button aria-pressed={mode === "live-edit"} className={mode === "live-edit" ? "active" : ""} onClick={() => { setMode("live-edit"); setCenterTab("runtime"); setPreviewDockOpen(false); trackTelemetry("live_edit.enter", {}); }}><SlidersHorizontal size={14} />实时编辑</button>
           </Tip>
         </div>
         <button className="icon-command" aria-label="撤销" onClick={() => void historyAction("undo")}><Undo2 size={14} /></button>
@@ -3017,11 +3423,19 @@ export function App() {
             }}
           ><Columns2 size={14} /><span className="tiny">预览</span></button>
         </Tip>
-        <Tip label="写入 .ui.json 旁路（不改 Lua）">
+        <Tip label="写入 .ui.json（静态节点保存结构；动态节点只保存模板覆盖，不改 Lua）">
           <button className="icon-command" aria-label="保存视觉旁路" onClick={() => { toast("正在写入 .ui.json…", "info"); void saveUiSidecar(); }} disabled={!activeUiPath || !snapshot}><Save size={14} /></button>
         </Tip>
-        <Tip label={sidecarInfo.path || "视觉旁路状态"}>
-          <span className="sidecar-chip">{sidecarInfo.exists ? (sidecarInfo.dirty ? "ui.json 未同步" : "ui.json 已同步") : "ui.json 未创建"}</span>
+        <Tip label={sidecarInfo.saveMode === "template-overrides"
+          ? `${sidecarInfo.path || "ui.json"} · 动态实例和列表数据不会固化；已保存 ${sidecarInfo.overrideCount || 0} 条模板样式覆盖${sidecarInfo.skippedInstances ? `，忽略 ${sidecarInfo.skippedInstances} 项不稳定修改` : ""}`
+          : sidecarInfo.path || "视觉旁路状态"}>
+          <span className="sidecar-chip">{sidecarInfo.exists
+            ? sidecarInfo.dirty
+              ? "ui.json 未同步"
+              : sidecarInfo.saveMode === "template-overrides"
+                ? `模板覆盖 ${sidecarInfo.overrideCount || 0}`
+                : "ui.json 已同步"
+            : "ui.json 未创建"}</span>
         </Tip>
         <span className="commandbar-spacer" />
         <Tip label="打开 TapTap 开发者后台">
@@ -3029,6 +3443,18 @@ export function App() {
         </Tip>
         <Tip label="打开 TapTap Maker 后台">
           <button className="developer-console-button maker-console-button" onClick={() => openExternalUrl("https://maker.taptap.cn/")}><ExternalLink size={13} />Maker 后台</button>
+        </Tip>
+        <Tip label="查看作者发布的 TapTap 游戏">
+          <button className="developer-console-button creator-games-button" onClick={() => openExternalUrl("https://www.taptap.cn/user/59693183/works")}><Gamepad2 size={13} />作者游戏品鉴</button>
+        </Tip>
+        <Tip label="展示微信与支付宝赞赏码；赞赏完全自愿">
+          <button className="developer-console-button sponsor-button" onClick={() => setSponsorOpen(true)}><Heart size={13} />赞赏作者</button>
+        </Tip>
+        <Tip label={`加入 ${QQ_GROUP_NAME}（群号 ${QQ_GROUP_ID}）`}>
+          <button className="developer-console-button qq-group-button" onClick={() => openExternalUrl(QQ_GROUP_JOIN_URL)}><MessageCircle size={13} />一键入群</button>
+        </Tip>
+        <Tip label="查看 TapMakerWork 后续开发规划（资源优化、AI 提效、多平台打包等）">
+          <button className="developer-console-button roadmap-button" onClick={() => setRoadmapOpen(true)}><Map size={13} />后续规划</button>
         </Tip>
         <label className="device-compact">
           设备
@@ -3074,6 +3500,17 @@ export function App() {
                   <button disabled={runtimeBusy} onClick={() => { setToolsMenuOpen(false); void runtimeAction("stop"); }}><Pause size={13} />停止</button>
                   <button onClick={() => { setToolsMenuOpen(false); void refreshRuntimeLogs(); }}><PanelBottom size={13} />日志</button>
                   <button onClick={() => { setToolsMenuOpen(false); void syncFromRuntime(); }}><Wifi size={13} />同步真机</button>
+                </div>
+              </section>
+              <section>
+                <h3>快捷入口</h3>
+                <div className="tools-actions">
+                  <button onClick={() => { setToolsMenuOpen(false); openExternalUrl("https://developer.taptap.cn/"); }}><ExternalLink size={13} />开发者后台</button>
+                  <button onClick={() => { setToolsMenuOpen(false); openExternalUrl("https://maker.taptap.cn/"); }}><ExternalLink size={13} />Maker 后台</button>
+                  <button onClick={() => { setToolsMenuOpen(false); openExternalUrl("https://www.taptap.cn/user/59693183/works"); }}><Gamepad2 size={13} />作者游戏品鉴</button>
+                  <button onClick={() => { setToolsMenuOpen(false); setSponsorOpen(true); }}><Heart size={13} />赞赏作者</button>
+                  <button onClick={() => { setToolsMenuOpen(false); openExternalUrl(QQ_GROUP_JOIN_URL); }}><MessageCircle size={13} />一键入群</button>
+                  <button onClick={() => { setToolsMenuOpen(false); setRoadmapOpen(true); }}><Map size={13} />后续规划</button>
                 </div>
               </section>
             </div>
@@ -3176,6 +3613,40 @@ export function App() {
                 <div className="desktop-card-actions"><button onClick={() => setLegalDialogOpen(true)}>查看 EULA 与隐私政策</button></div>
               </section>
             )}
+            {window.tapMakerWork?.telemetry && desktopTelemetry && (
+              <section className="desktop-system-card" aria-labelledby="telemetry-settings-heading">
+                <div className="desktop-card-heading">
+                  <div>
+                    <h3 id="telemetry-settings-heading">匿名使用统计</h3>
+                    <p>统计启动次数与使用时长，以及打开项目、预览、构建等功能事件。不上传项目路径、源码或 Maker 凭证。</p>
+                  </div>
+                  <span className={desktopTelemetry.enabled ? "ready" : "neutral"}>{desktopTelemetry.enabled ? "已开启" : "已关闭"}</span>
+                </div>
+                <label className="settings-switch-row">
+                  <span><Clock3 size={15} /><strong>发送匿名使用统计</strong><small>关闭后停止采集；本机累计时长仍可查看历史值。</small></span>
+                  <input type="checkbox" checked={desktopTelemetry.enabled} disabled={telemetryBusy} onChange={(event) => void setTelemetryEnabled(event.target.checked)} />
+                </label>
+                <div className="desktop-permission-rows">
+                  <div><span>本次会话</span><strong>{desktopTelemetry.sessionLabel}</strong></div>
+                  <div><span>本次活跃</span><strong>{desktopTelemetry.activeLabel}</strong></div>
+                  <div><span>累计活跃</span><strong>{desktopTelemetry.lifetimeActiveLabel}</strong></div>
+                  <div><span>累计启动</span><strong>{desktopTelemetry.sessionCount} 次</strong></div>
+                </div>
+                <label className="update-url-field">
+                  <span>上报地址</span>
+                  <input
+                    value={telemetryEndpointDraft}
+                    onChange={(event) => setTelemetryEndpointDraft(event.target.value)}
+                    placeholder="http://127.0.0.1:8787/v1/events（可空=仅本机）"
+                  />
+                  <button disabled={telemetryBusy} onClick={() => void saveTelemetryEndpoint()}>保存</button>
+                </label>
+                <p className="desktop-card-note">免费接收端：`node scripts/telemetry-receiver.mjs`。待上报 {desktopTelemetry.pendingEvents} 条{desktopTelemetry.lastFlushError ? ` · 上次失败：${desktopTelemetry.lastFlushError}` : desktopTelemetry.lastFlushAt ? ` · 上次成功：${new Date(desktopTelemetry.lastFlushAt).toLocaleString()}` : ""}。</p>
+                <div className="desktop-card-actions">
+                  <button disabled={telemetryBusy || !desktopTelemetry.endpoint} onClick={() => void flushTelemetry()}>立即上报</button>
+                </div>
+              </section>
+            )}
             {window.tapMakerWork?.permissions && desktopPermissions && (
               <section className="desktop-system-card" aria-labelledby="desktop-permissions-heading">
                 <div className="desktop-card-heading">
@@ -3196,7 +3667,8 @@ export function App() {
                 <div className="desktop-card-actions">
                   <button onClick={() => setPermissionGuideOpen(true)}>查看授权向导</button>
                   <button onClick={() => void runPermissionAction("refresh")} disabled={Boolean(permissionBusy)}><RefreshCw size={13} />重新检测</button>
-                  <button className="primary" onClick={() => void runPermissionAction("restart")} disabled={!desktopPermissions.ready}>重启应用</button>
+                  <button onClick={() => void runPermissionAction("confirm")} disabled={Boolean(permissionBusy)}><CheckCircle2 size={13} />{permissionConfirmed ? "已确认授权" : "我已授权"}</button>
+                  <button className="primary" onClick={() => void runPermissionAction("restart")} disabled={!desktopPermissions.ready && !permissionConfirmed}>重启应用</button>
                 </div>
                 {!desktopPermissions.stableIdentity && <p className="desktop-card-note">开发模式的授权归属 Electron；请用签名后的正式安装包在新机器授权。</p>}
               </section>
@@ -3204,21 +3676,40 @@ export function App() {
             {window.tapMakerWork?.updates && desktopUpdate && (
               <section className="desktop-system-card" aria-labelledby="desktop-update-heading">
                 <div className="desktop-card-heading">
-                  <div><h3 id="desktop-update-heading">应用更新</h3><p>当前 {desktopUpdate.currentVersion}{desktopUpdate.availableVersion && desktopUpdate.availableVersion !== desktopUpdate.currentVersion ? ` · 可更新 ${desktopUpdate.availableVersion}` : ""}</p></div>
-                  <span className={desktopUpdate.phase === "error" || desktopUpdate.phase === "unconfigured" ? "attention" : desktopUpdate.phase === "downloaded" ? "ready" : "neutral"}>
-                    {desktopUpdate.phase === "checking" ? "检查中" : desktopUpdate.phase === "available" ? "有新版本" : desktopUpdate.phase === "downloading" ? "下载中" : desktopUpdate.phase === "downloaded" ? "待重启" : desktopUpdate.phase === "up-to-date" ? "最新" : desktopUpdate.phase === "error" ? "失败" : desktopUpdate.phase === "unconfigured" ? "未配置" : "就绪"}
+                  <div><h3 id="desktop-update-heading">应用更新</h3><p>固定检查 Gitee 主仓发行版 · 当前 {desktopUpdate.currentVersion}{desktopUpdate.availableVersion && desktopUpdate.availableVersion !== desktopUpdate.currentVersion ? ` · 可更新 ${desktopUpdate.availableVersion}` : ""}</p></div>
+                  <span className={desktopUpdate.phase === "error" ? "attention" : desktopUpdate.phase === "downloaded" ? "ready" : "neutral"}>
+                    {desktopUpdate.phase === "checking" ? "检查中" : desktopUpdate.phase === "available" ? "有新版本" : desktopUpdate.phase === "downloading" ? "下载中" : desktopUpdate.phase === "downloaded" ? "待重启" : desktopUpdate.phase === "up-to-date" ? "最新" : desktopUpdate.phase === "error" ? "失败" : "就绪"}
                   </span>
                 </div>
-                <label className="update-url-field"><span>更新源</span><input value={updateUrlDraft} onChange={(event) => setUpdateUrlDraft(event.target.value)} placeholder="https://updates.example.com/tapmakerwork/" /><button disabled={!updateUrlDraft.trim() || Boolean(desktopUpdateBusy)} onClick={() => void configureDesktopUpdates()}>保存</button></label>
                 {(desktopUpdate.phase === "downloading" || desktopUpdate.phase === "downloaded") && <div className="update-progress" aria-label={`更新下载 ${Math.round(desktopUpdate.percent || 0)}%`}><i style={{ width: `${desktopUpdate.percent || 0}%` }} /><span>{Math.round(desktopUpdate.percent || 0)}%</span></div>}
                 {desktopUpdate.message && <p className={desktopUpdate.phase === "error" ? "desktop-card-error" : "desktop-card-note"} role="status">{desktopUpdate.message}</p>}
                 <div className="desktop-card-actions">
                   <button disabled={Boolean(desktopUpdateBusy) || desktopUpdate.phase === "checking" || desktopUpdate.phase === "downloading"} onClick={() => void runDesktopUpdateAction("check")}><RefreshCw size={13} className={desktopUpdate.phase === "checking" ? "spin" : ""} />检查更新</button>
-                  {desktopUpdate.phase === "available" && <button className="primary" disabled={Boolean(desktopUpdateBusy)} onClick={() => void runDesktopUpdateAction("download")}><Download size={13} />下载更新</button>}
+                  {desktopUpdate.phase === "available" && <button className="primary" disabled={Boolean(desktopUpdateBusy)} onClick={() => void runDesktopUpdateAction("download")}><Download size={13} />{desktopUpdate.packaged ? "下载更新" : "打开 Gitee 发行版"}</button>}
                   {desktopUpdate.phase === "downloaded" && <button className="primary" onClick={() => void runDesktopUpdateAction("restart")}>立即重启安装</button>}
+                </div>
+                <div className="repository-links" aria-label="TapMakerWork 官网与代码仓库">
+                  <button onClick={() => openExternalUrl(OFFICIAL_SITE_URL)}><ExternalLink size={14} />官网</button>
+                  <button onClick={() => openExternalUrl("https://gitee.com/AndroidSUP/tap-maker-work")}><ExternalLink size={14} />Gitee 主仓</button>
+                  <button onClick={() => openExternalUrl("https://github.com/AndroidSix/TapMakerWork")}><ExternalLink size={14} />GitHub 镜像</button>
                 </div>
               </section>
             )}
+            <section className="desktop-system-card community-card" aria-labelledby="community-heading">
+              <div className="desktop-card-heading">
+                <div>
+                  <h3 id="community-heading">社区交流</h3>
+                  <p>{QQ_GROUP_NAME} · 群号 {QQ_GROUP_ID}。反馈问题、讨论用法、获取后续功能动态。</p>
+                </div>
+                <span className="ready">QQ</span>
+              </div>
+              <div className="desktop-card-actions">
+                <button className="primary" onClick={() => openExternalUrl(QQ_GROUP_JOIN_URL)}><Users size={13} />一键入群</button>
+                <button onClick={() => void copyText(QQ_GROUP_ID)}><Copy size={13} />复制群号</button>
+                <button onClick={() => setRoadmapOpen(true)}><Map size={13} />后续规划</button>
+                <button onClick={() => openExternalUrl(OFFICIAL_SITE_URL)}><ExternalLink size={13} />官网</button>
+              </div>
+            </section>
             <section className="maker-version-settings" aria-labelledby="maker-version-heading">
               <div className="maker-version-heading">
                 <div>
@@ -3346,24 +3837,24 @@ export function App() {
         style={{ gridTemplateColumns: `${layout.left}px 5px minmax(320px, 1fr) 5px ${layout.right}px` }}
       >
         <aside className="left-pane panel">
-          <nav className="pane-tabs" aria-label="资源导航">
+          <nav className="pane-tabs left-resource-tabs" aria-label="资源导航">
             <Tip label="项目文件">
-              <button aria-pressed={leftTab === "files"} className={leftTab === "files" ? "active" : ""} onClick={() => setLeftTab("files")}><Files size={14} />文件</button>
+              <button aria-label="项目文件" title="项目文件" aria-pressed={leftTab === "files"} className={leftTab === "files" ? "active" : ""} onClick={() => setLeftTab("files")}><Files size={14} /><span className="pane-tab-label">文件</span></button>
             </Tip>
             <Tip label="UI 界面列表">
-              <button aria-pressed={leftTab === "screens"} className={leftTab === "screens" ? "active" : ""} onClick={() => setLeftTab("screens")}><MonitorPlay size={14} />界面</button>
+              <button aria-label="UI 界面列表" title="UI 界面列表" aria-pressed={leftTab === "screens"} className={leftTab === "screens" ? "active" : ""} onClick={() => setLeftTab("screens")}><MonitorPlay size={14} /><span className="pane-tab-label">界面</span></button>
             </Tip>
             <Tip label="控件树">
-              <button aria-pressed={leftTab === "hierarchy"} className={leftTab === "hierarchy" ? "active" : ""} onClick={() => setLeftTab("hierarchy")}><Layers3 size={14} />层级</button>
+              <button aria-label="控件树" title="控件树" aria-pressed={leftTab === "hierarchy"} className={leftTab === "hierarchy" ? "active" : ""} onClick={() => setLeftTab("hierarchy")}><Layers3 size={14} /><span className="pane-tab-label">层级</span></button>
             </Tip>
             <Tip label="图片资源">
-              <button aria-pressed={leftTab === "assets"} className={leftTab === "assets" ? "active" : ""} onClick={() => setLeftTab("assets")}><Image size={14} />资源</button>
+              <button aria-label="图片资源" title="图片资源" aria-pressed={leftTab === "assets"} className={leftTab === "assets" ? "active" : ""} onClick={() => setLeftTab("assets")}><Image size={14} /><span className="pane-tab-label">资源</span></button>
             </Tip>
             <Tip label="Git 版本管理">
-              <button aria-pressed={leftTab === "git"} className={leftTab === "git" ? "active" : ""} onClick={() => { setLeftTab("git"); void loadGitStatus(); }}><GitBranch size={14} />Git</button>
+              <button aria-label="Git 版本管理" title="Git 版本管理" aria-pressed={leftTab === "git"} className={leftTab === "git" ? "active" : ""} onClick={() => { setLeftTab("git"); void loadGitStatus(); }}><GitBranch size={14} /><span className="pane-tab-label">Git</span></button>
             </Tip>
           </nav>
-          <div className="pane-body">
+          <div className={`pane-body ${leftTab === "hierarchy" ? "hierarchy-pane-body" : ""}`}>
             {leftTab === "hierarchy" && snapshot && (
               <div className="hier-wrap">
                 <div className="hier-actions">
@@ -3419,30 +3910,32 @@ export function App() {
                     <button className="icon-command" aria-label="重命名节点" disabled={!snapshot.selectedId} onClick={beginRenameSelected}><span className="tiny">重命名</span></button>
                   </Tip>
                 </div>
-                <HierarchyNode
-                  node={snapshot.root}
-                  selectedId={snapshot.selectedId}
-                  selectedIds={selectedNodeIds}
-                  onSelect={(id, additive) => {
-                    selectNode(id, additive);
-                    if (renamingId && renamingId !== id) setRenamingId(null);
-                  }}
-                  onContextMenuId={openNodeContextMenu}
-                  renamingId={renamingId}
-                  renameDraft={renameDraft}
-                  onRenameDraft={setRenameDraft}
-                  onCommitRename={commitRename}
-                  onCancelRename={() => setRenamingId(null)}
-                  dragId={hierDragId}
-                  dropHint={hierDrop}
-                  onDragStartId={(id) => {
-                    setHierDragId(id);
-                    setSnapshot((current) => current ? { ...current, selectedId: id } : current);
-                    toast(`开始拖拽：${id.split(":").slice(-2).join(":")}`, "info");
-                  }}
-                  onDragOverId={onHierDragOverId}
-                  onDropId={onHierDropId}
-                />
+                <div className="hierarchy-tree-scroll" ref={hierarchyTreeRef}>
+                  <HierarchyNode
+                    node={snapshot.root}
+                    selectedId={snapshot.selectedId}
+                    selectedIds={selectedNodeIds}
+                    onSelect={(id, additive) => {
+                      selectCanvasNode(id, additive);
+                      if (renamingId && renamingId !== id) setRenamingId(null);
+                    }}
+                    onContextMenuId={openNodeContextMenu}
+                    renamingId={renamingId}
+                    renameDraft={renameDraft}
+                    onRenameDraft={setRenameDraft}
+                    onCommitRename={commitRename}
+                    onCancelRename={() => setRenamingId(null)}
+                    dragId={hierDragId}
+                    dropHint={hierDrop}
+                    onDragStartId={(id) => {
+                      setHierDragId(id);
+                      setSnapshot((current) => current ? { ...current, selectedId: id } : current);
+                      toast(`开始拖拽：${id.split(":").slice(-2).join(":")}`, "info");
+                    }}
+                    onDragOverId={onHierDragOverId}
+                    onDropId={onHierDropId}
+                  />
+                </div>
               </div>
             )}
             {leftTab === "files" && (files.length ? files.map((entry) => <FileTreeEntry key={entry.path} entry={entry} depth={0} selectedPath={selectedFile} onOpen={(path) => void readFile(path)} />) : <p className="empty-state">项目目录为空。点击顶部项目名称可重新选择目录。</p>)}
@@ -3463,33 +3956,59 @@ export function App() {
               ))}
             </div>}
             {leftTab === "git" && <div className="git-panel">
-              <div className="git-summary">
-                <span><GitBranch size={14} />{gitStatus?.branch || "未识别分支"}</span>
-                <button className="icon-command" aria-label="刷新 Git 状态" onClick={() => void loadGitStatus()}><RefreshCw size={13} /></button>
-              </div>
+              <header className="git-panel-head">
+                <div><span>源代码管理</span><strong><GitBranch size={14} />{gitStatus?.branch || "未识别分支"}</strong></div>
+                <div>
+                  <button className="icon-command" aria-label="拉取远端修改" title="拉取" disabled={Boolean(gitBusy)} onClick={() => void runGitAction("pull")}><Download size={13} /></button>
+                  <button className="icon-command" aria-label="刷新 Git 状态" title="刷新" onClick={() => void loadGitStatus()}><RefreshCw size={13} /></button>
+                </div>
+              </header>
               <div className="git-sync-status">
                 <span title={gitStatus?.upstream || "尚未绑定上游"}>{gitStatus?.upstream || "未绑定上游"}</span>
                 <small>↑ {gitStatus?.ahead || 0}</small><small>↓ {gitStatus?.behind || 0}</small>
               </div>
-              <div className="git-changes" aria-label="Git 修改文件">
-                {(gitStatus?.changes?.length || 0) === 0 ? <p className="empty-state">工作区没有未提交修改。</p> : gitStatus?.changes?.map((change) => (
-                  <button key={`${change.status}:${change.path}`} title={change.path} onClick={() => void readFile(change.path).catch(() => toast("该文件无法在代码编辑器中打开", "warn"))}>
-                    <code>{change.status}</code><span>{change.path}</span>
-                  </button>
-                ))}
+              <div className="git-commit-box">
+                <input value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void runGitAction("commit"); }} placeholder={`消息（⌘/Ctrl+Enter 在“${gitStatus?.branch || "当前分支"}”提交）`} aria-label="Git 提交说明" />
+                <button className="primary" disabled={Boolean(gitBusy) || !gitCommitMessage.trim() || !gitStatus?.dirty} onClick={() => void runGitAction("commit")}><Save size={14} />{gitBusy === "commit" ? "提交中…" : "提交"}</button>
               </div>
-              <label className="git-commit-field"><span>提交说明</span><input value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} placeholder="说明本次修改" /></label>
+
+              {Boolean(gitStatus?.changes?.some((change) => change.staged)) && <section className="git-change-group">
+                <header><strong>暂存的更改</strong><span>{gitStatus?.changes?.filter((change) => change.staged).length}</span><button className="icon-command" aria-label="取消暂存全部" title="取消暂存全部" onClick={() => void runGitFileAction("unstage-all")}><Undo2 size={12} /></button></header>
+                <div className="git-file-list">
+                  {gitStatus?.changes?.filter((change) => change.staged).map((change) => <div key={`staged:${change.path}`} className={`git-file-row ${change.conflicted ? "conflicted" : ""}`} onContextMenu={(event) => { event.preventDefault(); setGitFileMenu({ change, scope: "staged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 180) }); }}>
+                    <button className="git-file-open" title={change.path} onClick={() => void readFile(change.path).catch(() => toast("该文件无法在代码编辑器中打开", "warn"))}><FileCode2 size={13} /><span><strong>{fileName(change.path)}</strong><small>{change.path.includes("/") ? change.path.slice(0, change.path.lastIndexOf("/")) : "项目根目录"}</small></span><code>{change.indexStatus}</code></button>
+                    <button className="git-file-action" aria-label={`取消暂存 ${change.path}`} title="取消暂存" onClick={() => void runGitFileAction("unstage", change)}><Undo2 size={12} /></button>
+                  </div>)}
+                </div>
+              </section>}
+
+              <section className="git-change-group">
+                <header><strong>更改</strong><span>{gitStatus?.changes?.filter((change) => change.unstaged).length || 0}</span>{Boolean(gitStatus?.changes?.some((change) => change.unstaged)) && <button className="icon-command" aria-label="暂存全部更改" title="暂存全部" onClick={() => void runGitFileAction("stage-all")}><Plus size={13} /></button>}</header>
+                <div className="git-file-list">
+                  {!gitStatus?.changes?.some((change) => change.unstaged) ? <p className="empty-state">工作区没有未暂存修改。</p> : gitStatus.changes.filter((change) => change.unstaged).map((change) => <div key={`changed:${change.path}`} className={`git-file-row ${change.conflicted ? "conflicted" : ""}`} onContextMenu={(event) => { event.preventDefault(); setGitFileMenu({ change, scope: "unstaged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 180) }); }}>
+                    <button className="git-file-open" title={`${change.path} · 右键查看更多操作`} onClick={() => void readFile(change.path).catch(() => toast("该文件无法在代码编辑器中打开", "warn"))}><FileCode2 size={13} /><span><strong>{fileName(change.path)}</strong><small>{change.path.includes("/") ? change.path.slice(0, change.path.lastIndexOf("/")) : "项目根目录"}</small></span><code>{change.untracked ? "U" : change.workTreeStatus}</code></button>
+                    <button className="git-file-action" aria-label={`暂存 ${change.path}`} title="暂存更改" onClick={() => void runGitFileAction("stage", change)}><Plus size={13} /></button>
+                  </div>)}
+                </div>
+              </section>
+
               <div className="git-actions">
-                <button disabled={Boolean(gitBusy)} onClick={() => void runGitAction("pull")}><Download size={13} />{gitBusy === "pull" ? "拉取中…" : "拉取"}</button>
-                <button disabled={Boolean(gitBusy) || !gitCommitMessage.trim()} onClick={() => void runGitAction("commit")}><Save size={13} />{gitBusy === "commit" ? "提交中…" : "本地提交"}</button>
-                <button className="primary" disabled={Boolean(gitBusy) || !gitCommitMessage.trim()} onClick={() => void runGitAction("push-build")}><Rocket size={13} />{gitBusy === "push-build" ? "推送并刷新中…" : "提交推送并远端刷新"}</button>
+                <button className="primary" disabled={Boolean(gitBusy) || !gitCommitMessage.trim()} onClick={() => void runGitAction("push-build")}><Rocket size={13} />{gitBusy === "push-build" ? "推送并刷新中…" : "提交、推送并刷新"}</button>
               </div>
               {gitConflictPlan && <section className="git-conflict-plan" role="alert">
                 <strong><ShieldAlert size={14} />需要处理 Git 冲突</strong>
                 <p>已生成保留本地修改的处理上下文，可一键复制给 AI。</p>
                 <textarea readOnly value={gitConflictPlan} aria-label="可复制给 AI 的 Git 冲突处理上下文" />
-                <button onClick={() => void copyText(gitConflictPlan)}><Copy size={13} />复制给 AI</button>
+                <button disabled={copyBusy} onClick={() => void copyText(gitConflictPlan)}><Copy size={13} />{copyBusy ? "正在复制…" : "复制给 AI"}</button>
               </section>}
+              <section className="git-graph" aria-label="Git 提交图谱">
+                <header><strong>图谱</strong><span>{gitStatus?.commits?.length || 0}</span></header>
+                <div>{gitStatus?.commits?.map((commit, index) => <article key={commit.hash} title={`${commit.hash}\n${commit.author} · ${commit.relativeDate}`}>
+                  <span className="git-graph-line"><i />{index < (gitStatus.commits?.length || 0) - 1 && <b />}</span>
+                  <div><strong>{commit.subject}</strong><small><code>{commit.shortHash}</code>{commit.relativeDate}</small></div>
+                  {commit.refs.slice(0, 1).map((ref) => <em key={ref}>{ref.replace(/^HEAD -> /, "")}</em>)}
+                </article>)}</div>
+              </section>
             </div>}
           </div>
         </aside>
@@ -3600,7 +4119,6 @@ export function App() {
                   mode={mode}
                   onModeChange={(next) => setMode(next)}
                   onStart={() => { toast("正在启动 Maker 预览…", "info"); void runtimeAction("start"); }}
-                  onRefreshRuntime={() => void runtimeAction("refresh")}
                   onInstallAdapter={() => void installRuntimeEditor()}
                   onSelect={selectCanvasNode}
                   onContextMenu={openNodeContextMenu}
@@ -3802,7 +4320,6 @@ export function App() {
               <div className="workflow-tool-grid">
                 <button onClick={() => void runWorkflowAction("start-preview")} disabled={workflowBusyAction === "start-preview"}><CirclePlay size={15} aria-hidden="true" /><strong>启动预览</strong><small>官方 Maker Runtime</small></button>
                 <button onClick={() => void runWorkflowAction("open-preview")}><Columns2 size={15} aria-hidden="true" /><strong>内嵌预览</strong><small>并排查看游戏流</small></button>
-                <button onClick={() => void runWorkflowAction("capture-evidence")} disabled={workflowBusyAction === "capture-evidence"}><Image size={15} aria-hidden="true" /><strong>截取证据</strong><small>保存可复核画面</small></button>
                 <button onClick={() => void runWorkflowAction("generate-qrcode")} disabled={workflowBusyAction === "generate-qrcode"}><QrCode size={15} aria-hidden="true" /><strong>测试二维码</strong><small>生成测试入口</small></button>
               </div>
             </section>
@@ -3866,6 +4383,23 @@ export function App() {
           </div> : <p className="empty-state">选择一个运行时节点。</p>}
         </aside>}
       </section>
+
+      {gitFileMenu && (
+        <div
+          className="node-context-menu git-context-menu"
+          role="menu"
+          aria-label={`${gitFileMenu.change.path} Git 操作`}
+          style={{ left: gitFileMenu.x, top: gitFileMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <div className="node-context-heading"><span><GitBranch size={14} /></span><div><strong>{fileName(gitFileMenu.change.path)}</strong><small>{gitFileMenu.change.path}</small></div></div>
+          <button type="button" role="menuitem" onClick={() => { const change = gitFileMenu.change; setGitFileMenu(null); void readFile(change.path).catch(() => toast("该文件无法在代码编辑器中打开", "warn")); }}><FileCode2 size={14} /><span>打开文件</span></button>
+          <button type="button" role="menuitem" onClick={() => void runGitFileAction(gitFileMenu.scope === "staged" ? "unstage" : "stage", gitFileMenu.change)}>{gitFileMenu.scope === "staged" ? <Undo2 size={14} /> : <Plus size={14} />}<span>{gitFileMenu.scope === "staged" ? "取消暂存更改" : "暂存更改"}</span></button>
+          <button type="button" role="menuitem" onClick={() => { void copyText(gitFileMenu.change.path); setGitFileMenu(null); }}><Copy size={14} /><span>复制相对路径</span></button>
+          {gitFileMenu.change.unstaged && <><div className="node-context-divider" /><button type="button" role="menuitem" className="danger" onClick={() => void runGitFileAction("discard", gitFileMenu.change)}><Trash2 size={14} /><span>丢弃本地修改…</span></button></>}
+        </div>
+      )}
 
       {nodeContextMenu && contextNode && (
         <div
@@ -3949,6 +4483,6 @@ export function App() {
         <span>{connected ? "本机连接" : "离线"}</span>
       </footer>
       <ToastStack items={toasts} />
-    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{permissionOverlay}</>
+    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{sponsorOverlay}{roadmapOverlay}{permissionOverlay}</>
   );
 }

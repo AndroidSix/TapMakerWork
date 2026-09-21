@@ -44,16 +44,14 @@ import { listProjectEntries, readProjectText, resolveInsideProject, resolveProje
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
-import { commitGitProject, listProjectAssets, projectHasRuntimeAdapter, pullGitProject, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
+import { commitGitProject, listProjectAssets, mutateGitProject, projectHasRuntimeAdapter, pullGitProject, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
 import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
 import { findRuntimeFileStatus, normalizeUiTree, writeIdeCommandsFile } from "./runtime-file-channel.js";
-import { findUiNodePath, readUiSidecar, sidecarExists, sidecarRelativePath, snapshotFromSidecar, uiNodeAtLine, writeUiSidecar } from "./ui-sidecar.js";
+import { findUiNodePath, mergeUiSidecarOverride, mergeUiSidecarOverrides, nodeMatchesUiOverride, overrideSelectorForNode, readUiSidecar, sidecarExists, sidecarRelativePath, snapshotFromSidecar, uiNodeAtLine, writeUiSidecar, type UiSidecarOverride } from "./ui-sidecar.js";
 import {
   applyPreviewPanelPatch,
   bumpPreviewReload,
-  listPreviewShots,
   resolvePreviewPanel,
-  savePreviewShot,
   type PreviewPanelFile
 } from "./preview-panel.js";
 import { buildProjectWorkflowOverview, saveProjectWorkflow } from "./project-workflow.js";
@@ -61,6 +59,9 @@ import { buildProjectWorkflowOverview, saveProjectWorkflow } from "./project-wor
 let lastAppliedRuntimeRevision = -1;
 let snapshotSource: SnapshotSource = "empty";
 let runtimeFileSessionId: string | undefined;
+let pendingUiOverrides: UiSidecarOverride[] = [];
+let skippedRuntimePersistence = 0;
+const appliedRuntimeOverrideKeys = new Set<string>();
 
 function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
   const status = findRuntimeFileStatus();
@@ -70,6 +71,7 @@ function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
       runtimeCommands.splice(0, runtimeCommands.length);
       nextRuntimeCommandId = Number(status.cursor || 0) + 1;
       lastAppliedRuntimeRevision = -1;
+      appliedRuntimeOverrideKeys.clear();
     } else if (!runtimeFileSessionId && runtimeCommands.length === 0) {
       // The Bridge dev process can restart while the Maker Runtime remains
       // alive. Continue after its acknowledged cursor instead of issuing IDs
@@ -122,6 +124,7 @@ function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
           revision: current.revision + 1
         });
         snapshotSource = "runtime";
+        enqueueSavedUiOverrides(next);
         broadcast({ type: "ui.snapshot", snapshot: next, source: "runtime" });
       } catch {
         // ignore malformed runtime snapshot
@@ -183,6 +186,49 @@ function enqueueRuntimeCommand(command: RuntimeCommandInput): RuntimeCommand {
   const queued = { ...command, id: nextRuntimeCommandId++ } as RuntimeCommand;
   runtimeCommands.push(queued);
   if (runtimeCommands.length > 1_000) runtimeCommands.splice(0, runtimeCommands.length - 1_000);
+  return queued;
+}
+
+function visitUiNodes(node: UiNode, visit: (node: UiNode) => void): void {
+  visit(node);
+  for (const child of node.children) visitUiNodes(child, visit);
+}
+
+function isRepeatedRuntimeTemplate(root: UiNode, node: UiNode): boolean {
+  const selector = overrideSelectorForNode(node);
+  if (!selector) return false;
+  const probe: UiSidecarOverride = { selector, scope: "template", props: {} };
+  let matches = 0;
+  visitUiNodes(root, (candidate) => {
+    if (nodeMatchesUiOverride(candidate, probe)) matches += 1;
+  });
+  return matches > 1;
+}
+
+function enqueueSavedUiOverrides(snapshot: UiSnapshot): number {
+  if (!project || !activeUiEntry) return 0;
+  const sidecar = readUiSidecar(project.root, activeUiEntry);
+  if (!sidecar?.overrides.length) return 0;
+  let queued = 0;
+  visitUiNodes(snapshot.root, (node) => {
+    sidecar.overrides.forEach((override, index) => {
+      if (!nodeMatchesUiOverride(node, override)) return;
+      const key = `${runtimeSessionId || runtimeFileSessionId || "runtime"}:${sidecar.savedAt}:${index}:${node.id}`;
+      if (appliedRuntimeOverrideKeys.has(key)) return;
+      appliedRuntimeOverrideKeys.add(key);
+      enqueueRuntimeCommand({
+        type: "ui.patch",
+        patch: {
+          requestId: crypto.randomUUID(),
+          baseRevision: snapshot.revision,
+          nodeId: node.id,
+          props: override.props,
+          source: node.source
+        }
+      });
+      queued += 1;
+    });
+  });
   return queued;
 }
 
@@ -360,7 +406,6 @@ const server = http.createServer(async (request, response) => {
       const makerMeta = readMakerProjectMeta(project.root);
       const panel = resolvePreviewPanel(project.root, makerMeta);
       const fileStatus = syncRuntimeFileChannel();
-      const ideRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
       sendJson(response, 200, buildProjectWorkflowOverview({
         projectRoot: project.root,
         projectName: project.name,
@@ -375,8 +420,7 @@ const server = http.createServer(async (request, response) => {
         qrcodeUrl: makerMeta.qrcodeUrl,
         git,
         gitError,
-        assets: listProjectAssets(project.root),
-        shots: listPreviewShots(ideRoot, project.name)
+        assets: listProjectAssets(project.root)
       }));
     } else if (request.method === "POST" && url.pathname === "/api/workflow/state") {
       if (!project) throw new Error("project_not_open");
@@ -394,6 +438,13 @@ const server = http.createServer(async (request, response) => {
       const result = await pullGitProject(project.root);
       broadcast({ type: "log.append", channel: "build", lines: [result.ok ? "Git 拉取完成。" : `Git 拉取停止：${result.error || "unknown"}`] });
       sendJson(response, result.ok ? 200 : 409, result);
+    } else if (request.method === "POST" && url.pathname === "/api/git/mutate") {
+      if (!project) throw new Error("project_not_open");
+      const body = await readJson(request) as { action?: "stage" | "unstage" | "discard" | "stage-all" | "unstage-all"; path?: string };
+      if (!body.action) throw new Error("git_action_required");
+      const result = await mutateGitProject(project.root, body.action, body.path);
+      broadcast({ type: "log.append", channel: "build", lines: [`Git ${body.action}${body.path ? `：${body.path}` : ""}`] });
+      sendJson(response, 200, result);
     } else if (request.method === "POST" && url.pathname === "/api/git/commit") {
       if (!project) throw new Error("project_not_open");
       const body = await readJson(request) as { message?: string; push?: boolean; remoteBuild?: boolean };
@@ -484,18 +535,38 @@ const server = http.createServer(async (request, response) => {
       });
     } else if (request.method === "GET" && url.pathname === "/api/project") {
       sendJson(response, 200, { project, activeUiEntry });
+    } else if (request.method === "POST" && url.pathname === "/api/project/close") {
+      const closedProject = project ? { root: project.root, name: project.name } : null;
+      project = undefined;
+      activeUiEntry = defaultUiEntry;
+      uiScreens = { summaries: [] as UiScreenSummary[], documents: new Map<string, UiConversionDocument>() };
+      conversion = undefined;
+      snapshotSource = "empty";
+      runtimeCommands.length = 0;
+      pendingUiOverrides = [];
+      skippedRuntimePersistence = 0;
+      appliedRuntimeOverrideKeys.clear();
+      runtimeConnectedAt = undefined;
+      runtimeSessionId = undefined;
+      runtimeScene = "idle";
+      editor.reset(new EditorState().getSnapshot());
+      sendJson(response, 200, { ok: true, closedProject, project: null });
     } else if (request.method === "POST" && url.pathname === "/api/project/open") {
       const body = await readJson(request) as { path?: string };
       project = resolveProjectRoot(body.path || "");
       uiScreens = scanUiScreens(project.root);
       conversion = pickInitialConversion(uiScreens, defaultUiEntry);
       activeUiEntry = conversion?.sourceFile ?? defaultUiEntry;
+      pendingUiOverrides = [];
+      skippedRuntimePersistence = 0;
+      appliedRuntimeOverrideKeys.clear();
       const sidecar = conversion ? readUiSidecar(project.root, conversion.sourceFile) : undefined;
       const baseSnapshot = sidecar
         ? snapshotFromSidecar(sidecar, 1)
         : conversion
           ? snapshotFromConversion(conversion)
           : new EditorState().getSnapshot();
+      snapshotSource = sidecar ? "sidecar" : conversion ? "conversion" : "empty";
       const snapshot = editor.reset(baseSnapshot);
       broadcast({ type: "ui.snapshot", snapshot });
       sendJson(response, 200, {
@@ -504,7 +575,9 @@ const server = http.createServer(async (request, response) => {
         activeUiEntry,
         sidecar: conversion ? {
           path: sidecarRelativePath(conversion.sourceFile),
-          exists: sidecarExists(project.root, conversion.sourceFile)
+          exists: sidecarExists(project.root, conversion.sourceFile),
+          saveMode: sidecar?.overrides.length ? "template-overrides" : "static-tree",
+          overrideCount: sidecar?.overrides.length || 0
         } : undefined
       });
     } else if (request.method === "GET" && url.pathname === "/api/project/files") {
@@ -577,6 +650,9 @@ const server = http.createServer(async (request, response) => {
       }
       if (!conversion) throw new Error("ui_screen_not_convertible");
       activeUiEntry = body.path;
+      pendingUiOverrides = [];
+      skippedRuntimePersistence = 0;
+      appliedRuntimeOverrideKeys.clear();
       const sidecar = project ? readUiSidecar(project.root, body.path) : undefined;
       const convertedSnapshot = snapshotFromConversion(conversion);
       const countNodes = (node: UiNode): number => {
@@ -587,7 +663,11 @@ const server = http.createServer(async (request, response) => {
         ? snapshotFromSidecar(sidecar, editor.getSnapshot().revision + 1)
         : undefined;
       // 旁路过旧/过稀时优先静态转换结果，避免画布被空树覆盖
-      const useSidecar = Boolean(sidecarSnapshot && countNodes(sidecarSnapshot.root) >= countNodes(convertedSnapshot.root) + 5);
+      const useSidecar = Boolean(sidecarSnapshot && sidecar && (
+        sidecar.overrides.length > 0
+        || sidecar.sourceHash === conversion.sourceHash
+        || countNodes(sidecarSnapshot.root) >= countNodes(convertedSnapshot.root) + 5
+      ));
       const baseSnapshot = useSidecar ? sidecarSnapshot! : convertedSnapshot;
       snapshotSource = useSidecar ? "sidecar" : "conversion";
       const snapshot = editor.reset(baseSnapshot);
@@ -616,7 +696,9 @@ const server = http.createServer(async (request, response) => {
               path: sidecarRelativePath(body.path),
               exists: Boolean(sidecar),
               savedAt: sidecar?.savedAt,
-              confidence: sidecar?.confidence
+              confidence: sidecar?.confidence,
+              saveMode: sidecar?.overrides.length ? "template-overrides" : "static-tree",
+              overrideCount: sidecar?.overrides.length || 0
             } : undefined
           });
           return;
@@ -639,7 +721,9 @@ const server = http.createServer(async (request, response) => {
           path: sidecarRelativePath(body.path),
           exists: Boolean(sidecar),
           savedAt: sidecar?.savedAt,
-          confidence: sidecar?.confidence
+          confidence: sidecar?.confidence,
+          saveMode: sidecar?.overrides.length ? "template-overrides" : "static-tree",
+          overrideCount: sidecar?.overrides.length || 0
         } : undefined
       });
     } else if (request.method === "GET" && url.pathname === "/api/ui/sidecar") {
@@ -657,7 +741,33 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request, 5_500_000) as { path?: string; snapshot?: UiSnapshot };
       const sourceFile = body.path || activeUiEntry;
       if (!body.snapshot?.root) throw new Error("ui_sidecar_snapshot_required");
-      const written = writeUiSidecar(project.root, sourceFile, body.snapshot);
+      const existing = readUiSidecar(project.root, sourceFile);
+      const runtimeSave = snapshotSource === "runtime";
+      const overrides = mergeUiSidecarOverrides(existing?.overrides || [], pendingUiOverrides);
+      let savedSnapshot = body.snapshot;
+      if (runtimeSave) {
+        try {
+          const staticConversion = conversion?.sourceFile === sourceFile ? conversion : convertLuaUiFile(project.root, sourceFile);
+          // Preserve a known static sidecar (including user-created nodes), but
+          // never reuse a prior runtime capture as the durable structure.
+          savedSnapshot = existing && existing.confidence !== "runtime"
+            ? snapshotFromSidecar(existing, body.snapshot.revision)
+            : snapshotFromConversion(staticConversion);
+        } catch {
+          savedSnapshot = existing
+            ? snapshotFromSidecar(existing, body.snapshot.revision)
+            : body.snapshot;
+        }
+      }
+      const written = writeUiSidecar(project.root, sourceFile, savedSnapshot, "sidecar", overrides);
+      const skippedInstances = skippedRuntimePersistence;
+      pendingUiOverrides = [];
+      skippedRuntimePersistence = 0;
+      appliedRuntimeOverrideKeys.clear();
+      if (runtimeSave) {
+        enqueueSavedUiOverrides(editor.getSnapshot());
+        syncRuntimeFileChannel();
+      }
       const makerMeta = readMakerProjectMeta(project.root);
       const panelState = resolvePreviewPanel(project.root, makerMeta);
       if (panelState.autoRefreshIframe) {
@@ -681,6 +791,11 @@ const server = http.createServer(async (request, response) => {
         path: written.path,
         savedAt: written.document.savedAt,
         selectedId: written.document.selectedId,
+        persistence: {
+          mode: runtimeSave ? "template-overrides" : "static-tree",
+          overrideCount: written.document.overrides.length,
+          skippedInstances
+        },
         preview: {
           reloadToken: resolvePreviewPanel(project.root, makerMeta).reloadToken,
           autoRefreshIframe: panelState.autoRefreshIframe,
@@ -711,6 +826,12 @@ const server = http.createServer(async (request, response) => {
       if (!body.op) throw new Error("tree_op_required");
       const snapshot = editor.applyTreeOp(body.op);
       if (body.op.type === "toggle-visible") {
+        const toggledNode = findUiNode(snapshot.root, body.op.nodeId);
+        if (snapshotSource === "runtime" && toggledNode) {
+          const merged = mergeUiSidecarOverride(pendingUiOverrides, toggledNode, { visible: toggledNode.props.visible });
+          pendingUiOverrides = merged.overrides;
+          skippedRuntimePersistence += merged.ignoredProps || (merged.persisted ? 0 : 1);
+        }
         enqueueRuntimeCommand({
           type: "ui.patch",
           patch: {
@@ -722,11 +843,13 @@ const server = http.createServer(async (request, response) => {
           }
         });
       } else if (body.op.type === "delete") {
+        if (snapshotSource === "runtime") skippedRuntimePersistence += 1;
         enqueueRuntimeCommand({
           type: "ui.tree",
           mutation: { action: "delete", nodeId: body.op.nodeId }
         });
       } else if (body.op.type === "rename") {
+        if (snapshotSource === "runtime") skippedRuntimePersistence += 1;
         enqueueRuntimeCommand({
           type: "ui.patch",
           patch: {
@@ -738,6 +861,7 @@ const server = http.createServer(async (request, response) => {
           }
         });
       } else if (body.op.type === "insert-child" || body.op.type === "insert-sibling" || body.op.type === "duplicate") {
+        if (snapshotSource === "runtime") skippedRuntimePersistence += 1;
         const node = snapshot.selectedId ? findUiNode(snapshot.root, snapshot.selectedId) : undefined;
         const parent = node ? findParentInfo(snapshot.root, node.id) : null;
         if (node && parent) {
@@ -747,6 +871,7 @@ const server = http.createServer(async (request, response) => {
           });
         }
       } else if (body.op.type === "move" || body.op.type === "relocate") {
+        if (snapshotSource === "runtime") skippedRuntimePersistence += 1;
         const parent = findParentInfo(snapshot.root, body.op.nodeId);
         if (parent) {
           enqueueRuntimeCommand({
@@ -768,6 +893,14 @@ const server = http.createServer(async (request, response) => {
       const patch = snapshotSource === "runtime" && requestedPatch.baseRevision !== current.revision
         ? { ...requestedPatch, baseRevision: current.revision }
         : requestedPatch;
+      const target = findUiNode(current.root, patch.nodeId);
+      if (snapshotSource === "runtime" && target) {
+        const merged = mergeUiSidecarOverride(pendingUiOverrides, target, patch.props, {
+          dynamicTemplate: isRepeatedRuntimeTemplate(current.root, target)
+        });
+        pendingUiOverrides = merged.overrides;
+        skippedRuntimePersistence += merged.ignoredProps || (merged.persisted ? 0 : 1);
+      }
       const snapshot = editor.apply(patch);
       const node = findUiNode(snapshot.root, patch.nodeId);
       enqueueRuntimeCommand({
@@ -798,6 +931,7 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request) as { sessionId?: string; frames?: boolean };
       process.stderr.write(`[TapMakerWork] runtime hello session=${body.sessionId} host=${request.headers.host}\n`);
       runtimeSessionId = body.sessionId || crypto.randomUUID();
+      appliedRuntimeOverrideKeys.clear();
       runtimeConnectedAt = new Date().toISOString();
       capabilities.runtimeFrames = body.frames === true;
       sendJson(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION, sessionId: runtimeSessionId });
@@ -806,7 +940,9 @@ const server = http.createServer(async (request, response) => {
       if (!body.snapshot) throw new Error("runtime_snapshot_required");
       runtimeConnectedAt = new Date().toISOString();
       const snapshot = editor.replaceFromRuntime(body.snapshot);
-      broadcast({ type: "ui.snapshot", snapshot });
+      snapshotSource = "runtime";
+      enqueueSavedUiOverrides(snapshot);
+      broadcast({ type: "ui.snapshot", snapshot, source: "runtime" });
       sendJson(response, 200, { ok: true, revision: snapshot.revision });
     } else if (request.method === "GET" && url.pathname === "/api/runtime/commands") {
       syncRuntimeFileChannel();
@@ -960,26 +1096,6 @@ const server = http.createServer(async (request, response) => {
       }
       broadcast({ type: "preview.panel", panel, reason: "refresh" });
       sendJson(response, 200, { panel, makerRefresh });
-    } else if (request.method === "POST" && url.pathname === "/api/preview/panel/shot") {
-      if (!project) throw new Error("project_not_open");
-      const body = await readJson(request, 20_000_000) as { dataUrl?: string; note?: string };
-      const ideRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
-      if (!body.dataUrl) {
-        sendJson(response, 200, {
-          ok: false,
-          error: "preview_shot_requires_desktop_capture",
-          hint: "浏览器模式无法截取跨域 iframe；请使用 Electron 桌面端截取，或先打开外部预览。"
-        });
-        return;
-      }
-      const saved = savePreviewShot(ideRoot, project.name, body.dataUrl, body.note);
-      const panel = applyPreviewPanelPatch(project.root, { lastShotPath: saved.path }, readMakerProjectMeta(project.root));
-      broadcast({ type: "preview.panel", panel, reason: "shot" });
-      sendJson(response, 200, { ok: true, ...saved, panel });
-    } else if (request.method === "GET" && url.pathname === "/api/preview/panel/shots") {
-      if (!project) throw new Error("project_not_open");
-      const ideRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
-      sendJson(response, 200, { shots: listPreviewShots(ideRoot, project.name) });
     } else if (request.method === "POST" && url.pathname === "/api/shell/execute") {
       sendJson(response, 423, { error: "sandbox_unavailable", detail: sandbox.reason });
     } else {

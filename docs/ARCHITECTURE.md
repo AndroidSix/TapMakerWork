@@ -47,14 +47,13 @@ IDE 内运行视图（当前里程碑）：
 - 打开界面时若存在 `*.ui.json`，优先加载旁路作为视觉源；Lua 仍负责行为。
 - 未安装适配器时仍可查看最终画面；安装项目适配器并刷新 Runtime 后启用活树选取与编辑。
 
-### 内嵌预览与 LocalRuntime（参考 KayingCodex）
+### 内嵌预览与 LocalRuntime
 
 创建于 2026-09-19
 
 - **内嵌 Maker 预览面板**：Studio 中央「内嵌预览」页。桌面端优先 Electron `WebContentsView`（`persist:tapmakerwork-preview`），Web / 未挂载时降级 `<iframe>`。
 - **预览 URL/方向持久化**：写在项目侧 `.tapmakerwork/preview-panel.json`（IDE 状态，不进游戏 git）。无手填 URL 时回退 Maker `test_qrcode.url`。
 - **改完自动刷新**：`live-edit` 写入 `.ui.json` 后 Bridge 递增 `reloadToken` 并广播 `preview.panel`；可选触发官方 `maker preview refresh`。
-- **预览截图证据**：Electron `capturePage` → Bridge 落盘 `outputs/preview-shots/<project>/`。跨域 iframe 在浏览器模式下无法截帧。
 - **LocalRuntime**：`play` 模式将 IR / `.ui.json` 以可交互控件树渲染（Image 走项目资产 API，Button 有点击反馈），不启动官方 Runtime。
 
 The adapter first attempts a Runtime-initiated loopback HTTP channel. Maker projects whose URL whitelist blocks localhost automatically use a bounded savedata file channel for status, snapshots and commands. Lua polls from the existing game update loop and applies property changes through `Widget:SetStyle`, avoiding the official `preview refresh` path that restarts Runtime and loses memory state.
@@ -73,15 +72,15 @@ Official Maker changes are kept behind adapters. Any unavoidable upstream modifi
 
 The current milestone does not modify the official Maker Runtime. Project integration is isolated to a managed entry hook plus `scripts/tapmakerwork/TapMakerWorkBridge.lua`, with an entry backup under `.tapmakerwork/backups`. See `UPSTREAM.md`.
 
-## Delivery workflow and evidence
+## Delivery workflow and validation
 
 创建于 2026-09-20
 
-The Studio delivery cockpit is a projection of Bridge facts, not a second build system. It groups the current project into six reviewable stages: environment, project binding, content, Runtime, evidence and delivery.
+The Studio delivery cockpit is an original TapMakerWork composition and a projection of Bridge facts, not a copied dashboard or a second build system. It groups the current project into six reviewable stages: environment, project binding, content, Runtime, validation and delivery.
 
 - Maker CLI, Git, project binding and project metadata are checked from the local environment.
 - Asset entries are classified as image, audio, video, model or font and marked referenced only when a project source/config document contains a matching path or filename.
-- Evidence is derived from preview captures, `*.ui.json` sidecars, Runtime snapshots and the official test QR entry.
+- Validation state is derived from `*.ui.json` sidecars, Runtime snapshots and the official test QR entry; screenshot evidence is intentionally not part of the workbench.
 - The current objective is the only manually persisted workflow field and lives in `.tapmakerwork/workflow.json`.
 - Build remains an explicit action. A readiness score never triggers a build, push or publish automatically.
 - External agents read the same state through `tapmakerwork://workflow/overview`; they do not maintain a parallel progress database.

@@ -44,18 +44,18 @@ The scripts disable certificate auto-discovery so duplicate local certificates c
 
 Unsigned artifacts are useful for local QA only. A signed macOS build is mandatory for automatic updates and provides the stable identity needed for durable permissions.
 
-## Update feed
+## Gitee release updates
 
-Set the production generic feed in Settings or through `TAPMAKERWORK_UPDATE_URL` before startup. Only HTTPS is accepted, except `localhost` HTTP for development.
+The desktop app checks the fixed Gitee main repository through `GET /api/v5/repos/AndroidSUP/tap-maker-work/releases/latest`. There is no user-editable update source. A repository with no Release is treated as having no available update.
 
-The build configuration keeps `publish` intentionally empty (`publish: null`). Do not point clients at a git tree URL such as `https://gitee.com/AndroidSUP/tap-maker-work/tree/main/` — electron-updater needs a generic feed directory that serves installers plus `latest-mac.yml` / `latest.yml` and block maps. When the release channel is ready, host those artifacts on HTTPS (CDN, Gitee Pages/Releases raw files, or your own host), then save that feed URL in Settings or inject it via `TAPMAKERWORK_UPDATE_URL`. Clients do not contact any update address until one is explicitly configured.
+When a newer tag is found, the packaged app configures electron-updater against that Release's download directory. The Release must therefore contain the installers plus the generated `latest-mac.yml` / `latest.yml` and block maps. Use a `v<package.json version>` tag unless you intentionally adopt another consistent tag scheme. If the metadata is missing, Settings keeps the new-version result visible and opens the Gitee Release page as a manual-download fallback.
 
 Upload the complete electron-builder output for each release, not only the installer:
 
 - macOS ZIP/DMG plus `latest-mac.yml` and block maps;
 - Windows NSIS executable plus `latest.yml` and block maps.
 
-Increase the root `package.json` version before building. Installed clients check shortly after startup and every 30 minutes. The Settings panel also supports a manual check, explicit download with progress, and restart-to-install.
+Increase the root `package.json` version before building. Installed clients check Gitee shortly after startup and every 30 minutes. The Settings panel also supports a manual check, explicit download with progress, repository shortcuts, and restart-to-install.
 
 ## Node.js behavior
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { ExternalLink, Image as ImageIcon, MonitorPlay, RefreshCw, Save } from "lucide-react";
+import { ExternalLink, MonitorPlay, RefreshCw, Save } from "lucide-react";
 import type { PreviewPanelState } from "@tapmakerwork/protocol";
 
 const API = "http://127.0.0.1:43121";
@@ -35,8 +35,7 @@ export function PreviewDock({
   onOpenExternal
 }: PreviewDockProps) {
   const [urlDraft, setUrlDraft] = useState(panel?.url || "");
-  const [busy, setBusy] = useState<"save" | "refresh" | "shot" | "">("");
-  const [shots, setShots] = useState<Array<{ path: string; bytes: number }>>([]);
+  const [busy, setBusy] = useState<"save" | "refresh" | "">("");
   const [runtimeFrame, setRuntimeFrame] = useState<{ dataUrl: string; sourceId?: string; sourceName?: string; width?: number; height?: number }>();
   const frameRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -47,18 +46,6 @@ export function PreviewDock({
   const reloadToken = panel?.reloadToken ?? 0;
 
   useEffect(() => setUrlDraft(panel?.url || ""), [panel?.url]);
-
-  const loadShots = useCallback(async () => {
-    try {
-      const response = await fetch(`${API}/api/preview/panel/shots`);
-      const result = await response.json() as { shots?: Array<{ path: string; bytes: number }> };
-      setShots(result.shots ?? []);
-    } catch {
-      setShots([]);
-    }
-  }, []);
-
-  useEffect(() => { void loadShots(); }, [loadShots]);
 
   const mountNative = useCallback(async () => {
     if (!useNative || !url || !frameRef.current) return;
@@ -187,36 +174,6 @@ export function PreviewDock({
     }
   }, [onChanged, onLog, onToast, useNative, embeddable]);
 
-  const captureShot = useCallback(async () => {
-    setBusy("shot");
-    try {
-      let dataUrl: string | undefined;
-      if (useNative) {
-        const result = await window.tapMakerWork!.preview!.capture();
-        if (!result.ok || !result.dataUrl) throw new Error(result.error || "桌面截帧失败");
-        dataUrl = result.dataUrl;
-      }
-      const response = await fetch(`${API}/api/preview/panel/shot`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ dataUrl, note: "panel" })
-      });
-      const result = await response.json() as { ok?: boolean; path?: string; panel?: PreviewPanelState; error?: string; hint?: string };
-      if (result.panel) onChanged(result.panel);
-      if (result.path) {
-        onLog(`预览证据：${result.path}`);
-        onToast("截图已保存", "success");
-        void loadShots();
-      } else {
-        onToast(result.hint || result.error || "当前环境无法截图", "warn");
-      }
-    } catch (error) {
-      onToast(error instanceof Error ? error.message : String(error), "error");
-    } finally {
-      setBusy("");
-    }
-  }, [useNative, onChanged, onLog, onToast, loadShots]);
-
   return (
     <div className={`preview-dock ${compact ? "compact" : ""}`}>
       <div className="preview-toolbar">
@@ -258,7 +215,6 @@ export function PreviewDock({
           Maker
         </label>
         <button className="icon-command" aria-label="刷新" disabled={busy === "refresh"} onClick={() => void reloadPreview(false)}><RefreshCw size={13} /></button>
-        <button className="icon-command" aria-label="截图" disabled={busy === "shot"} onClick={() => void captureShot()}><ImageIcon size={13} /></button>
         <button className="icon-command" aria-label="外部打开" disabled={!url} onClick={() => url && onOpenExternal(url)}><ExternalLink size={13} /></button>
       </div>
       <div className="preview-stage" ref={frameRef}>
@@ -310,14 +266,6 @@ export function PreviewDock({
           />
         )}
       </div>
-      {!compact && shots.length > 0 && (
-        <div className="preview-shots">
-          <span>证据</span>
-          {shots.slice(0, 4).map((shot) => (
-            <code key={shot.path} title={shot.path}>{shot.path.split("/").slice(-2).join("/")}</code>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

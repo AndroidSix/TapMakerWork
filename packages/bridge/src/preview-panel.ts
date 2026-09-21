@@ -11,7 +11,6 @@ export interface PreviewPanelFile {
   autoRefreshMaker?: boolean | undefined;
   transport?: PreviewTransport | undefined;
   lastRefreshedAt?: string | undefined;
-  lastShotPath?: string | undefined;
   reloadToken?: number | undefined;
 }
 
@@ -76,7 +75,6 @@ export function resolvePreviewPanel(
     autoRefreshMaker: file.autoRefreshMaker ?? false,
     transport: file.transport ?? "auto",
     lastRefreshedAt: file.lastRefreshedAt,
-    lastShotPath: file.lastShotPath,
     reloadToken: file.reloadToken ?? 0
   };
 }
@@ -105,46 +103,6 @@ export function bumpPreviewReload(
     lastRefreshedAt: new Date().toISOString()
   });
   return resolvePreviewPanel(projectRoot, makerMeta);
-}
-
-export function shotsRoot(ideRoot: string): string {
-  return path.join(ideRoot, "outputs", "preview-shots");
-}
-
-export function savePreviewShot(
-  ideRoot: string,
-  projectName: string,
-  dataUrl: string,
-  note?: string
-): { path: string; bytes: number } {
-  const match = /^data:image\/(png|jpe?g|webp);base64,(.+)$/i.exec(dataUrl.trim());
-  if (!match) throw new Error("preview_shot_data_url_invalid");
-  const ext = match[1]!.toLowerCase().startsWith("jpe") ? "jpg" : match[1]!.toLowerCase();
-  const buffer = Buffer.from(match[2]!, "base64");
-  if (!buffer.length) throw new Error("preview_shot_empty");
-  const safeProject = (projectName || "project").replace(/[^\w.-]+/g, "_").slice(0, 64) || "project";
-  const directory = path.join(shotsRoot(ideRoot), safeProject);
-  fs.mkdirSync(directory, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const suffix = note ? `-${note.replace(/[^\w.-]+/g, "_").slice(0, 32)}` : "";
-  const filename = path.join(directory, `${stamp}${suffix}.${ext}`);
-  fs.writeFileSync(filename, buffer);
-  return { path: filename, bytes: buffer.length };
-}
-
-export function listPreviewShots(ideRoot: string, projectName: string, limit = 12): Array<{ path: string; bytes: number; mtimeMs: number }> {
-  const safeProject = (projectName || "project").replace(/[^\w.-]+/g, "_").slice(0, 64) || "project";
-  const directory = path.join(shotsRoot(ideRoot), safeProject);
-  if (!fs.existsSync(directory)) return [];
-  return fs.readdirSync(directory)
-    .filter((name) => /\.(png|jpe?g|webp)$/i.test(name))
-    .map((name) => {
-      const full = path.join(directory, name);
-      const stat = fs.statSync(full);
-      return { path: full, bytes: stat.size, mtimeMs: stat.mtimeMs };
-    })
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, limit);
 }
 
 export function previewPanelFingerprint(panel: PreviewPanelState): string {

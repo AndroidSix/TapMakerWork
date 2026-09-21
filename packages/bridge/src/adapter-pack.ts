@@ -28,6 +28,35 @@ function timestampForPath(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
+function resolveMakerClientEntry(projectRoot: string): string {
+  const scriptsRoot = path.join(projectRoot, "scripts");
+  const projectConfigPath = path.join(projectRoot, ".project", "project.json");
+  const candidates: string[] = [];
+
+  if (fs.existsSync(projectConfigPath)) {
+    try {
+      const config = JSON.parse(fs.readFileSync(projectConfigPath, "utf8")) as Record<string, unknown>;
+      for (const key of ["entry@client", "entry"]) {
+        const value = config[key];
+        if (typeof value === "string" && value.trim()) candidates.push(value.trim());
+      }
+    } catch {
+      throw new Error("maker_project_config_invalid");
+    }
+  }
+  candidates.push("main.lua");
+
+  for (const candidate of [...new Set(candidates)]) {
+    const normalized = candidate.replaceAll("\\", "/").replace(/^\.\//, "").replace(/^scripts\//, "");
+    if (!normalized || path.isAbsolute(normalized) || normalized.split("/").includes("..")) continue;
+    for (const relative of path.extname(normalized) ? [normalized] : [normalized, `${normalized}.lua`]) {
+      const entryPath = path.resolve(scriptsRoot, relative);
+      if (entryPath.startsWith(`${path.resolve(scriptsRoot)}${path.sep}`) && fs.existsSync(entryPath)) return entryPath;
+    }
+  }
+  throw new Error("maker_client_entry_not_found");
+}
+
 export function installRuntimeAdapter(options: {
   bridgePackageRoot: string;
   projectRoot: string;
@@ -37,8 +66,7 @@ export function installRuntimeAdapter(options: {
   if (!fs.existsSync(templatePath)) throw new Error("adapter_template_not_found");
 
   const projectRoot = path.resolve(options.projectRoot);
-  const entryPath = path.join(projectRoot, "scripts", "main.lua");
-  if (!fs.existsSync(entryPath)) throw new Error("maker_main_lua_not_found");
+  const entryPath = resolveMakerClientEntry(projectRoot);
   const original = fs.readFileSync(entryPath, "utf8");
   const alreadyManaged = original.includes(BOOTSTRAP_START)
     && original.includes(START_CALL)
@@ -98,7 +126,7 @@ ${BOOTSTRAP_END}
   if (entryChanged) {
     const backupDir = path.join(projectRoot, ".tapmakerwork", "backups");
     fs.mkdirSync(backupDir, { recursive: true });
-    backupPath = path.join(backupDir, `main.lua.${timestampForPath()}.bak`);
+    backupPath = path.join(backupDir, `${path.basename(entryPath)}.${timestampForPath()}.bak`);
     fs.copyFileSync(entryPath, backupPath, fs.constants.COPYFILE_EXCL);
   }
   fs.mkdirSync(path.dirname(adapterPath), { recursive: true });

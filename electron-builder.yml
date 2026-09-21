@@ -23,9 +23,12 @@ extraResources:
     to: bridge
     filter:
       - index.mjs
-# Update feed intentionally empty. Fill a HTTPS generic feed later
-# (release assets + latest*.yml), not a git tree URL.
-publish: null
+# Release upload is handled separately. Declaring the generic Gitee directory
+# makes electron-builder emit latest*.yml without attempting to publish during
+# local packaging; the app resolves the actual newest release tag at runtime.
+publish:
+  provider: generic
+  url: https://gitee.com/AndroidSUP/tap-maker-work/releases/download/v${version}/
 mac:
   icon: build/icon.icns
   category: public.app-category.developer-tools

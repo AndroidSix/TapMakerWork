@@ -1,5 +1,25 @@
 # Change log
 
+## 2026-09-21 — Gitee updates and source-control workspace
+
+- Replaced the editable application-update source with a fixed check against the `AndroidSUP/tap-maker-work` Gitee release API, with manual release-page fallback when updater metadata is unavailable.
+- Added direct Gitee and GitHub repository shortcuts to Settings.
+- Removed preview screenshot capture and screenshot evidence from the workbench, preview dock, protocol and Bridge API; delivery now focuses on executable validation signals.
+- Rebuilt the Git workspace around staged and unstaged groups, per-file and bulk actions, keyboard commit, pull/push controls, a compact commit graph and VS Code-style right-click menus.
+- Documented the workbench as an original TapMakerWork composition built from project-specific delivery stages; external projects inform integration patterns rather than supplying its dashboard layout.
+
+## 2026-09-21 — live editor viewport and hierarchy navigation
+
+- Live-edit and actual Runtime panes now fit the complete game viewport by both available width and height, preserving the engine-reported aspect ratio during panel and terminal resizing.
+- Selecting a visual node now opens its source UI file without leaving Runtime editing, switches to the hierarchy panel, expands its ancestor chain and reveals the matching tree row immediately.
+- The hierarchy action bar now remains fixed while the node tree scrolls independently beneath it.
+
+## 2026-09-21 — anonymous usage telemetry
+
+- Added opt-out anonymous usage telemetry focused on session duration and active time, with local lifetime totals shown in Settings.
+- Tracks bounded product events (`app.launch` / `app.quit`, project open, preview, live-edit, adapter install, build) without project paths, source or Maker credentials.
+- Added a free local receiver (`npm run telemetry:receiver`) and optional HTTPS / localhost endpoint flush from desktop settings.
+
 ## 2026-09-21 — desktop delivery, permissions and updates
 
 - Changed Maker subprocesses to follow the system Node.js discovered from PATH, login shells, Homebrew, Volta and standard Windows locations; legacy managed runtimes no longer override it.
@@ -13,6 +33,9 @@
 - Added a first-install EULA and privacy-policy gate that documents local data use, Screen Recording, Accessibility, research intent and the decline-to-exit behavior.
 - Added automatic live Runtime error detection with a focused recovery dialog, complete logs and a copy-ready AI repair prompt.
 - Added a dedicated Maker backend shortcut beside the TapTap developer-console shortcut.
+- Added project closing from both the native File menu and the title-bar project tab, including unsaved-code confirmation and a clean return to the welcome screen.
+- Added author-game and voluntary-sponsorship shortcuts, with an accessible in-app viewer for the repository's WeChat and Alipay support codes.
+- Added an explicit “I have authorized” permission confirmation so macOS users can enable restart even when System Settings does not refresh the permission status in-process.
 
 ## 2026-09-20 — true Runtime view and explicit source navigation
 

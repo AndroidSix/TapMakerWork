@@ -15,7 +15,28 @@ export interface GitStatus {
   ahead: number;
   behind: number;
   dirty: boolean;
-  changes: Array<{ path: string; status: string }>;
+  changes: GitChange[];
+  commits: GitCommitSummary[];
+}
+
+export interface GitChange {
+  path: string;
+  status: string;
+  indexStatus: string;
+  workTreeStatus: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  conflicted: boolean;
+}
+
+export interface GitCommitSummary {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  author: string;
+  relativeDate: string;
+  refs: string[];
 }
 
 export interface GitActionResult {
@@ -210,10 +231,21 @@ function run(command: string, args: string[], cwd: string, timeoutMs = 8_000): P
   });
 }
 
+function decodeGitStatusPath(rawPath: string): string {
+  const trimmed = rawPath.trim();
+  if (!(trimmed.startsWith('"') && trimmed.endsWith('"'))) return trimmed;
+  try {
+    return JSON.parse(trimmed) as string;
+  } catch {
+    return trimmed.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+}
+
 export async function readGitStatus(projectRoot: string): Promise<GitStatus> {
-  const [branchOut, statusOut] = await Promise.all([
+  const [branchOut, statusOut, logOut] = await Promise.all([
     run("git", ["rev-parse", "--abbrev-ref", "HEAD"], projectRoot),
-    run("git", ["status", "--porcelain=v1", "-b"], projectRoot)
+    run("git", ["-c", "core.quotepath=false", "status", "--porcelain=v1", "-b"], projectRoot),
+    run("git", ["log", "--max-count=30", "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%D"], projectRoot).catch(() => "")
   ]);
   const lines = statusOut.split(/\r?\n/).filter(Boolean);
   const header = lines[0] || "";
@@ -221,18 +253,67 @@ export async function readGitStatus(projectRoot: string): Promise<GitStatus> {
   const upstreamMatch = header.match(/\.\.\.(\S+)/);
   const aheadMatch = header.match(/ahead (\d+)/);
   const behindMatch = header.match(/behind (\d+)/);
-  const changes = lines.slice(1).map((line) => ({
-    status: line.slice(0, 2).trim() || "?",
-    path: line.slice(3).trim()
-  })).filter((item) => item.path);
+  const changes = lines.slice(1).map((line) => {
+    const rawStatus = line.slice(0, 2).padEnd(2, " ");
+    const indexStatus = rawStatus[0] || " ";
+    const workTreeStatus = rawStatus[1] || " ";
+    const rawPath = decodeGitStatusPath(line.slice(3));
+    const filePath = rawPath.includes(" -> ") ? rawPath.split(" -> ").at(-1)!.trim() : rawPath;
+    const untracked = rawStatus === "??";
+    return {
+      status: rawStatus.trim() || "?",
+      path: filePath,
+      indexStatus,
+      workTreeStatus,
+      staged: !untracked && indexStatus !== " ",
+      unstaged: untracked || workTreeStatus !== " ",
+      untracked,
+      conflicted: /^(AA|AU|DD|DU|UA|UD|UU)$/.test(rawStatus)
+    };
+  }).filter((item) => item.path);
+  const commits = logOut.split(/\r?\n/).filter(Boolean).map((line) => {
+    const [hash = "", shortHash = "", subject = "", author = "", relativeDate = "", refs = ""] = line.split("\x1f");
+    return {
+      hash,
+      shortHash,
+      subject,
+      author,
+      relativeDate,
+      refs: refs.split(",").map((item) => item.trim()).filter(Boolean)
+    };
+  });
   return {
     branch,
     upstream: upstreamMatch?.[1],
     ahead: Number(aheadMatch?.[1] || 0),
     behind: Number(behindMatch?.[1] || 0),
     dirty: changes.length > 0,
-    changes: changes.slice(0, 100)
+    changes: changes.slice(0, 200),
+    commits
   };
+}
+
+function safeGitPath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, "/").trim();
+  if (!normalized || path.posix.isAbsolute(normalized) || normalized.split("/").includes("..")) throw new Error("invalid_git_path");
+  return normalized;
+}
+
+export async function mutateGitProject(projectRoot: string, action: "stage" | "unstage" | "discard" | "stage-all" | "unstage-all", filePath?: string): Promise<{ ok: true; output: string; status: GitStatus }> {
+  let output = "";
+  if (action === "stage-all") output = await run("git", ["add", "-A"], projectRoot, 30_000);
+  else if (action === "unstage-all") output = await run("git", ["restore", "--staged", "."], projectRoot, 30_000);
+  else {
+    const target = safeGitPath(filePath || "");
+    const current = await readGitStatus(projectRoot);
+    const change = current.changes.find((item) => item.path === target);
+    if (!change) throw new Error("git_change_not_found");
+    if (action === "stage") output = await run("git", ["add", "--", target], projectRoot, 30_000);
+    else if (action === "unstage") output = await run("git", ["restore", "--staged", "--", target], projectRoot, 30_000);
+    else if (change.untracked) output = await run("git", ["clean", "-f", "--", target], projectRoot, 30_000);
+    else output = await run("git", ["restore", "--worktree", "--", target], projectRoot, 30_000);
+  }
+  return { ok: true, output: output.trim(), status: await readGitStatus(projectRoot) };
 }
 
 function gitConflictPlan(status: GitStatus, error: string): string {
@@ -274,7 +355,7 @@ export async function commitGitProject(projectRoot: string, message: string, pus
     const before = await readGitStatus(projectRoot);
     let output = "";
     if (before.dirty) {
-      await run("git", ["add", "-A"], projectRoot, 30_000);
+      if (!before.changes.some((item) => item.staged)) await run("git", ["add", "-A"], projectRoot, 30_000);
       output += await run("git", ["commit", "-m", cleanMessage], projectRoot, 120_000);
     }
     if (push) {

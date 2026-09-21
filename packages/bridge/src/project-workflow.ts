@@ -36,7 +36,6 @@ export interface ProjectWorkflowInput {
   git?: GitStatus | undefined;
   gitError?: string | undefined;
   assets: AssetEntry[];
-  shots: Array<{ path: string; bytes: number; mtimeMs: number }>;
 }
 
 function walkFiles(root: string, predicate: (filename: string) => boolean, limit = 500): string[] {
@@ -126,16 +125,6 @@ function summarizeAssets(assets: AssetEntry[]): ProjectAssetSummary {
 
 function evidenceFromInput(input: ProjectWorkflowInput, sidecars: string[]): ProjectWorkflowEvidence[] {
   const evidence: ProjectWorkflowEvidence[] = [];
-  for (const shot of input.shots.slice(0, 4)) {
-    evidence.push({
-      id: `shot:${shot.path}`,
-      kind: "preview-shot",
-      label: "预览截图",
-      detail: `${Math.max(1, Math.round(shot.bytes / 1024))} KB`,
-      path: shot.path,
-      capturedAt: new Date(shot.mtimeMs).toISOString()
-    });
-  }
   for (const filename of sidecars.slice(0, 4)) {
     let capturedAt: string | undefined;
     try { capturedAt = fs.statSync(filename).mtime.toISOString(); } catch { /* ignore */ }
@@ -258,18 +247,10 @@ export function buildProjectWorkflowOverview(input: ProjectWorkflowInput): Proje
         actionLabel: "打开预览"
       }
     ]),
-    stage("evidence", "证据", "保存可以复核的画面、结构和运行结果。", [
-      {
-        id: "preview-shot",
-        label: "画面证据",
-        status: input.shots.length ? "pass" : "pending",
-        detail: input.shots.length ? `${input.shots.length} 张预览截图` : "尚未保存预览截图",
-        action: "capture-evidence",
-        actionLabel: "截取证据"
-      },
+    stage("evidence", "验证", "检查可编辑结构、运行状态和测试入口。", [
       {
         id: "ui-sidecar",
-        label: "UI 结构证据",
+        label: "UI 结构旁路",
         status: sidecars.length ? "pass" : "pending",
         detail: sidecars.length ? `${sidecars.length} 个 .ui.json` : "尚未保存视觉旁路",
         action: "open-design",
@@ -280,6 +261,14 @@ export function buildProjectWorkflowOverview(input: ProjectWorkflowInput): Proje
         label: "Runtime 快照",
         status: input.runtimeSnapshotPath ? "pass" : "pending",
         detail: input.runtimeSnapshotPath ? "活树快照已落盘" : "尚未取得 Runtime 活树"
+      },
+      {
+        id: "test-entry",
+        label: "测试入口",
+        status: input.qrcodeUrl ? "pass" : "pending",
+        detail: input.qrcodeUrl ? "Maker 测试入口已生成" : "尚未生成测试二维码",
+        action: "generate-qrcode",
+        actionLabel: "生成二维码"
       }
     ]),
     stage("delivery", "交付", "在构建前检查本地变更和测试入口。", [

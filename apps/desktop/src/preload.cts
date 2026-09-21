@@ -4,10 +4,18 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
   platform: process.platform,
   desktop: true,
   chooseProject: () => ipcRenderer.invoke("tapmakerwork:choose-project") as Promise<string | undefined>,
+  clipboard: {
+    writeText: (text: string) => ipcRenderer.invoke("tapmakerwork:clipboard-write", text) as Promise<{ ok: boolean; error?: string }>
+  },
   onOpenProject: (listener: (projectPath: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => listener(projectPath);
     ipcRenderer.on("tapmakerwork:open-project", handler);
     return () => ipcRenderer.removeListener("tapmakerwork:open-project", handler);
+  },
+  onCloseProject: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on("tapmakerwork:close-project", handler);
+    return () => ipcRenderer.removeListener("tapmakerwork:close-project", handler);
   },
   onHistoryAction: (listener: (action: "undo" | "redo") => void) => {
     const handler = (_event: Electron.IpcRendererEvent, action: "undo" | "redo") => listener(action);
@@ -27,7 +35,6 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
   },
   updates: {
     get: () => ipcRenderer.invoke("tapmakerwork:update-get"),
-    configure: (url: string) => ipcRenderer.invoke("tapmakerwork:update-configure", url),
     check: () => ipcRenderer.invoke("tapmakerwork:update-check"),
     download: () => ipcRenderer.invoke("tapmakerwork:update-download"),
     restart: () => ipcRenderer.invoke("tapmakerwork:update-restart"),
@@ -46,6 +53,13 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
     get: () => ipcRenderer.invoke("tapmakerwork:legal-get"),
     accept: () => ipcRenderer.invoke("tapmakerwork:legal-accept"),
     decline: () => ipcRenderer.invoke("tapmakerwork:legal-decline")
+  },
+  telemetry: {
+    get: () => ipcRenderer.invoke("tapmakerwork:telemetry-get"),
+    setEnabled: (enabled: boolean) => ipcRenderer.invoke("tapmakerwork:telemetry-set-enabled", enabled),
+    setEndpoint: (endpoint: string) => ipcRenderer.invoke("tapmakerwork:telemetry-set-endpoint", endpoint),
+    track: (name: string, props?: Record<string, unknown>) => ipcRenderer.invoke("tapmakerwork:telemetry-track", name, props),
+    flush: () => ipcRenderer.invoke("tapmakerwork:telemetry-flush")
   },
   captureRuntime: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) =>
     ipcRenderer.invoke("tapmakerwork:runtime-capture", opts) as Promise<{
