@@ -26,6 +26,7 @@ local state = {
     nodeById = {},
     frame = nil,
     lastCtx = nil,
+    projectName = nil,
 }
 
 local METHOD = {
@@ -133,6 +134,7 @@ local function writeStatus()
         revision = state.revision,
         transport = "file+http",
         url = state.url,
+        projectName = state.projectName,
         lastHttpError = state.lastHttpError,
         lastCommandError = state.lastCommandError,
         lastCommandResult = state.lastCommandResult,
@@ -651,7 +653,7 @@ local function installHooks()
         "nvgText", "nvgTextBox",
         "nvgSave", "nvgRestore", "nvgReset", "nvgResetTransform",
         "nvgTranslate", "nvgRotate", "nvgScale", "nvgSkewX", "nvgSkewY", "nvgTransform",
-        "nvgImagePattern", "nvgGlobalAlpha",
+        "nvgImagePattern", "nvgImagePatternTinted", "nvgGlobalAlpha",
         "nvgRGBA", "nvgRGBAf", "nvgRGB", "nvgRGBf",
     }
     for _, name in ipairs(names) do
@@ -851,6 +853,22 @@ local function installHooks()
         return callOriginal(base, ctx, ox, oy, ex, ey, angle, image, alpha)
     end)
 
+    -- Maker / UrhoX often tints table/ball art via nvgImagePatternTinted; treat like Image.
+    wrap("nvgImagePatternTinted", function(base, ...)
+        local ctx, args = unpackCtxArgs(...)
+        local ox, oy, ex, ey, angle, image, tintOrAlpha = args[1], args[2], args[3], args[4], args[5], args[6], args[7]
+        ensureFrame().imagePaint = {
+            x = tonumber(ox) or 0,
+            y = tonumber(oy) or 0,
+            w = tonumber(ex) or 0,
+            h = tonumber(ey) or 0,
+            image = image,
+            alpha = type(tintOrAlpha) == "number" and tintOrAlpha or 1,
+            tinted = true,
+        }
+        return callOriginal(base, ctx, ...)
+    end)
+
     local function rebuildPath(ctx, x, y, w, h, color, colorSetter)
         local oSave, oRestore = original("nvgSave"), original("nvgRestore")
         local oReset, oBegin, oRect = original("nvgResetTransform"), original("nvgBeginPath"), original("nvgRect")
@@ -887,6 +905,11 @@ local function installHooks()
             end
             local _, overlay = emitElement(kind, props, bounds)
             local result
+            if overlay and overlay.visible == false then
+                frame.path = nil
+                frame.imagePaint = nil
+                return nil
+            end
             if overlay and (overlay.left ~= nil or overlay.x ~= nil or overlay.top ~= nil or overlay.y ~= nil
                 or overlay.width ~= nil or overlay.height ~= nil or overlay.backgroundColor ~= nil or overlay.color ~= nil) then
                 local x = tonumber(overlay.left or overlay.x) or bounds.x
@@ -894,7 +917,7 @@ local function installHooks()
                 local w = tonumber(overlay.width) or bounds.w
                 local h = tonumber(overlay.height) or bounds.h
                 local oRestore = rebuildPath(ctx, x, y, w, h, overlay.backgroundColor or overlay.color, original("nvgFillColor"))
-                result = base(...)
+                result = callOriginal(original("nvgFill") or base, ctx)
                 if oRestore then callOriginal(oRestore, ctx) end
             else
                 result = base(...)
@@ -930,6 +953,10 @@ local function installHooks()
             }
             local _, overlay = emitElement("Rect", props, bounds)
             local result
+            if overlay and overlay.visible == false then
+                frame.path = nil
+                return nil
+            end
             if overlay and (overlay.left ~= nil or overlay.x ~= nil or overlay.top ~= nil or overlay.y ~= nil
                 or overlay.width ~= nil or overlay.height ~= nil or overlay.borderColor ~= nil or overlay.color ~= nil) then
                 local x = tonumber(overlay.left or overlay.x) or bounds.x
@@ -937,7 +964,7 @@ local function installHooks()
                 local w = tonumber(overlay.width) or bounds.w
                 local h = tonumber(overlay.height) or bounds.h
                 local oRestore = rebuildPath(ctx, x, y, w, h, overlay.borderColor or overlay.color, original("nvgStrokeColor"))
-                result = base(...)
+                result = callOriginal(original("nvgStroke") or base, ctx)
                 if oRestore then callOriginal(oRestore, ctx) end
             else
                 result = base(...)
@@ -1030,10 +1057,13 @@ function Bridge.Start(options)
     state.pollInterval = math.max(0.016, tonumber(options.pollInterval) or state.pollInterval)
     state.snapshotInterval = math.max(0.1, tonumber(options.snapshotInterval) or state.snapshotInterval)
     state.sessionId = options.sessionId or tostring(os.time())
+    if type(options.projectName) == "string" and options.projectName ~= "" then
+        state.projectName = options.projectName
+    end
     installHooks()
     writeStatus()
     Bridge.PushSnapshot()
-    request("POST", "/api/runtime/hello", { sessionId = state.sessionId, frames = false, backend = "nanovg" })
+    request("POST", "/api/runtime/hello", { sessionId = state.sessionId, frames = false, backend = "nanovg", projectName = state.projectName })
 end
 
 function Bridge.Update(dt)

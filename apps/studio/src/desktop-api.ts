@@ -16,6 +16,13 @@ export interface DesktopUpdateState {
   total?: number | undefined;
   message?: string | undefined;
   releaseUrl?: string | undefined;
+  downloadUrl?: string | undefined;
+  siteUrl?: string | undefined;
+  title?: string | undefined;
+  notes?: string[] | undefined;
+  reminder?: "show" | "snoozed" | "muted" | "hidden" | undefined;
+  source?: "gitee" | "github" | "builtin" | "gitee-release" | undefined;
+  force?: boolean | undefined;
   packaged: boolean;
 }
 
@@ -33,7 +40,7 @@ export interface DesktopLegalState {
 
 export interface DesktopTelemetryState {
   enabled: boolean;
-  endpoint: string;
+  provider: "gamealgo";
   installId: string;
   sessionId: string;
   sessionMs: number;
@@ -41,11 +48,12 @@ export interface DesktopTelemetryState {
   lifetimeActiveMs: number;
   lifetimeSessionMs: number;
   sessionCount: number;
-  pendingEvents: number;
   sessionLabel: string;
   activeLabel: string;
   lifetimeActiveLabel: string;
   lifetimeSessionLabel: string;
-  lastFlushAt?: string | undefined;
-  lastFlushError?: string | undefined;
+  gameKey: string;
+  gameKeyConfigured: boolean;
+  baseUrl: string;
+  dashboardUrl: string;
 }

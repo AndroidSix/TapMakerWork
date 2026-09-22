@@ -1,6 +1,6 @@
 {
   "name": "tapmakerwork",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "productName": "TapMakerWork",
   "description": "TapTap Maker visual desktop workspace",
   "author": "androidsup",
@@ -25,8 +25,7 @@
     "package:ide:mac": "node scripts/package-ide.mjs --mac",
     "package:ide:win": "node scripts/package-ide.mjs --win",
     "test": "npm run test -w @tapmakerwork/protocol && npm run test -w @tapmakerwork/bridge && npm run test -w @tapmakerwork/studio && npm run test -w @tapmakerwork/desktop",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "telemetry:receiver": "node scripts/telemetry-receiver.mjs"
+    "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",

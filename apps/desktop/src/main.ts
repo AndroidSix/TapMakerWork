@@ -9,6 +9,15 @@ import { runtimeViewportPoint, type RuntimeWindowBounds } from "./runtime-intera
 import { selectRuntimeWindow } from "./runtime-window.js";
 import { chooseWindowsRuntimeWindow, parseWindowsSourceId, WindowsRuntime, type ListedWindow } from "./windows-runtime.js";
 import { TelemetryController, formatDurationMs, type TelemetrySummary } from "./telemetry.js";
+import { GAMEALGO_ADMIN_DASHBOARD_URL, GAMEALGO_DEFAULT_CLIENT_KEY, GAMEALGO_DOMESTIC_BASE_URL } from "./gamealgo-public.js";
+import {
+  loadAppUpdateManifest,
+  nextSnoozeUntil,
+  pickPlatformDownloadUrl,
+  resolveUpdateReminder,
+  type AppUpdateManifest,
+  type UpdateReminder
+} from "./app-update-manifest.js";
 import { GITEE_LATEST_RELEASE_API, GITEE_RELEASES_URL, giteeReleaseDownloadBase, isVersionNewer, normalizeReleaseVersion, type GiteeRelease } from "./release-update.js";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -153,6 +162,13 @@ interface DesktopUpdateState {
   total?: number | undefined;
   message?: string | undefined;
   releaseUrl?: string | undefined;
+  downloadUrl?: string | undefined;
+  siteUrl?: string | undefined;
+  title?: string | undefined;
+  notes?: string[] | undefined;
+  reminder?: UpdateReminder | undefined;
+  source?: AppUpdateManifest["source"] | "gitee-release" | undefined;
+  force?: boolean | undefined;
   packaged: boolean;
 }
 
@@ -222,17 +238,40 @@ interface DesktopSettings {
   eulaAcceptedVersion?: string | undefined;
   eulaAcceptedAt?: string | undefined;
   telemetryEnabled?: boolean | undefined;
-  telemetryEndpoint?: string | undefined;
+  gamealgoGameKey?: string | undefined;
+  mutedUpdateVersion?: string | undefined;
+  snoozeUpdateUntil?: number | undefined;
 }
 
 let telemetry: TelemetryController | undefined;
 
-function resolveTelemetryEndpoint(settings = readDesktopSettings()): string {
-  return (process.env.TAPMAKERWORK_TELEMETRY_URL || settings.telemetryEndpoint || "").trim();
-}
-
 function telemetryEnabledSetting(settings = readDesktopSettings()): boolean {
   return settings.telemetryEnabled !== false;
+}
+
+function readProjectClientKeyFile(): string | undefined {
+  const candidates = [
+    path.join(process.cwd(), ".gamealgo", "client-key"),
+    path.join(app.getAppPath(), ".gamealgo", "client-key"),
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", ".gamealgo", "client-key")
+  ];
+  for (const file of candidates) {
+    try {
+      const value = fs.readFileSync(file, "utf8").trim();
+      if (value.startsWith("ga_live_")) return value;
+    } catch {
+      // try next
+    }
+  }
+  return undefined;
+}
+
+function resolveGameAlgoClientKey(settings = readDesktopSettings()): string {
+  const fromSettings = settings.gamealgoGameKey?.trim();
+  if (fromSettings?.startsWith("ga_live_")) return fromSettings;
+  const fromEnv = process.env.TAPMAKERWORK_GAMEALGO_KEY?.trim();
+  if (fromEnv?.startsWith("ga_live_")) return fromEnv;
+  return readProjectClientKeyFile() || GAMEALGO_DEFAULT_CLIENT_KEY;
 }
 
 function ensureTelemetry(): TelemetryController {
@@ -240,22 +279,26 @@ function ensureTelemetry(): TelemetryController {
   const settings = readDesktopSettings();
   telemetry = new TelemetryController({
     userDataPath: app.getPath("userData"),
-    appVersion: app.getVersion(),
-    platform: process.platform,
     enabled: telemetryEnabledSetting(settings),
-    endpoint: resolveTelemetryEndpoint(settings),
-    log: desktopLog
+    onSessionEnd: (payload) => {
+      mainWindow?.webContents.send("tapmakerwork:telemetry-session-end", payload);
+    }
   });
   return telemetry;
 }
 
 function enrichTelemetrySummary(summary: TelemetrySummary) {
+  const key = resolveGameAlgoClientKey();
   return {
     ...summary,
     sessionLabel: formatDurationMs(summary.sessionMs),
     activeLabel: formatDurationMs(summary.activeMs),
     lifetimeActiveLabel: formatDurationMs(summary.lifetimeActiveMs),
-    lifetimeSessionLabel: formatDurationMs(summary.lifetimeSessionMs)
+    lifetimeSessionLabel: formatDurationMs(summary.lifetimeSessionMs),
+    gameKey: key,
+    gameKeyConfigured: key.startsWith("ga_live_"),
+    baseUrl: GAMEALGO_DOMESTIC_BASE_URL,
+    dashboardUrl: GAMEALGO_ADMIN_DASHBOARD_URL
   };
 }
 
@@ -284,49 +327,120 @@ function configureUpdater(): DesktopUpdateState {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
   updateConfigured = true;
-  return sendUpdateState({ phase: "idle", releaseUrl: GITEE_RELEASES_URL, message: "代码主仓为 GitHub，自动检查 Gitee 发行版" });
+  return sendUpdateState({
+    phase: "idle",
+    releaseUrl: GITEE_RELEASES_URL,
+    reminder: "hidden",
+    message: "版本比对读取仓库 version.json；安装包引导至对应平台下载链接"
+  });
+}
+
+function updatePreferenceState(): { mutedVersion?: string; snoozeUntil?: number } {
+  const settings = readDesktopSettings();
+  return {
+    ...(settings.mutedUpdateVersion ? { mutedVersion: settings.mutedUpdateVersion } : {}),
+    ...(typeof settings.snoozeUpdateUntil === "number" ? { snoozeUntil: settings.snoozeUpdateUntil } : {})
+  };
+}
+
+function emitUpdatePromptIfNeeded(state: DesktopUpdateState, silent: boolean): void {
+  if (state.phase !== "available") return;
+  if (silent && state.reminder !== "show") return;
+  mainWindow?.webContents.send("tapmakerwork:update-prompt", state);
 }
 
 async function checkForDesktopUpdates(silent = false): Promise<DesktopUpdateState> {
   if (!updateConfigured) return configureUpdater();
-  if (!silent) sendUpdateState({ phase: "checking", message: undefined, percent: undefined, availableVersion: undefined });
-  try {
-    const response = await fetch(GITEE_LATEST_RELEASE_API, {
-      headers: { accept: "application/json", "user-agent": `TapMakerWork/${app.getVersion()}` },
-      signal: AbortSignal.timeout(15_000)
+  if (!silent) {
+    sendUpdateState({
+      phase: "checking",
+      message: undefined,
+      percent: undefined,
+      availableVersion: undefined,
+      notes: undefined,
+      title: undefined,
+      reminder: "hidden"
     });
-    if (response.status === 404) {
-      return sendUpdateState({ phase: "up-to-date", availableVersion: undefined, releaseUrl: GITEE_RELEASES_URL, message: "Gitee 暂未发布发行版" });
-    }
-    if (!response.ok) throw new Error(`Gitee 发行版检查失败（HTTP ${response.status}）`);
-    const release = await response.json() as GiteeRelease;
-    const availableVersion = normalizeReleaseVersion(release.tag_name || "");
-    const releaseUrl = release.html_url || GITEE_RELEASES_URL;
-    if (!availableVersion) throw new Error("Gitee 最新发行版缺少版本标签");
+  }
+  try {
+    const manifest = await loadAppUpdateManifest(!silent);
+    const availableVersion = normalizeReleaseVersion(manifest.latest);
+    const releaseUrl = manifest.downloads.page || manifest.downloads.githubPage || GITEE_RELEASES_URL;
+    const downloadUrl = pickPlatformDownloadUrl(manifest.downloads) || releaseUrl;
+    const siteUrl = manifest.downloads.site;
+    const prefs = updatePreferenceState();
+    const reminder = resolveUpdateReminder({
+      currentVersion: app.getVersion(),
+      latestVersion: availableVersion,
+      force: manifest.force,
+      ...prefs
+    });
+
     if (!isVersionNewer(availableVersion, app.getVersion())) {
-      return sendUpdateState({ phase: "up-to-date", availableVersion, releaseUrl, percent: undefined, message: "当前已是最新版本" });
-    }
-    if (!app.isPackaged) {
-      updaterReleaseReady = false;
-      return sendUpdateState({ phase: "available", availableVersion, releaseUrl, percent: 0, message: "开发模式不自动安装，可打开 Gitee 发行版下载" });
-    }
-    autoUpdater.setFeedURL({ provider: "generic", url: giteeReleaseDownloadBase(release.tag_name) });
-    updaterReleaseReady = false;
-    try {
-      await autoUpdater.checkForUpdates();
-    } catch (error) {
       return sendUpdateState({
-        phase: "available",
+        phase: "up-to-date",
         availableVersion,
         releaseUrl,
-        percent: 0,
-        message: `发现新版本，但发行版缺少自动更新元数据：${updateErrorMessage(error)}`
+        downloadUrl,
+        siteUrl,
+        title: manifest.title,
+        notes: manifest.notes,
+        reminder: "hidden",
+        source: manifest.source,
+        force: manifest.force,
+        percent: undefined,
+        message: silent ? undefined : "当前已是最新版本"
       });
     }
+
+    const state = sendUpdateState({
+      phase: "available",
+      availableVersion,
+      releaseUrl,
+      downloadUrl,
+      siteUrl,
+      title: manifest.title,
+      notes: manifest.notes,
+      reminder,
+      source: manifest.source,
+      force: manifest.force,
+      percent: 0,
+      message: reminder === "muted"
+        ? `已设置不再提醒 ${availableVersion}`
+        : reminder === "snoozed"
+          ? `已暂不更新 ${availableVersion}，稍后会再提醒`
+          : `发现新版本 ${availableVersion}，可前往下载安装包`
+    });
+    emitUpdatePromptIfNeeded(state, silent);
+
+    if (app.isPackaged) {
+      updaterReleaseReady = false;
+      try {
+        const response = await fetch(GITEE_LATEST_RELEASE_API, {
+          headers: { accept: "application/json", "user-agent": `TapMakerWork/${app.getVersion()}` },
+          signal: AbortSignal.timeout(8_000)
+        });
+        if (response.ok) {
+          const release = await response.json() as GiteeRelease;
+          if (normalizeReleaseVersion(release.tag_name || "") === availableVersion) {
+            autoUpdater.setFeedURL({ provider: "generic", url: giteeReleaseDownloadBase(release.tag_name) });
+            try {
+              await autoUpdater.checkForUpdates();
+            } catch {
+              updaterReleaseReady = false;
+            }
+          }
+        }
+      } catch {
+        updaterReleaseReady = false;
+      }
+    } else {
+      updaterReleaseReady = false;
+    }
+    return updateState;
   } catch (error) {
-    return sendUpdateState({ phase: "error", releaseUrl: GITEE_RELEASES_URL, message: updateErrorMessage(error) });
+    return sendUpdateState({ phase: "error", releaseUrl: GITEE_RELEASES_URL, reminder: "hidden", message: updateErrorMessage(error) });
   }
-  return updateState;
 }
 
 function installUpdaterEvents(): void {
@@ -553,7 +667,6 @@ ipcMain.handle("tapmakerwork:legal-get", () => {
 ipcMain.handle("tapmakerwork:legal-accept", () => {
   const acceptedAt = new Date().toISOString();
   writeDesktopSettings({ eulaAcceptedVersion: EULA_VERSION, eulaAcceptedAt: acceptedAt });
-  ensureTelemetry().track("eula.accept", { version: EULA_VERSION });
   return { version: EULA_VERSION, accepted: true, acceptedAt };
 });
 ipcMain.handle("tapmakerwork:legal-decline", () => {
@@ -566,44 +679,57 @@ ipcMain.handle("tapmakerwork:telemetry-set-enabled", (_event, enabled: boolean) 
   writeDesktopSettings({ telemetryEnabled: Boolean(enabled) });
   return enrichTelemetrySummary(ensureTelemetry().setEnabled(Boolean(enabled)));
 });
-ipcMain.handle("tapmakerwork:telemetry-set-endpoint", (_event, value: string) => {
-  const endpoint = String(value || "").trim();
-  if (endpoint) {
-    try {
-      const url = new URL(endpoint);
-      if (!(url.protocol === "https:" || (url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname)))) {
-        throw new Error("遥测地址仅支持 HTTPS，或本机 HTTP（127.0.0.1 / localhost）");
-      }
-    } catch (error) {
-      throw error instanceof Error ? error : new Error(String(error));
-    }
-  }
-  writeDesktopSettings({ telemetryEndpoint: endpoint || undefined });
-  return enrichTelemetrySummary(ensureTelemetry().setEndpoint(endpoint));
-});
-ipcMain.handle("tapmakerwork:telemetry-track", (_event, name: string, props?: Record<string, unknown>) => {
-  ensureTelemetry().track(String(name || ""), props);
-  return { ok: true };
-});
-ipcMain.handle("tapmakerwork:telemetry-flush", async () => {
-  const result = await ensureTelemetry().flush(true);
-  return { ...result, summary: enrichTelemetrySummary(ensureTelemetry().summary()) };
-});
 
 ipcMain.handle("tapmakerwork:update-get", () => updateState);
 ipcMain.handle("tapmakerwork:update-check", () => checkForDesktopUpdates(false));
 ipcMain.handle("tapmakerwork:update-download", async () => {
-  if (updateState.phase !== "available") return updateState;
+  if (updateState.phase !== "available" && updateState.phase !== "downloaded") return updateState;
+  const target = updateState.downloadUrl || updateState.releaseUrl || GITEE_RELEASES_URL;
   if (!app.isPackaged || !updaterReleaseReady) {
-    await shell.openExternal(updateState.releaseUrl || GITEE_RELEASES_URL);
-    return sendUpdateState({ message: "已打开 Gitee 发行版下载页面" });
+    await shell.openExternal(target);
+    return sendUpdateState({ message: "已打开对应平台安装包下载页，请安装后重启应用" });
   }
   sendUpdateState({ phase: "downloading", percent: 0 });
-  await autoUpdater.downloadUpdate();
-  return updateState;
+  try {
+    await autoUpdater.downloadUpdate();
+    return updateState;
+  } catch (error) {
+    await shell.openExternal(target);
+    return sendUpdateState({
+      phase: "available",
+      message: `自动下载不可用，已改为打开下载页：${updateErrorMessage(error)}`
+    });
+  }
 });
 ipcMain.handle("tapmakerwork:update-restart", () => {
   if (updateState.phase === "downloaded") autoUpdater.quitAndInstall(false, true);
+  return updateState;
+});
+ipcMain.handle("tapmakerwork:update-snooze", () => {
+  const until = nextSnoozeUntil();
+  writeDesktopSettings({ snoozeUpdateUntil: until });
+  const state = sendUpdateState({
+    reminder: "snoozed",
+    message: updateState.availableVersion
+      ? `已暂不更新 ${updateState.availableVersion}，24 小时内不再弹窗`
+      : "已暂不更新，24 小时内不再弹窗"
+  });
+  return state;
+});
+ipcMain.handle("tapmakerwork:update-mute", () => {
+  const version = updateState.availableVersion || "";
+  writeDesktopSettings({
+    mutedUpdateVersion: version || undefined,
+    snoozeUpdateUntil: undefined
+  });
+  return sendUpdateState({
+    reminder: version ? "muted" : "hidden",
+    message: version ? `已设置不再提醒 ${version}；有更新的版本时仍会通知` : "已关闭本次提醒"
+  });
+});
+ipcMain.handle("tapmakerwork:update-open-site", async () => {
+  const target = updateState.siteUrl || updateState.releaseUrl || GITEE_RELEASES_URL;
+  await shell.openExternal(target);
   return updateState;
 });
 
@@ -827,9 +953,13 @@ app.whenReady().then(async () => {
   if (app.isPackaged && updateConfigured) {
     setTimeout(() => {
       void checkForDesktopUpdates(true);
-      ensureTelemetry().track("update.check", { silent: true });
+      mainWindow?.webContents.send("tapmakerwork:telemetry-track", "update.check", { silent: true });
     }, 8_000);
     updateCheckTimer = setInterval(() => void checkForDesktopUpdates(true), 30 * 60_000);
+  } else if (updateConfigured) {
+    setTimeout(() => {
+      void checkForDesktopUpdates(true);
+    }, 12_000);
   }
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
@@ -885,7 +1015,33 @@ app.whenReady().then(async () => {
         { role: "selectAll" }
       ]
     },
-    { label: "窗口", submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "front" }] }
+    { label: "窗口", submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "front" }] },
+    {
+      label: "帮助",
+      submenu: [
+        {
+          label: "检查更新…",
+          accelerator: "CmdOrCtrl+Shift+U",
+          click: () => {
+            void checkForDesktopUpdates(false).then((state) => {
+              mainWindow?.webContents.send("tapmakerwork:update-prompt", state);
+            });
+          }
+        },
+        {
+          label: "打开官网",
+          click: () => {
+            void shell.openExternal(updateState.siteUrl || "https://androidsix.github.io/tapmakerwork-site/");
+          }
+        },
+        {
+          label: "打开发行版页面",
+          click: () => {
+            void shell.openExternal(updateState.releaseUrl || GITEE_RELEASES_URL);
+          }
+        }
+      ]
+    }
   ]));
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

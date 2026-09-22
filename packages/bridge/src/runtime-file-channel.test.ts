@@ -36,19 +36,33 @@ describe("runtime file channel", () => {
     expect(fs.existsSync(commandsPath!)).toBe(true);
   });
 
-  it("keeps the nested macOS savedata path", () => {
+  it("prefers the status that matches the open project name", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-channel-"));
     temporary.push(root);
-    const dir = path.join(root, "preview", "session", "savedata", "tapmakerwork");
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "runtime-status.json"), JSON.stringify({
-      sessionId: "session-nested",
-      revision: 1
+    const other = path.join(root, "preview", "other", "savedata", "tapmakerwork");
+    const mine = path.join(root, "preview", "mine", "savedata", "tapmakerwork");
+    fs.mkdirSync(other, { recursive: true });
+    fs.mkdirSync(mine, { recursive: true });
+    fs.writeFileSync(path.join(other, "runtime-status.json"), JSON.stringify({
+      sessionId: "other-session",
+      revision: 9,
+      projectName: "台球大师",
+      updatedAt: Date.now()
+    }), "utf8");
+    // newer mtime on "other"
+    const now = Date.now() / 1000 + 10;
+    fs.utimesSync(path.join(other, "runtime-status.json"), now, now);
+    fs.writeFileSync(path.join(mine, "runtime-status.json"), JSON.stringify({
+      sessionId: "zombie-session",
+      revision: 2,
+      projectName: "丧尸来袭：最后的防线"
+    }), "utf8");
+    fs.writeFileSync(path.join(mine, "runtime-snapshot.json"), JSON.stringify({
+      revision: 2,
+      root: { id: "z", type: "NanoVG", children: [] }
     }), "utf8");
 
-    const status = findRuntimeFileStatus([root]);
-    expect(status?.sessionId).toBe("session-nested");
-    const commandsPath = writeIdeCommandsFile(status!, []);
-    expect(commandsPath && path.basename(commandsPath)).toBe("ide-commands.json");
+    const status = findRuntimeFileStatus([root], { projectName: "丧尸来袭：最后的防线" });
+    expect(status?.sessionId).toBe("zombie-session");
   });
 });

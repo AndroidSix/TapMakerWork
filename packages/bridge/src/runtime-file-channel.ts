@@ -17,10 +17,17 @@ export interface RuntimeFileStatus {
   rootType?: string;
   childCount?: number;
   hasRootProvider?: boolean;
+  projectName?: string;
+  backend?: string;
   updatedAt?: number;
   snapshot?: unknown;
   sourcePath?: string;
   snapshotPath?: string;
+}
+
+export interface FindRuntimeFileStatusOptions {
+  projectRoot?: string;
+  projectName?: string;
 }
 
 function previewRoot(): string {
@@ -175,19 +182,52 @@ function readSiblingSnapshot(statusPath: string): unknown {
   }
 }
 
-export function findRuntimeFileStatus(roots = runtimeFileSearchRoots()): RuntimeFileStatus | undefined {
+function projectMatchHints(options?: FindRuntimeFileStatusOptions): string[] {
+  const hints = new Set<string>();
+  if (options?.projectName?.trim()) hints.add(options.projectName.trim());
+  if (options?.projectRoot) {
+    hints.add(path.basename(options.projectRoot));
+    try {
+      const config = fs.readFileSync(path.join(options.projectRoot, "scripts", "Config.lua"), "utf8");
+      for (const match of config.matchAll(/Config\.(TITLE|Name|APP_NAME|PRODUCT_NAME)\s*=\s*["']([^"']+)/g)) {
+        if (match[2]) hints.add(match[2]);
+      }
+    } catch {
+      // Config.lua is optional.
+    }
+  }
+  return [...hints].filter(Boolean);
+}
+
+function statusMatchesProject(status: RuntimeFileStatus, hints: string[]): boolean {
+  if (!hints.length) return true;
+  const haystack = [
+    status.projectName,
+    status.sourcePath,
+    status.snapshotPath
+  ].filter(Boolean).join("\n");
+  if (!haystack) return false;
+  return hints.some((hint) => haystack.includes(hint));
+}
+
+export function findRuntimeFileStatus(
+  roots = runtimeFileSearchRoots(),
+  options?: FindRuntimeFileStatusOptions
+): RuntimeFileStatus | undefined {
   const candidates: string[] = [];
   for (const root of roots) {
     if (!fs.existsSync(root)) continue;
     walkStatusFiles(root, candidates);
   }
   if (!candidates.length) return undefined;
+  const hints = projectMatchHints(options);
   let best: RuntimeFileStatus | undefined;
   let bestMtime = 0;
+  let bestMatched: RuntimeFileStatus | undefined;
+  let bestMatchedMtime = 0;
   for (const file of candidates) {
     try {
       const stat = fs.statSync(file);
-      if (stat.mtimeMs < bestMtime) continue;
       const parsed = parseFirstJsonObject(fs.readFileSync(file, "utf8"));
       if (!parsed || typeof parsed !== "object" || !parsed.sessionId) continue;
       const snapshot = readSiblingSnapshot(file);
@@ -195,18 +235,25 @@ export function findRuntimeFileStatus(roots = runtimeFileSearchRoots()): Runtime
       const metaPath = path.join(path.dirname(file), `${stem}.meta.json`);
       const singlePath = path.join(path.dirname(file), stem);
       const snapshotPath = fs.existsSync(metaPath) ? metaPath : (fs.existsSync(singlePath) ? singlePath : undefined);
-      best = {
+      const current: RuntimeFileStatus = {
         ...parsed,
         sourcePath: file,
         ...(snapshotPath ? { snapshotPath } : {}),
         snapshot
       };
-      bestMtime = stat.mtimeMs;
+      if (stat.mtimeMs >= bestMtime) {
+        best = current;
+        bestMtime = stat.mtimeMs;
+      }
+      if (hints.length && statusMatchesProject(current, hints) && stat.mtimeMs >= bestMatchedMtime) {
+        bestMatched = current;
+        bestMatchedMtime = stat.mtimeMs;
+      }
     } catch {
       // ignore unreadable status
     }
   }
-  return best;
+  return bestMatched || best;
 }
 
 export function writeIdeCommandsFile(status: RuntimeFileStatus, commands: Array<Record<string, unknown>>): string | undefined {

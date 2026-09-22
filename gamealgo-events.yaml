@@ -1,0 +1,44 @@
+events:
+  _project_open:
+    desc: IDE 成功打开一个 Maker 项目
+    fields:
+      result:
+        type: string
+        desc: 打开结果，成功时省略或为 ok
+  _project_open_fail:
+    desc: IDE 打开项目失败
+    fields: {}
+  _preview_action:
+    desc: Maker 预览 start/stop/refresh
+    fields:
+      action:
+        type: string
+        desc: start、stop 或 refresh
+        required: true
+      result:
+        type: string
+        desc: ok、fail 等结果
+  _build_trigger:
+    desc: 触发官方 Maker 远程构建
+    fields:
+      result:
+        type: string
+        desc: ok、fail 或 error
+        required: true
+  _update_check:
+    desc: 检查桌面更新
+    fields:
+      silent:
+        type: boolean
+        desc: 是否静默检查
+  _ide_session:
+    desc: 会话结束时的本机使用时长摘要
+    fields:
+      session_ms:
+        type: number
+        desc: 会话墙钟毫秒
+        required: true
+      active_ms:
+        type: number
+        desc: 窗口活跃毫秒
+        required: true

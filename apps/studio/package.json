@@ -1,6 +1,6 @@
 {
   "name": "@tapmakerwork/studio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@gamealgo/web": "^0.2.0",
     "@monaco-editor/react": "^4.7.0",
     "@tapmakerwork/protocol": "*",
     "lucide-react": "^0.468.0",

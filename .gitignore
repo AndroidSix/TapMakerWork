@@ -8,6 +8,5 @@ coverage/
 work/
 outputs/installers/
 packages/bridge/dist-app/
-logs/telemetry/
 
 .gamealgo/

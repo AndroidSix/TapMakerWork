@@ -46,7 +46,11 @@ declare global {
         check: () => Promise<DesktopUpdateState>;
         download: () => Promise<DesktopUpdateState>;
         restart: () => Promise<DesktopUpdateState>;
+        snooze: () => Promise<DesktopUpdateState>;
+        mute: () => Promise<DesktopUpdateState>;
+        openSite: () => Promise<DesktopUpdateState>;
         onState: (listener: (state: DesktopUpdateState) => void) => () => void;
+        onPrompt: (listener: (state: DesktopUpdateState) => void) => () => void;
       };
       hardwareAcceleration?: {
         get: () => Promise<DesktopHardwareAccelerationState>;
@@ -61,9 +65,8 @@ declare global {
       telemetry?: {
         get: () => Promise<DesktopTelemetryState>;
         setEnabled: (enabled: boolean) => Promise<DesktopTelemetryState>;
-        setEndpoint: (endpoint: string) => Promise<DesktopTelemetryState>;
-        track: (name: string, props?: Record<string, unknown>) => Promise<{ ok: boolean }>;
-        flush: () => Promise<{ ok: boolean; sent: number; error?: string; summary: DesktopTelemetryState }>;
+        onTrack?: (listener: (name: string, props?: Record<string, unknown>) => void) => () => void;
+        onSessionEnd?: (listener: (payload: { session_ms: number; active_ms: number }) => void) => () => void;
       };
       captureRuntime?: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) => Promise<{
         ok: boolean;

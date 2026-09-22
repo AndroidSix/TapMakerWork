@@ -90,13 +90,19 @@ async function main() {
   await run(builder, builderArgs);
 
   const artifacts = recentArtifacts(startedAt);
+  const packageJson = JSON.parse(fs.readFileSync(path.join(sourceRoot, "package.json"), "utf8"));
+  const version = typeof packageJson.version === "string" ? packageJson.version : "unknown";
   console.log("[3/3] 打包完成");
+  console.log(`包内版本：${version}（来自仓库根 package.json）`);
   if (artifacts.length) {
     console.log("本次产物：");
     for (const artifact of artifacts) console.log(`  ${artifact}`);
   } else {
     console.log(`产物目录：${outputDirectory}`);
   }
+  console.log("注意：一键打包只生成安装包，不会自动覆盖本机已安装的 App。");
+  console.log("macOS 请打开新 DMG 覆盖 /Applications/TapMakerWork.app；Windows 请重新运行新的 NSIS 安装程序。");
+  console.log(`目录里若仍有旧版文件（如 *-0.1.0-*），请勿误开；请选 *-${version}-* 文件。`);
 }
 
 main().catch((error) => fail(error instanceof Error ? error.message : String(error)));

@@ -109,6 +109,26 @@ end
     expect(entry).toMatch(/GetFloat\("TimeStep"\)\r?\n {4}TapMakerWorkLiveEditorUpdate\(dt\) -- TapMakerWork managed/);
   });
 
+  it("wires NanoVG-style TimeStep via eventData index GetFloat", () => {
+    const root = makerProject();
+    fs.writeFileSync(path.join(root, "scripts", "main.lua"), `function Start()
+    vg_ = nvgCreate(1)
+end
+
+function HandleUpdate(eventType, eventData)
+    local dt = eventData["TimeStep"]:GetFloat()
+    if dt == nil or dt < 0 then dt = 0.016 end
+end
+`, "utf8");
+    const result = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    expect(result.backend).toBe("nanovg");
+    const entry = fs.readFileSync(result.entryPath, "utf8");
+    expect(entry).toContain('tapmakerwork/TapMakerWorkNanoVGBridge');
+    expect(entry).toMatch(
+      /eventData\["TimeStep"\]:GetFloat\(\)\r?\n {4}TapMakerWorkLiveEditorUpdate\(dt\) -- TapMakerWork managed/
+    );
+  });
+
   it("wires the configured client entry instead of an unused shared entry", () => {
     const root = makerProject({ clientEntry: true });
     const result = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });

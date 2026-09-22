@@ -1,0 +1,19 @@
+{
+  "latest": "0.1.1",
+  "title": "TapMakerWork 0.1.1",
+  "notes": [
+    "修复 NanoVG 项目「接入当前项目」失败：支持 eventData[\"TimeStep\"]:GetFloat() 写法",
+    "版本号同步至 0.1.1",
+    "完善应用内更新引导（版本清单、立即更新 / 暂不更新 / 不再提醒）"
+  ],
+  "publishedAt": "2026-09-22",
+  "force": false,
+  "downloads": {
+    "macArm64": "https://gitee.com/AndroidSUP/tap-maker-work/releases/download/v0.1.1/TapMakerWork-0.1.1-mac-arm64.dmg",
+    "macX64": "https://gitee.com/AndroidSUP/tap-maker-work/releases/download/v0.1.1/TapMakerWork-0.1.1-mac-x64.dmg",
+    "windowsX64": "https://gitee.com/AndroidSUP/tap-maker-work/releases/download/v0.1.1/TapMakerWork-0.1.1-windows-x64.exe",
+    "page": "https://gitee.com/AndroidSUP/tap-maker-work/releases/tag/v0.1.1",
+    "site": "https://androidsix.github.io/tapmakerwork-site/",
+    "githubPage": "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.1"
+  }
+}

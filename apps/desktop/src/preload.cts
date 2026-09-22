@@ -40,10 +40,18 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
     check: () => ipcRenderer.invoke("tapmakerwork:update-check"),
     download: () => ipcRenderer.invoke("tapmakerwork:update-download"),
     restart: () => ipcRenderer.invoke("tapmakerwork:update-restart"),
+    snooze: () => ipcRenderer.invoke("tapmakerwork:update-snooze"),
+    mute: () => ipcRenderer.invoke("tapmakerwork:update-mute"),
+    openSite: () => ipcRenderer.invoke("tapmakerwork:update-open-site"),
     onState: (listener: (state: unknown) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, state: unknown) => listener(state);
       ipcRenderer.on("tapmakerwork:update-state", handler);
       return () => ipcRenderer.removeListener("tapmakerwork:update-state", handler);
+    },
+    onPrompt: (listener: (state: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: unknown) => listener(state);
+      ipcRenderer.on("tapmakerwork:update-prompt", handler);
+      return () => ipcRenderer.removeListener("tapmakerwork:update-prompt", handler);
     }
   },
   hardwareAcceleration: {
@@ -59,9 +67,16 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
   telemetry: {
     get: () => ipcRenderer.invoke("tapmakerwork:telemetry-get"),
     setEnabled: (enabled: boolean) => ipcRenderer.invoke("tapmakerwork:telemetry-set-enabled", enabled),
-    setEndpoint: (endpoint: string) => ipcRenderer.invoke("tapmakerwork:telemetry-set-endpoint", endpoint),
-    track: (name: string, props?: Record<string, unknown>) => ipcRenderer.invoke("tapmakerwork:telemetry-track", name, props),
-    flush: () => ipcRenderer.invoke("tapmakerwork:telemetry-flush")
+    onTrack: (listener: (name: string, props?: Record<string, unknown>) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, name: string, props?: Record<string, unknown>) => listener(name, props);
+      ipcRenderer.on("tapmakerwork:telemetry-track", handler);
+      return () => ipcRenderer.removeListener("tapmakerwork:telemetry-track", handler);
+    },
+    onSessionEnd: (listener: (payload: { session_ms: number; active_ms: number }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: { session_ms: number; active_ms: number }) => listener(payload);
+      ipcRenderer.on("tapmakerwork:telemetry-session-end", handler);
+      return () => ipcRenderer.removeListener("tapmakerwork:telemetry-session-end", handler);
+    }
   },
   captureRuntime: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) =>
     ipcRenderer.invoke("tapmakerwork:runtime-capture", opts) as Promise<{
