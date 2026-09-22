@@ -1,11 +1,12 @@
 # Delivery roadmap
 
 创建于 2026-09-18  
-更新于 2026-09-21
+更新于 2026-09-22
 
 > 面向用户的摘要见根目录 [README.md](../README.md)「后续开发计划」。  
 > 规划里程碑：M5 资源优化 · M6 AI 提效 · **M7 多平台打包** · M8 工程能力参考  
 > 官网：[androidsix.github.io/tapmakerwork-site](https://androidsix.github.io/tapmakerwork-site/)  
+> 社区配置：仓库根目录 [community.json](../community.json)（IDE 优先读 Gitee，其次 GitHub，最后内置）  
 > 社区：TapMakerWork工具交流群 `1124103038` · [一键入群](https://qm.qq.com/q/OCt1HAmHK2)
 
 ## M0 - feasibility gates
@@ -29,7 +30,8 @@
 - hierarchy, canvas selection, resize and keyboard alternatives;
 - property, event, animation, theme and responsive inspectors;
 - device presets plus custom resolution, DPR and safe areas;
-- undo/redo and transactional saves.
+- undo/redo and transactional saves;
+- [x] NanoVG Runtime adapter: auto-detect raw `nvg*` projects, proxy draw calls into virtual nodes, hit-test real bounds, persist overrides to `.ui.json` without rewriting game Lua.
 
 ## M3 - Lua migration and hot reload
 
@@ -46,15 +48,20 @@
 
 ## M5 - 资源与构建优化（规划）
 
-- [ ] 内置图片无损/近无损批量压缩（项目资产面板集成，可预览前后体积）
+- [x] 内置图片无损/近无损批量压缩（工具菜单已交付：本地压缩默认可用；Tiny 可选；结果面板展示压缩数/节省体积）
 - [ ] 无用资源清理（基于已有引用审计，删除前列清单、可撤销）
 - [ ] 代码混淆选项（与官方 Maker 构建流程兼容，可开关）
 - [ ] 构建包体报告（资源占比、压缩收益）
 
+## M5.5 - 合规与发布辅助（规划）
+
+- [ ] 自行申请软著教程（材料清单、截图规范、代码鉴别材料整理）
+
 ## M6 - 开发经验与 AI 提效（规划）
 
-- [ ] IDE 内「实践指南」：常见坑、排错路径、交付检查清单
-- [ ] AI 开发技巧库：提示词、上下文组织、如何让 AI 安全修改 Maker 项目
+- [x] IDE 内「实践指南」：常见坑、排错路径、交付检查清单（标题栏「开发技巧」入口；可预览复制内容）
+- [x] AI 开发技巧库：提示词、上下文组织、本地预览 Token 优化、grill-me、发布前检查（可一键复制）
+- [x] 新手引导：实时编辑两步上手 + 首次弱提示
 - [ ] 可导入 Skills / 工程模板，供 Claude、Cursor、Codex 等参考
 - [ ] 与项目 MCP 联动：把指南暴露为 resource，方便 Agent 检索
 

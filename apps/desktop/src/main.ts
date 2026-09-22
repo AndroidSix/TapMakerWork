@@ -621,6 +621,25 @@ ipcMain.handle("tapmakerwork:choose-project", async (event) => {
   return window ? chooseProject(window) : undefined;
 });
 
+async function chooseDirectory(
+  window: BrowserWindow,
+  opts?: { title?: string; defaultPath?: string }
+): Promise<string | undefined> {
+  const dialogOpts: Electron.OpenDialogOptions = {
+    title: opts?.title || "选择目录",
+    buttonLabel: "选择",
+    properties: ["openDirectory", "createDirectory"]
+  };
+  if (opts?.defaultPath) dialogOpts.defaultPath = opts.defaultPath;
+  const result = await dialog.showOpenDialog(window, dialogOpts);
+  return result.canceled ? undefined : result.filePaths[0];
+}
+
+ipcMain.handle("tapmakerwork:choose-directory", async (event, opts?: { title?: string; defaultPath?: string }) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  return window ? chooseDirectory(window, opts) : undefined;
+});
+
 ipcMain.handle("tapmakerwork:preview-mount", async (_event, opts: {
   url: string;
   x: number;

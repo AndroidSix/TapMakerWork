@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
   platform: process.platform,
   desktop: true,
   chooseProject: () => ipcRenderer.invoke("tapmakerwork:choose-project") as Promise<string | undefined>,
+  chooseDirectory: (opts?: { title?: string; defaultPath?: string }) =>
+    ipcRenderer.invoke("tapmakerwork:choose-directory", opts) as Promise<string | undefined>,
   clipboard: {
     writeText: (text: string) => ipcRenderer.invoke("tapmakerwork:clipboard-write", text) as Promise<{ ok: boolean; error?: string }>
   },

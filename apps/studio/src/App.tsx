@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import Editor, { type OnMount } from "@monaco-editor/react";
+import Editor, { DiffEditor, type OnMount } from "@monaco-editor/react";
 import {
   Box,
   Boxes,
@@ -73,7 +73,9 @@ import {
   MessageCircle,
   Map,
   Package,
-  ShieldCheck
+  ShieldCheck,
+  Lightbulb,
+  Wrench
 } from "lucide-react";
 import {
   DEFAULT_DEVICE_PROFILES,
@@ -97,17 +99,39 @@ import {
 import { PreviewDock } from "./PreviewDock";
 import { ProjectCockpit } from "./ProjectCockpit";
 import { RuntimeMirror } from "./RuntimeMirror";
+import { Tip } from "./Tip";
+import { DevTipsPanel } from "./DevTipsPanel";
+import { ImageCompressPanel } from "./ImageCompressPanel";
+import {
+  CoachMark,
+  COACH_LIVE_EDIT_KEY,
+  COACH_RUNTIME_START_KEY,
+  dismissCoachMark,
+  enableCoachMarks,
+  markOnboardingSeen,
+  NewbieGuideDialog,
+  readCoachMark,
+  readOnboardingSeen
+} from "./NewbieGuide";
 import { rgbaCss, rgbaFromHex, rgbaFromValue, rgbaToHex, type RgbaColor } from "./color-utils";
 import { angleBetween, resizeRect, scaleRatio, snapValue, toolForShortcut, type TransformTool } from "./runtime-transform";
 import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopUpdateState } from "./desktop-api";
 import { extractRuntimeErrorReport, type RuntimeErrorReport } from "./runtime-error";
 import wechatPayImage from "../../../docs/sponsor/wechat-pay.png";
 
-const QQ_GROUP_ID = "1124103038";
-const QQ_GROUP_NAME = "TapMakerWork工具交流群";
-const QQ_GROUP_JOIN_URL = "https://qm.qq.com/q/OCt1HAmHK2";
+const BUILTIN_QQ_GROUP_ID = "1124103038";
+const BUILTIN_QQ_GROUP_NAME = "TapMakerWork工具交流群";
+const BUILTIN_QQ_GROUP_JOIN_URL = "https://qm.qq.com/q/OCt1HAmHK2";
 const OFFICIAL_SITE_URL = "https://androidsix.github.io/tapmakerwork-site/";
 import alipayImage from "../../../docs/sponsor/alipay.png";
+
+interface CommunityInfo {
+  qqGroupId: string;
+  qqGroupName: string;
+  qqGroupJoinUrl: string;
+  officialSiteUrl?: string;
+  source?: "gitee" | "github" | "builtin";
+}
 
 const API = "http://127.0.0.1:43121";
 declare const __APP_VERSION__: string;
@@ -121,7 +145,8 @@ interface Health {
   runtimeConnectedAt?: string;
   runtimeScene?: "idle" | "loading" | "live";
   snapshotSource?: "conversion" | "sidecar" | "runtime" | "empty";
-  runtimeAdapter?: { installed: boolean; paths: string[] };
+  runtimeAdapter?: { installed: boolean; paths: string[]; backend?: "yoga" | "nanovg" };
+  uiBackend?: "yoga" | "nanovg";
   runtimeFileChannel?: { rootType?: string; wroteSnapshot?: boolean; snapshotError?: string } | null;
   makerProjectMeta?: MakerProjectMeta | null | undefined;
 }
@@ -171,6 +196,18 @@ interface ProjectState {
 }
 
 type RecentProject = { root: string; name: string };
+const OPEN_PROJECTS_STORAGE_KEY = "tapmakerwork.openProjects";
+
+function loadOpenProjects(): RecentProject[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(OPEN_PROJECTS_STORAGE_KEY) || "[]") as unknown;
+    return Array.isArray(stored)
+      ? stored.filter((item): item is RecentProject => Boolean(item && typeof item.root === "string" && typeof item.name === "string")).slice(0, 8)
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 interface FileEntry {
   name: string;
@@ -223,6 +260,21 @@ interface GitChangeState {
   conflicted: boolean;
 }
 
+interface GitFileDiffState {
+  path: string;
+  scope: "worktree" | "staged";
+  status: string;
+  original: string;
+  modified: string;
+  binary: boolean;
+  added: boolean;
+  deleted: boolean;
+  additions: number;
+  deletions: number;
+  loading?: boolean;
+  error?: string;
+}
+
 const channels: Array<{ id: LogChannel; label: string }> = [
   { id: "runtime", label: "Runtime" },
   { id: "build", label: "构建" },
@@ -261,6 +313,19 @@ function labelForType(type: string): string {
 
 function fileName(filePath: string): string {
   return filePath.split("/").at(-1) || filePath;
+}
+
+function languageForFile(filePath: string): string {
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith(".lua")) return "lua";
+  if (lower.endsWith(".json") || lower.endsWith(".jsonc")) return "json";
+  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return "typescript";
+  if (lower.endsWith(".js") || lower.endsWith(".jsx")) return "javascript";
+  if (lower.endsWith(".css")) return "css";
+  if (lower.endsWith(".html")) return "html";
+  if (lower.endsWith(".md")) return "markdown";
+  if (lower.endsWith(".yml") || lower.endsWith(".yaml")) return "yaml";
+  return "plaintext";
 }
 
 function rgba(value: UiValue | undefined, fallback = "transparent"): string {
@@ -437,14 +502,6 @@ function legacyCopyText(text: string): boolean {
   return copied;
 }
 
-function Tip({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <span className="tip-wrap" data-tip={label}>
-      {children}
-    </span>
-  );
-}
-
 function uiChildren(node: UiNode): UiNode[] {
   return Array.isArray(node.children) ? node.children : [];
 }
@@ -479,8 +536,8 @@ const DEFAULT_LAYOUT = {
 };
 
 type WorkspaceLayout = { left: number; right: number; previewDock: number; terminal: number };
-type CenterTab = "workflow" | "visual" | "runtime" | "code";
-type DocumentTab = CenterTab | "preview";
+type CenterTab = "workflow" | "visual" | "runtime" | "code" | "git-diff";
+type DocumentTab = Exclude<CenterTab, "git-diff"> | "preview";
 type FloatingWorkspace = { x: number; y: number; width: number; height: number };
 const LAYOUT_STORAGE_KEY = "tapmakerwork.workspaceLayout";
 const DOCUMENT_TABS_STORAGE_KEY = "tapmakerwork.documentTabs";
@@ -1071,19 +1128,24 @@ const ROADMAP_SECTIONS: Array<{ title: string; icon: ReactNode; items: string[] 
     title: "资源与构建优化",
     icon: <Package size={15} aria-hidden="true" />,
     items: [
-      "内置图片无损/近无损批量压缩，面板内预览体积收益",
       "无用资源清理：基于引用审计列清单，可撤销",
       "代码混淆选项：与官方构建链兼容，可开关",
       "构建包体报告：资源占比与压缩收益"
     ]
   },
   {
+    title: "合规与发布辅助",
+    icon: <ScrollText size={15} aria-hidden="true" />,
+    items: [
+      "自行申请软著教程（材料清单、截图规范、代码鉴别材料整理）"
+    ]
+  },
+  {
     title: "开发经验与 AI 提效",
     icon: <Sparkles size={15} aria-hidden="true" />,
     items: [
-      "IDE 内实践指南：常见坑、排错路径、交付检查清单",
-      "AI 开发技巧库：提示词与安全修改 Maker 项目的方法",
-      "可导入 Skills / 工程模板，供 Claude、Cursor、Codex 参考",
+      "IDE 内实践指南：常见坑、排错路径、交付检查清单（标题栏「开发技巧」已提供部分）",
+      "AI 开发技巧库扩展：更多可导入 Skills / 工程模板",
       "指南暴露为项目 MCP resource，便于 Agent 检索"
     ]
   },
@@ -1187,6 +1249,7 @@ export function App() {
     }
     catch { return []; }
   });
+  const [openProjects, setOpenProjects] = useState<RecentProject[]>(loadOpenProjects);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [screens, setScreens] = useState<UiScreenSummary[]>([]);
   const [screensBusy, setScreensBusy] = useState(false);
@@ -1218,6 +1281,22 @@ export function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [tipsOpen, setTipsOpen] = useState(false);
+  const [compressOpen, setCompressOpen] = useState(false);
+  const [toolkitMenuOpen, setToolkitMenuOpen] = useState(false);
+  const [newbieGuideOpen, setNewbieGuideOpen] = useState(false);
+  const [coachLiveEdit, setCoachLiveEdit] = useState(() => readCoachMark(COACH_LIVE_EDIT_KEY));
+  const [coachRuntimeStart, setCoachRuntimeStart] = useState(() => readCoachMark(COACH_RUNTIME_START_KEY));
+  const [community, setCommunity] = useState<CommunityInfo>({
+    qqGroupId: BUILTIN_QQ_GROUP_ID,
+    qqGroupName: BUILTIN_QQ_GROUP_NAME,
+    qqGroupJoinUrl: BUILTIN_QQ_GROUP_JOIN_URL,
+    officialSiteUrl: OFFICIAL_SITE_URL,
+    source: "builtin"
+  });
+  const QQ_GROUP_ID = community.qqGroupId;
+  const QQ_GROUP_NAME = community.qqGroupName;
+  const QQ_GROUP_JOIN_URL = community.qqGroupJoinUrl;
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
   const [searchBusy, setSearchBusy] = useState(false);
@@ -1227,6 +1306,8 @@ export function App() {
   const [gitCommitMessage, setGitCommitMessage] = useState("chore: update Maker project");
   const [gitConflictPlan, setGitConflictPlan] = useState("");
   const [gitFileMenu, setGitFileMenu] = useState<{ change: GitChangeState; scope: "staged" | "unstaged"; x: number; y: number } | null>(null);
+  const [gitGroupMenu, setGitGroupMenu] = useState<{ scope: "staged" | "unstaged"; x: number; y: number } | null>(null);
+  const [gitDiff, setGitDiff] = useState<GitFileDiffState | null>(null);
   const [systemInfo, setSystemInfo] = useState<Record<string, unknown>>();
   const [adapterExport, setAdapterExport] = useState<string>("");
   const [revealLine, setRevealLine] = useState<number | null>(null);
@@ -1439,6 +1520,25 @@ export function App() {
   }, [mode]);
 
   useEffect(() => {
+    let active = true;
+    void fetch(`${API}/api/community`)
+      .then(async (response) => {
+        if (!response.ok) return;
+        const data = await response.json() as { community?: CommunityInfo };
+        if (!active || !data.community?.qqGroupId) return;
+        setCommunity({
+          qqGroupId: data.community.qqGroupId,
+          qqGroupName: data.community.qqGroupName || BUILTIN_QQ_GROUP_NAME,
+          qqGroupJoinUrl: data.community.qqGroupJoinUrl || BUILTIN_QQ_GROUP_JOIN_URL,
+          officialSiteUrl: data.community.officialSiteUrl || OFFICIAL_SITE_URL,
+          source: data.community.source || "builtin"
+        });
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
     const permissionsApi = window.tapMakerWork?.permissions;
     const updatesApi = window.tapMakerWork?.updates;
     const hardwareApi = window.tapMakerWork?.hardwareAcceleration;
@@ -1638,8 +1738,11 @@ export function App() {
   }, [nodeContextMenu]);
 
   useEffect(() => {
-    if (!gitFileMenu) return;
-    const close = () => setGitFileMenu(null);
+    if (!gitFileMenu && !gitGroupMenu) return;
+    const close = () => {
+      setGitFileMenu(null);
+      setGitGroupMenu(null);
+    };
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
     window.addEventListener("pointerdown", close);
     window.addEventListener("blur", close);
@@ -1651,7 +1754,7 @@ export function App() {
       window.removeEventListener("resize", close);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [gitFileMenu]);
+  }, [gitFileMenu, gitGroupMenu]);
 
   const persistLayout = useCallback((next: WorkspaceLayout) => {
     setLayout(next);
@@ -1706,6 +1809,23 @@ export function App() {
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
   }, [toolsMenuOpen]);
+
+  useEffect(() => {
+    if (!toolkitMenuOpen) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".toolkit-menu-wrap")) return;
+      setToolkitMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [toolkitMenuOpen]);
+
+  useEffect(() => {
+    if (!project?.root || !projectLoaded || legalDialogOpen || permissionGuideOpen) return;
+    if (readOnboardingSeen()) return;
+    setNewbieGuideOpen(true);
+  }, [legalDialogOpen, permissionGuideOpen, project?.root, projectLoaded]);
 
   useEffect(() => {
     if (mode !== "live-edit") return;
@@ -2022,10 +2142,21 @@ export function App() {
     }
   }, []);
 
-  const openProjectPath = useCallback(async (projectPath: string) => {
+  const openProjectPath = useCallback(async (projectPath: string, options?: { skipDirtyCheck?: boolean }) => {
+    if (project?.root === projectPath && projectLoaded) return;
+    if (!options?.skipDirtyCheck && project?.root !== projectPath && codeDirty && !window.confirm("当前代码文件还有未保存修改。切换项目将丢失这些修改，是否继续？")) return;
     setProjectOpening(true);
     setProjectError("");
     try {
+      if (project?.root && project.root !== projectPath) {
+        if (makerPreviewStatus?.process_alive) await fetch(`${API}/api/maker/preview/stop`, { method: "POST" }).catch(() => undefined);
+        await window.tapMakerWork?.preview?.unmount().catch(() => undefined);
+        setPreviewDockOpen(false);
+        setSelectedNodeIds([]);
+        selectedNodeIdRef.current = undefined;
+        setRuntimeErrorReport(undefined);
+        dismissedRuntimeErrorsRef.current.clear();
+      }
       const response = await fetch(`${API}/api/project/open`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -2042,6 +2173,13 @@ export function App() {
         throw new Error(result.error === "not_tapmaker_project" ? "不是 TapTap Maker 项目" : result.error || "无法打开项目");
       }
       setProject(result.project);
+      setOpenProjects((current) => {
+        const next = current.some((item) => item.root === result.project!.root)
+          ? current
+          : [...current, { root: result.project!.root, name: result.project!.name }].slice(-8);
+        localStorage.setItem(OPEN_PROJECTS_STORAGE_KEY, JSON.stringify(next));
+        return next;
+      });
       if (result.snapshot) setSnapshot(result.snapshot);
       await loadProjectContents();
       if (result.adapter?.installed) {
@@ -2083,7 +2221,7 @@ export function App() {
       setProjectLoaded(true);
       setProjectOpening(false);
     }
-  }, [loadProjectContents, loadWorkflow, trackTelemetry]);
+  }, [codeDirty, loadProjectContents, loadWorkflow, makerPreviewStatus?.process_alive, project?.root, projectLoaded, trackTelemetry]);
 
   const chooseProject = useCallback(async () => {
     if (window.tapMakerWork?.chooseProject) {
@@ -2106,6 +2244,11 @@ export function App() {
       const result = await response.json() as { ok?: boolean; error?: string };
       if (!response.ok || !result.ok) throw new Error(result.error || "关闭项目失败");
       await window.tapMakerWork?.preview?.unmount().catch(() => undefined);
+      const closingIndex = openProjects.findIndex((item) => item.root === project.root);
+      const remainingProjects = openProjects.filter((item) => item.root !== project.root);
+      const nextProject = remainingProjects[Math.min(Math.max(0, closingIndex), Math.max(0, remainingProjects.length - 1))];
+      setOpenProjects(remainingProjects);
+      localStorage.setItem(OPEN_PROJECTS_STORAGE_KEY, JSON.stringify(remainingProjects));
       setProject(undefined);
       setProjectLoaded(true);
       setProjectError("");
@@ -2146,12 +2289,25 @@ export function App() {
         const { runtimeSessionId: _runtimeSessionId, runtimeConnectedAt: _runtimeConnectedAt, makerProjectMeta: _makerProjectMeta, ...rest } = current;
         return { ...rest, runtimeScene: "idle", snapshotSource: "empty" };
       });
+      if (nextProject) await openProjectPath(nextProject.root, { skipDirtyCheck: true });
     } catch (error) {
       toast(`关闭项目失败：${error instanceof Error ? error.message : String(error)}`, "error");
     } finally {
       setProjectOpening(false);
     }
-  }, [codeDirty, makerPreviewStatus?.process_alive, project, toast]);
+  }, [codeDirty, makerPreviewStatus?.process_alive, openProjectPath, openProjects, project, toast]);
+
+  const closeProjectTab = useCallback((projectPath: string) => {
+    if (project?.root === projectPath) {
+      void closeCurrentProject();
+      return;
+    }
+    setOpenProjects((current) => {
+      const next = current.filter((item) => item.root !== projectPath);
+      localStorage.setItem(OPEN_PROJECTS_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, [closeCurrentProject, project?.root]);
 
   const removeRecentProject = useCallback((projectPath: string) => {
     setRecentProjects((current) => {
@@ -2217,6 +2373,36 @@ export function App() {
     }
   }, []);
 
+  const openGitDiff = useCallback(async (change: GitChangeState, scope: "staged" | "unstaged") => {
+    const apiScope = scope === "staged" ? "staged" : "worktree";
+    setGitFileMenu(null);
+    setGitGroupMenu(null);
+    setGitDiff({
+      path: change.path,
+      scope: apiScope,
+      status: change.status,
+      original: "",
+      modified: "",
+      binary: false,
+      added: change.untracked,
+      deleted: false,
+      additions: 0,
+      deletions: 0,
+      loading: true
+    });
+    setCenterTab("git-diff");
+    try {
+      const response = await fetch(`${API}/api/git/diff?path=${encodeURIComponent(change.path)}&scope=${apiScope}`);
+      const result = await response.json() as GitFileDiffState & { error?: string };
+      if (!response.ok) throw new Error(result.error || "无法读取 Git 差异");
+      setGitDiff({ ...result, loading: false });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setGitDiff((current) => current?.path === change.path ? { ...current, loading: false, error: message } : current);
+      toast(`差异加载失败：${message}`, "error");
+    }
+  }, [toast]);
+
   const runGitAction = useCallback(async (action: "pull" | "commit" | "push-build") => {
     setGitBusy(action);
     setGitConflictPlan("");
@@ -2255,9 +2441,11 @@ export function App() {
     }
   }, [gitCommitMessage, loadGitStatus, toast]);
 
-  const runGitFileAction = useCallback(async (action: "stage" | "unstage" | "discard" | "stage-all" | "unstage-all", change?: GitChangeState) => {
+  const runGitFileAction = useCallback(async (action: "stage" | "unstage" | "discard" | "stage-all" | "unstage-all" | "discard-all", change?: GitChangeState) => {
     if (action === "discard" && change && !window.confirm(`确定丢弃 ${change.path} 的本地修改吗？此操作无法撤销。`)) return;
+    if (action === "discard-all" && !window.confirm("确定放弃所有本地更改吗？未跟踪文件也会被删除，此操作无法撤销。")) return;
     setGitFileMenu(null);
+    setGitGroupMenu(null);
     try {
       const response = await fetch(`${API}/api/git/mutate`, {
         method: "POST",
@@ -2267,11 +2455,24 @@ export function App() {
       const result = await response.json() as { status?: GitStatusState; error?: string };
       if (!response.ok || !result.status) throw new Error(result.error || "Git 文件操作失败");
       setGitStatus(result.status);
-      toast(action === "stage" || action === "stage-all" ? "已暂存修改" : action === "unstage" || action === "unstage-all" ? "已取消暂存" : "已丢弃本地修改", "success");
+      if ((action === "discard" && change?.path === gitDiff?.path) || action === "discard-all") {
+        setGitDiff(null);
+        setCenterTab("code");
+      } else if (change && change.path === gitDiff?.path) {
+        void openGitDiff(change, action === "stage" ? "staged" : "unstaged");
+      } else if (gitDiff && (action === "stage-all" || action === "unstage-all")) {
+        const nextChange = result.status.changes?.find((item) => item.path === gitDiff.path);
+        if (nextChange) void openGitDiff(nextChange, action === "stage-all" ? "staged" : "unstaged");
+        else {
+          setGitDiff(null);
+          setCenterTab("code");
+        }
+      }
+      toast(action === "stage" || action === "stage-all" ? "已暂存修改" : action === "unstage" || action === "unstage-all" ? "已取消暂存" : action === "discard-all" ? "已放弃所有本地更改" : "已丢弃本地修改", "success");
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), "error");
     }
-  }, [toast]);
+  }, [gitDiff?.path, openGitDiff, toast]);
 
   const loadSystemInfo = useCallback(async () => {
     try {
@@ -2767,6 +2968,13 @@ export function App() {
     void fetch(`${API}/api/project`).then((response) => response.json()).then(async (value: ProjectState) => {
       setProject(value.project);
       if (value.project) {
+        setOpenProjects((current) => {
+          const next = current.some((item) => item.root === value.project!.root)
+            ? current
+            : [...current, { root: value.project!.root, name: value.project!.name }].slice(-8);
+          localStorage.setItem(OPEN_PROJECTS_STORAGE_KEY, JSON.stringify(next));
+          return next;
+        });
         await loadProjectContents();
         void loadAssets();
         void loadGitStatus();
@@ -3324,6 +3532,24 @@ export function App() {
       onJoinGroup={() => openExternalUrl(QQ_GROUP_JOIN_URL)}
     />
     : null;
+  const newbieOverlay = newbieGuideOpen
+    ? <NewbieGuideDialog
+      onClose={({ enableCoachMarks: enableMarks } = {}) => {
+        markOnboardingSeen();
+        setNewbieGuideOpen(false);
+        if (enableMarks !== false) {
+          enableCoachMarks();
+          setCoachLiveEdit(readCoachMark(COACH_LIVE_EDIT_KEY));
+          setCoachRuntimeStart(readCoachMark(COACH_RUNTIME_START_KEY));
+        } else {
+          dismissCoachMark(COACH_LIVE_EDIT_KEY);
+          dismissCoachMark(COACH_RUNTIME_START_KEY);
+          setCoachLiveEdit(false);
+          setCoachRuntimeStart(false);
+        }
+      }}
+    />
+    : null;
   const permissionOverlay = !legalDialogOpen && permissionGuideOpen && desktopPermissions
     ? <PermissionGuide state={desktopPermissions} busy={permissionBusy} confirmed={permissionConfirmed} onAction={(action) => void runPermissionAction(action)} onClose={closePermissionGuide} />
     : null;
@@ -3370,35 +3596,77 @@ export function App() {
     >
       <header className="titlebar">
         <div className="brand"><span className="brand-mark">T</span><strong>TapMakerWork</strong><span className="phase-badge">v{__APP_VERSION__}</span></div>
-        <div className="project-chip" title={project.root}><Folder size={14} aria-hidden="true" /><span>{project.name}</span><GitBranch size={13} aria-hidden="true" /><small>{gitStatus?.branch || "—"}</small>{gitStatus?.dirty ? <small className="dirty-branch">•</small> : null}<button className="project-close-button" aria-label={`关闭项目 ${project.name}`} title="关闭当前项目" disabled={projectOpening} onClick={() => void closeCurrentProject()}><X size={14} /></button></div>
+        <div className="project-tabs" role="tablist" aria-label="已打开项目">
+          {openProjects.map((item) => {
+            const active = item.root === project.root;
+            return <div key={item.root} className={`project-tab ${active ? "active" : ""}`} title={item.root}>
+              <button type="button" role="tab" aria-selected={active} disabled={projectOpening} onClick={() => void openProjectPath(item.root)}>
+                <Folder size={14} aria-hidden="true" /><span>{item.name}</span>{active && <><GitBranch size={12} aria-hidden="true" /><small>{gitStatus?.branch || "—"}</small>{gitStatus?.dirty ? <small className="dirty-branch">•</small> : null}</>}
+              </button>
+              <button type="button" className="project-tab-close" aria-label={`关闭项目 ${item.name}`} disabled={projectOpening} onClick={() => closeProjectTab(item.root)}><X size={13} /></button>
+            </div>;
+          })}
+          <button type="button" className="project-tab-add" aria-label="打开另一个项目" title="打开另一个项目" disabled={projectOpening} onClick={() => void chooseProject()}><Plus size={15} /></button>
+        </div>
         <div className="runtime-status" role="status">{connected ? <Wifi size={14} aria-hidden="true" /> : <WifiOff size={14} aria-hidden="true" />}<span>{connected ? "Bridge 已连接" : "Bridge 断开"}</span>{runtimeLive ? <small className="runtime-live">Runtime 运行中</small> : <small>Runtime 未启动</small>}</div>
         <div className="title-actions">
           <Tip label="看看各按钮做什么、从哪开始改界面。">
-            <button aria-label="使用说明" onClick={() => { setSearchOpen(false); setSettingsOpen(false); setGuideOpen((open) => !open); }}><CircleHelp size={15} /></button>
+            <button aria-label="使用说明" onClick={() => { setSearchOpen(false); setSettingsOpen(false); setTipsOpen(false); setCompressOpen(false); setGuideOpen((open) => !open); }}><CircleHelp size={15} /></button>
+          </Tip>
+          <Tip label="本地预览 Token 优化、grill-me、发布前检查等开发经验，可一键复制给 AI。">
+            <button aria-label="开发技巧" onClick={() => { setSearchOpen(false); setSettingsOpen(false); setGuideOpen(false); setCompressOpen(false); setTipsOpen((open) => !open); }}><Lightbulb size={15} /></button>
           </Tip>
           <Tip label="在项目文件中全文搜索。输入关键词后回车，点击结果可跳转到源码行。">
-            <button aria-label="搜索" onClick={() => { setGuideOpen(false); setSettingsOpen(false); setSearchOpen((open) => !open); toast(searchOpen ? "已关闭搜索" : "打开项目搜索", "info"); }}><Search size={15} /></button>
+            <button aria-label="搜索" onClick={() => { setGuideOpen(false); setSettingsOpen(false); setTipsOpen(false); setCompressOpen(false); setSearchOpen((open) => !open); toast(searchOpen ? "已关闭搜索" : "打开项目搜索", "info"); }}><Search size={15} /></button>
           </Tip>
           <Tip label="查看 Bridge / Maker / Runtime 适配器状态；可导出本地接入包（不会写入游戏 git）。">
-            <button aria-label="设置" onClick={() => { setGuideOpen(false); setSearchOpen(false); setSettingsOpen((open) => { const next = !open; if (next) void loadSystemInfo(); toast(next ? "打开设置" : "关闭设置", "info"); return next; }); }}><Settings2 size={15} /></button>
+            <button aria-label="设置" onClick={() => { setGuideOpen(false); setSearchOpen(false); setTipsOpen(false); setCompressOpen(false); setSettingsOpen((open) => { const next = !open; if (next) void loadSystemInfo(); toast(next ? "打开设置" : "关闭设置", "info"); return next; }); }}><Settings2 size={15} /></button>
           </Tip>
         </div>
       </header>
 
       <section className="commandbar">
         <div className="mode-switch" aria-label="工作模式">
-          <Tip label="在结构草图中直接拖动、缩放、改属性或右键创建节点">
+          <Tip disabled label="在结构草图中直接拖动、缩放、改属性或右键创建节点">
             <button aria-pressed={mode === "inspect" && centerTab === "visual"} className={mode === "inspect" && centerTab === "visual" ? "active" : ""} onClick={() => { setMode("inspect"); setCanvasAutoFit(true); setCenterTab("visual"); }}><Pause size={14} />结构编辑</button>
           </Tip>
-          <Tip label="直接在 Runtime 最终画面上拖动、缩放并回写引擎控件">
-            <button aria-pressed={mode === "live-edit"} className={mode === "live-edit" ? "active" : ""} onClick={() => { setMode("live-edit"); setCenterTab("runtime"); setPreviewDockOpen(false); trackTelemetry("live_edit.enter", {}); }}><SlidersHorizontal size={14} />实时编辑</button>
-          </Tip>
+          <CoachMark label="① 点这里进入实时编辑" active={coachLiveEdit}>
+            <Tip disabled label="直接在 Runtime 最终画面上拖动、缩放并回写引擎控件">
+              <button
+                aria-pressed={mode === "live-edit"}
+                className={mode === "live-edit" ? "active" : ""}
+                onClick={() => {
+                  setMode("live-edit");
+                  setCenterTab("runtime");
+                  setPreviewDockOpen(false);
+                  trackTelemetry("live_edit.enter", {});
+                  if (coachLiveEdit) {
+                    dismissCoachMark(COACH_LIVE_EDIT_KEY);
+                    setCoachLiveEdit(false);
+                  }
+                }}
+              ><SlidersHorizontal size={14} />实时编辑</button>
+            </Tip>
+          </CoachMark>
         </div>
         <button className="icon-command" aria-label="撤销" onClick={() => void historyAction("undo")}><Undo2 size={14} /></button>
         <button className="icon-command" aria-label="重做" onClick={() => void historyAction("redo")}><Redo2 size={14} /></button>
         <span className="separator" />
         <Tip label="启动官方 Maker Runtime（独立窗口）">
-          <button className="runtime-launch-button" disabled={!health?.capabilities.makerCli || runtimeBusy} onClick={() => { toast("正在启动 Maker 预览…", "info"); void runtimeAction("start"); }}><CirclePlay size={14} />{runtimeBusy ? "…" : "启动"}</button>
+          <CoachMark label="② 再启动 Runtime" active={coachRuntimeStart}>
+            <button
+              className="runtime-launch-button"
+              disabled={!health?.capabilities.makerCli || runtimeBusy}
+              onClick={() => {
+                toast("正在启动 Maker 预览…", "info");
+                void runtimeAction("start");
+                if (coachRuntimeStart) {
+                  dismissCoachMark(COACH_RUNTIME_START_KEY);
+                  setCoachRuntimeStart(false);
+                }
+              }}
+            ><CirclePlay size={14} />{runtimeBusy ? "…" : "启动"}</button>
+          </CoachMark>
         </Tip>
         <Tip label="刷新 Maker Runtime">
           <button className="icon-command" aria-label="刷新 Runtime" disabled={runtimeBusy} onClick={() => void runtimeAction("refresh")}><RefreshCw size={14} /></button>
@@ -3448,6 +3716,34 @@ export function App() {
         <Tip label="查看 TapMakerWork 后续开发规划（资源优化、AI 提效、多平台打包等）">
           <button className="developer-console-button roadmap-button" onClick={() => setRoadmapOpen(true)}><Map size={13} />后续规划</button>
         </Tip>
+        <div className="toolkit-menu-wrap tools-menu-wrap">
+          <Tip label="工具集：图片压缩等实用工具">
+            <button
+              className={`developer-console-button toolkit-button ${toolkitMenuOpen || compressOpen ? "active" : ""}`}
+              aria-label="工具"
+              aria-expanded={toolkitMenuOpen}
+              onClick={() => { setToolsMenuOpen(false); setToolkitMenuOpen((open) => !open); }}
+            ><Wrench size={13} />工具</button>
+          </Tip>
+          {toolkitMenuOpen && (
+            <div className="tools-menu toolkit-menu" role="menu">
+              <section>
+                <h3>工具集</h3>
+                <div className="tools-actions">
+                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setCompressOpen(true); }}>
+                    <Image size={13} />图片压缩
+                  </button>
+                  <button onClick={() => { setToolkitMenuOpen(false); setCompressOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setTipsOpen(true); }}>
+                    <Lightbulb size={13} />开发技巧
+                  </button>
+                  <button onClick={() => { setToolkitMenuOpen(false); setNewbieGuideOpen(true); }}>
+                    <Sparkles size={13} />新手引导
+                  </button>
+                </div>
+              </section>
+            </div>
+          )}
+        </div>
         <label className="device-compact">
           设备
           <select value={device.id} onChange={(event) => {
@@ -3492,6 +3788,14 @@ export function App() {
                   <button disabled={runtimeBusy} onClick={() => { setToolsMenuOpen(false); void runtimeAction("stop"); }}><Pause size={13} />停止</button>
                   <button onClick={() => { setToolsMenuOpen(false); void refreshRuntimeLogs(); }}><PanelBottom size={13} />日志</button>
                   <button onClick={() => { setToolsMenuOpen(false); void syncFromRuntime(); }}><Wifi size={13} />同步真机</button>
+                </div>
+              </section>
+              <section>
+                <h3>工具集</h3>
+                <div className="tools-actions">
+                  <button onClick={() => { setToolsMenuOpen(false); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
+                  <button onClick={() => { setToolsMenuOpen(false); setTipsOpen(true); }}><Lightbulb size={13} />开发技巧</button>
+                  <button onClick={() => { setToolsMenuOpen(false); setNewbieGuideOpen(true); }}><Sparkles size={13} />新手引导</button>
                 </div>
               </section>
               <section>
@@ -3607,6 +3911,24 @@ export function App() {
         </section>
       )}
 
+      {tipsOpen && (
+        <DevTipsPanel
+          onClose={() => setTipsOpen(false)}
+          onCopy={(text) => void copyText(text)}
+          onOpenExternal={openExternalUrl}
+        />
+      )}
+
+      {compressOpen && (
+        <ImageCompressPanel
+          apiBase={API}
+          {...(project.root ? { projectRoot: project.root } : {})}
+          onClose={() => setCompressOpen(false)}
+          onCopy={(text) => void copyText(text)}
+          onOpenExternal={openExternalUrl}
+        />
+      )}
+
       {settingsOpen && (
         <section className="overlay-panel panel settings-panel" aria-label="设置">
           <div className="overlay-heading"><strong>设置 / 系统</strong><button onClick={() => setSettingsOpen(false)}>关闭</button></div>
@@ -3687,7 +4009,7 @@ export function App() {
               <div className="desktop-card-heading">
                 <div>
                   <h3 id="community-heading">社区交流</h3>
-                  <p>{QQ_GROUP_NAME} · 群号 {QQ_GROUP_ID}。反馈问题、讨论用法、获取后续功能动态。</p>
+                  <p>{QQ_GROUP_NAME} · 群号 {QQ_GROUP_ID}。反馈问题、讨论用法、获取后续功能动态。{community.source && community.source !== "builtin" ? `（来自 ${community.source === "gitee" ? "Gitee" : "GitHub"}）` : ""}</p>
                 </div>
                 <span className="ready">QQ</span>
               </div>
@@ -3814,7 +4136,7 @@ export function App() {
                 {makerVersions?.checkedAt ? `上次检查：${new Date(makerVersions.checkedAt).toLocaleString()}` : "尚未联网检查更新"}
               </p>
             </section>
-            <div><h3>Runtime 适配器</h3><p>{adapterExport || (health?.runtimeAdapter?.installed ? `已安装：${health.runtimeAdapter.paths.join(", ")}` : "未安装到当前 Maker 项目")}</p><p>Session：{health?.runtimeSessionId || "未连接"}</p><button onClick={() => void exportRuntimeAdapter()}>导出接入包到 outputs/runtime-adapter</button></div>
+            <div><h3>Runtime 适配器</h3><p>{adapterExport || (health?.runtimeAdapter?.installed ? `已安装：${health.runtimeAdapter.paths.join(", ")}` : "未安装到当前 Maker 项目")}</p><p>后端：{health?.uiBackend || health?.runtimeAdapter?.backend || "自动检测"} · Session：{health?.runtimeSessionId || "未连接"}</p><button onClick={() => void exportRuntimeAdapter()}>导出接入包到 outputs/runtime-adapter</button></div>
             <div><h3>能力</h3><p>Maker CLI：{health?.capabilities.makerCli ? "可用" : "不可用"}</p><p>UI Bridge：{health?.capabilities.uiBridge ? "可用" : "不可用"}</p><p>Runtime 帧：{health?.capabilities.runtimeFrames ? "可用" : "未接入"}</p><p>Shell 沙箱：{health?.capabilities.shellSandbox ? "就绪" : "锁定"}</p></div>
           </div>
         </section>
@@ -3968,20 +4290,20 @@ export function App() {
               </div>
 
               {Boolean(gitStatus?.changes?.some((change) => change.staged)) && <section className="git-change-group">
-                <header><strong>暂存的更改</strong><span>{gitStatus?.changes?.filter((change) => change.staged).length}</span><button className="icon-command" aria-label="取消暂存全部" title="取消暂存全部" onClick={() => void runGitFileAction("unstage-all")}><Undo2 size={12} /></button></header>
+                <header className="git-change-header" tabIndex={0} aria-label="暂存的更改；右键打开批量操作" onContextMenu={(event) => { event.preventDefault(); setGitFileMenu(null); setGitGroupMenu({ scope: "staged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 130) }); }} onKeyDown={(event) => { if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return; event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setGitFileMenu(null); setGitGroupMenu({ scope: "staged", x: Math.min(rect.left + 12, window.innerWidth - 230), y: Math.min(rect.bottom, window.innerHeight - 130) }); }}><strong>暂存的更改</strong><span>{gitStatus?.changes?.filter((change) => change.staged).length}</span><button className="icon-command" aria-label="取消暂存全部" title="取消暂存全部" onClick={() => void runGitFileAction("unstage-all")}><Undo2 size={12} /></button></header>
                 <div className="git-file-list">
-                  {gitStatus?.changes?.filter((change) => change.staged).map((change) => <div key={`staged:${change.path}`} className={`git-file-row ${change.conflicted ? "conflicted" : ""}`} onContextMenu={(event) => { event.preventDefault(); setGitFileMenu({ change, scope: "staged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 180) }); }}>
-                    <button className="git-file-open" title={change.path} onClick={() => void readFile(change.path).catch(() => toast("该文件无法在代码编辑器中打开", "warn"))}><FileCode2 size={13} /><span><strong>{fileName(change.path)}</strong><small>{change.path.includes("/") ? change.path.slice(0, change.path.lastIndexOf("/")) : "项目根目录"}</small></span><code>{change.indexStatus}</code></button>
+                  {gitStatus?.changes?.filter((change) => change.staged).map((change) => <div key={`staged:${change.path}`} className={`git-file-row ${change.conflicted ? "conflicted" : ""} ${centerTab === "git-diff" && gitDiff?.path === change.path && gitDiff.scope === "staged" ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setGitGroupMenu(null); setGitFileMenu({ change, scope: "staged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 210) }); }}>
+                    <button className="git-file-open" title={`${change.path} · 点击查看暂存差异`} onClick={() => void openGitDiff(change, "staged")}><FileCode2 size={13} /><span><strong>{fileName(change.path)}</strong><small>{change.path.includes("/") ? change.path.slice(0, change.path.lastIndexOf("/")) : "项目根目录"}</small></span><code>{change.indexStatus}</code></button>
                     <button className="git-file-action" aria-label={`取消暂存 ${change.path}`} title="取消暂存" onClick={() => void runGitFileAction("unstage", change)}><Undo2 size={12} /></button>
                   </div>)}
                 </div>
               </section>}
 
               <section className="git-change-group">
-                <header><strong>更改</strong><span>{gitStatus?.changes?.filter((change) => change.unstaged).length || 0}</span>{Boolean(gitStatus?.changes?.some((change) => change.unstaged)) && <button className="icon-command" aria-label="暂存全部更改" title="暂存全部" onClick={() => void runGitFileAction("stage-all")}><Plus size={13} /></button>}</header>
+                <header className="git-change-header" tabIndex={0} aria-label="更改；右键打开批量操作" onContextMenu={(event) => { event.preventDefault(); setGitFileMenu(null); setGitGroupMenu({ scope: "unstaged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 150) }); }} onKeyDown={(event) => { if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return; event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setGitFileMenu(null); setGitGroupMenu({ scope: "unstaged", x: Math.min(rect.left + 12, window.innerWidth - 230), y: Math.min(rect.bottom, window.innerHeight - 150) }); }}><strong>更改</strong><span>{gitStatus?.changes?.filter((change) => change.unstaged).length || 0}</span>{Boolean(gitStatus?.changes?.some((change) => change.unstaged)) && <button className="icon-command" aria-label="暂存全部更改" title="暂存全部" onClick={() => void runGitFileAction("stage-all")}><Plus size={13} /></button>}</header>
                 <div className="git-file-list">
-                  {!gitStatus?.changes?.some((change) => change.unstaged) ? <p className="empty-state">工作区没有未暂存修改。</p> : gitStatus.changes.filter((change) => change.unstaged).map((change) => <div key={`changed:${change.path}`} className={`git-file-row ${change.conflicted ? "conflicted" : ""}`} onContextMenu={(event) => { event.preventDefault(); setGitFileMenu({ change, scope: "unstaged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 180) }); }}>
-                    <button className="git-file-open" title={`${change.path} · 右键查看更多操作`} onClick={() => void readFile(change.path).catch(() => toast("该文件无法在代码编辑器中打开", "warn"))}><FileCode2 size={13} /><span><strong>{fileName(change.path)}</strong><small>{change.path.includes("/") ? change.path.slice(0, change.path.lastIndexOf("/")) : "项目根目录"}</small></span><code>{change.untracked ? "U" : change.workTreeStatus}</code></button>
+                  {!gitStatus?.changes?.some((change) => change.unstaged) ? <p className="empty-state">工作区没有未暂存修改。</p> : gitStatus.changes.filter((change) => change.unstaged).map((change) => <div key={`changed:${change.path}`} className={`git-file-row ${change.conflicted ? "conflicted" : ""} ${centerTab === "git-diff" && gitDiff?.path === change.path && gitDiff.scope === "worktree" ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setGitGroupMenu(null); setGitFileMenu({ change, scope: "unstaged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 210) }); }}>
+                    <button className="git-file-open" title={`${change.path} · 点击查看工作区差异，右键查看更多操作`} onClick={() => void openGitDiff(change, "unstaged")}><FileCode2 size={13} /><span><strong>{fileName(change.path)}</strong><small>{change.path.includes("/") ? change.path.slice(0, change.path.lastIndexOf("/")) : "项目根目录"}</small></span><code>{change.untracked ? "U" : change.workTreeStatus}</code></button>
                     <button className="git-file-action" aria-label={`暂存 ${change.path}`} title="暂存更改" onClick={() => void runGitFileAction("stage", change)}><Plus size={13} /></button>
                   </div>)}
                 </div>
@@ -4083,6 +4405,10 @@ export function App() {
                 </button>
               );
             })}
+            {gitDiff && <div className="git-diff-document-tab">
+              <button type="button" className={centerTab === "git-diff" ? "active" : ""} aria-pressed={centerTab === "git-diff"} title={gitDiff.path} onClick={() => setCenterTab("git-diff")}><Columns2 size={14} />{fileName(gitDiff.path)} <code>{gitDiff.scope === "staged" ? "暂存" : "工作区"}</code></button>
+              <button type="button" className="git-diff-tab-close" aria-label={`关闭 ${gitDiff.path} 差异`} title="关闭差异" onClick={() => { setGitDiff(null); if (centerTab === "git-diff") setCenterTab("code"); }}><X size={12} /></button>
+            </div>}
             {floatingWorkspace && <button className="workspace-dock-button" type="button" title="重新停靠工作区" onClick={() => { setFloatingWorkspace(null); toast("工作区已重新停靠", "success"); }}><PanelTop size={14} />停靠</button>}
             {centerTab === "code" && <button className="document-save" onClick={() => void saveFile()} disabled={!codeDirty || saveState === "saving"} title="保存 (⌘/Ctrl S)"><Save size={14} />{saveState === "saving" ? "保存中" : saveState === "saved" ? "已保存" : saveState === "error" ? "失败" : "保存"}</button>}
           </nav>
@@ -4098,6 +4424,45 @@ export function App() {
                   onObjectiveSaved={(nextObjective) => setWorkflow((current) => current ? { ...current, objective: nextObjective } : current)}
                   onToast={toast}
                 />
+              ) : centerTab === "git-diff" && gitDiff ? (
+                <section className="git-diff-view" aria-label={`${gitDiff.path} Git 差异`}>
+                  <header className="git-diff-toolbar">
+                    <div>
+                      <Columns2 size={15} />
+                      <span><strong>{fileName(gitDiff.path)}</strong><small>{gitDiff.path}</small></span>
+                    </div>
+                    <div className="git-diff-meta">
+                      <span>{gitDiff.scope === "staged" ? "HEAD ↔ 暂存区" : "暂存区 ↔ 工作区"}</span>
+                      {gitDiff.added && <em>新增</em>}
+                      {gitDiff.deleted && <em className="deleted">删除</em>}
+                      {!gitDiff.loading && !gitDiff.error && !gitDiff.binary && <><code className="added">+{gitDiff.additions}</code><code className="deleted">−{gitDiff.deletions}</code></>}
+                      <button type="button" disabled={gitDiff.deleted || gitDiff.loading} onClick={() => void readFile(gitDiff.path).catch(() => toast("该文件无法在代码编辑器中打开", "warn"))}><FileCode2 size={13} />打开文件</button>
+                    </div>
+                  </header>
+                  <div className="git-diff-editor">
+                    {gitDiff.loading ? <div className="git-diff-message"><RefreshCw className="spin" size={22} /><strong>正在读取修改内容…</strong><span>正在准备原始版本与当前版本。</span></div>
+                      : gitDiff.error ? <div className="git-diff-message error"><AlertTriangle size={22} /><strong>无法显示更改</strong><span>{gitDiff.error}</span></div>
+                        : gitDiff.binary ? <div className="git-diff-message"><FileCode2 size={22} /><strong>二进制文件无法进行文本比较</strong><span>文件状态仍可在左侧源代码管理中操作。</span></div>
+                          : <DiffEditor
+                            theme="vs-dark"
+                            language={languageForFile(gitDiff.path)}
+                            original={gitDiff.original}
+                            modified={gitDiff.modified}
+                            options={{
+                              readOnly: true,
+                              originalEditable: false,
+                              automaticLayout: true,
+                              renderSideBySide: true,
+                              renderOverviewRuler: true,
+                              minimap: { enabled: false },
+                              fontSize: 13,
+                              padding: { top: 12 },
+                              scrollBeyondLastLine: false,
+                              diffAlgorithm: "advanced"
+                            }}
+                          />}
+                  </div>
+                </section>
               ) : centerTab === "runtime" ? (
                 <RuntimeMirror
                   runtimeLive={runtimeLive}
@@ -4112,6 +4477,11 @@ export function App() {
                   selectedIds={selectedNodeIds}
                   editRevision={runtimeEditRevision}
                   mode={mode}
+                  coachRuntimeStart={coachRuntimeStart}
+                  onCoachRuntimeStartDone={() => {
+                    dismissCoachMark(COACH_RUNTIME_START_KEY);
+                    setCoachRuntimeStart(false);
+                  }}
                   onModeChange={(next) => { if (next !== "play") setMode(next); }}
                   onStart={() => { toast("正在启动 Maker 预览…", "info"); void runtimeAction("start"); }}
                   onInstallAdapter={() => void installRuntimeEditor()}
@@ -4244,7 +4614,7 @@ export function App() {
               ) : (
                 <Editor
                   theme="vs-dark"
-                  language={selectedFile.endsWith(".lua") ? "lua" : selectedFile.endsWith(".json") ? "json" : selectedFile.endsWith(".ts") || selectedFile.endsWith(".tsx") ? "typescript" : "plaintext"}
+                  language={languageForFile(selectedFile)}
                   value={code}
                   onChange={(value) => { setCode(value ?? ""); setCodeDirty(true); setSaveState("idle"); }}
                   onMount={onEditorMount}
@@ -4266,6 +4636,11 @@ export function App() {
                     onLog={(line) => setLogs((current) => ({ ...current, runtime: [...current.runtime, line] }))}
                     onToast={toast}
                     onOpenExternal={openExternalUrl}
+                    onClose={() => {
+                      setPreviewDockOpen(false);
+                      void window.tapMakerWork?.preview?.unmount().catch(() => undefined);
+                      toast("预览已关闭", "info");
+                    }}
                   />
                 </aside>
               </>
@@ -4389,10 +4764,33 @@ export function App() {
           onContextMenu={(event) => event.preventDefault()}
         >
           <div className="node-context-heading"><span><GitBranch size={14} /></span><div><strong>{fileName(gitFileMenu.change.path)}</strong><small>{gitFileMenu.change.path}</small></div></div>
+          <button type="button" role="menuitem" onClick={() => void openGitDiff(gitFileMenu.change, gitFileMenu.scope)}><Columns2 size={14} /><span>查看更改</span></button>
           <button type="button" role="menuitem" onClick={() => { const change = gitFileMenu.change; setGitFileMenu(null); void readFile(change.path).catch(() => toast("该文件无法在代码编辑器中打开", "warn")); }}><FileCode2 size={14} /><span>打开文件</span></button>
           <button type="button" role="menuitem" onClick={() => void runGitFileAction(gitFileMenu.scope === "staged" ? "unstage" : "stage", gitFileMenu.change)}>{gitFileMenu.scope === "staged" ? <Undo2 size={14} /> : <Plus size={14} />}<span>{gitFileMenu.scope === "staged" ? "取消暂存更改" : "暂存更改"}</span></button>
           <button type="button" role="menuitem" onClick={() => { void copyText(gitFileMenu.change.path); setGitFileMenu(null); }}><Copy size={14} /><span>复制相对路径</span></button>
           {gitFileMenu.change.unstaged && <><div className="node-context-divider" /><button type="button" role="menuitem" className="danger" onClick={() => void runGitFileAction("discard", gitFileMenu.change)}><Trash2 size={14} /><span>丢弃本地修改…</span></button></>}
+        </div>
+      )}
+
+      {gitGroupMenu && (
+        <div
+          className="node-context-menu git-context-menu git-group-context-menu"
+          role="menu"
+          aria-label={gitGroupMenu.scope === "staged" ? "暂存更改批量操作" : "工作区更改批量操作"}
+          style={{ left: gitGroupMenu.x, top: gitGroupMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <span className="node-context-section">{gitGroupMenu.scope === "staged" ? "暂存的更改" : "所有更改"}</span>
+          {gitGroupMenu.scope === "staged" ? (
+            <button type="button" role="menuitem" onClick={() => void runGitFileAction("unstage-all")}><Undo2 size={14} /><span>取消暂存所有更改</span></button>
+          ) : (
+            <>
+              <button type="button" role="menuitem" disabled={!gitStatus?.changes?.some((change) => change.unstaged)} onClick={() => void runGitFileAction("stage-all")}><Plus size={14} /><span>暂存所有更改</span></button>
+              <div className="node-context-divider" />
+              <button type="button" role="menuitem" className="danger" disabled={!gitStatus?.changes?.some((change) => change.unstaged)} onClick={() => void runGitFileAction("discard-all")}><Trash2 size={14} /><span>放弃所有更改…</span></button>
+            </>
+          )}
         </div>
       )}
 
@@ -4478,6 +4876,6 @@ export function App() {
         <span>{connected ? "本机连接" : "离线"}</span>
       </footer>
       <ToastStack items={toasts} />
-    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{sponsorOverlay}{roadmapOverlay}{permissionOverlay}</>
+    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{sponsorOverlay}{roadmapOverlay}{newbieOverlay}{permissionOverlay}</>
   );
 }

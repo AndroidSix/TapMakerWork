@@ -34,15 +34,28 @@
 
 **TapMakerWork** 是面向 [TapTap Maker](https://www.taptap.cn) 项目的 **macOS / Windows** 桌面 IDE。
 
-它组合官方 Maker 能力，并补上日常开发里最费劲的部分：
+它组合官方 Maker 能力，并补上日常开发里最费劲的部分——**核心能力**如下：
 
-| 场景 | 你能得到什么 |
-|------|----------------|
-| 改 UI | 采样 **真 Runtime 画面**，画面内选控件、拖拽、改样式 |
-| 看效果 | 内嵌预览 + 真机窗口镜像，减少「改完再盲猜」 |
-| 管交付 | 环境 / 项目 / 内容 / Runtime / 验证 / 构建就绪度一条线 |
-| 管素材 | 图片、音频、视频、模型、字体引用审计 |
-| 接 AI | 项目级 **MCP**，供 Claude / Cursor / Codex 等读项目与控件状态 |
+| 核心能力 | 你能得到什么 |
+|----------|----------------|
+| **实时编辑** | 采样 **真 Runtime 画面**，画面内选控件、拖拽、改样式，所见即所得 |
+| **结构 + 预览** | 结构草图、内嵌预览与真机窗口镜像，减少「改完再盲猜」 |
+| **图片压缩工具** | 内置批量压缩（默认本地可用；可选 TinyPNG），结果面板直接看体积收益，缩小包体 |
+| **交付工作台** | 环境 / 项目 / 内容 / Runtime / 验证 / 构建就绪度一条线 |
+| **素材审计** | 图片、音频、视频、模型、字体引用审计，辅助清理无用资源 |
+| **AI / MCP** | 项目级 **MCP**，供 Claude / Cursor / Codex 等读项目与控件状态 |
+| **开发技巧** | IDE 内可复制提示（本地预览 Token 优化、grill-me、发布前检查等） |
+
+### 演示视频
+
+创建于 2026-09-22 · 展示实时编辑、Runtime 接入与 IDE 主流程。
+
+<video src="./docs/demo/tapmakerwork-core-demo.mp4" controls width="100%" poster="">
+  你的浏览器不支持 video 标签，请直接打开
+  <a href="./docs/demo/tapmakerwork-core-demo.mp4">docs/demo/tapmakerwork-core-demo.mp4</a>
+</video>
+
+若预览未加载，可下载本地观看：[tapmakerwork-core-demo.mp4](./docs/demo/tapmakerwork-core-demo.mp4)
 
 ```text
 Electron 桌面 / 控制台
@@ -95,7 +108,6 @@ https://qm.qq.com/q/OCt1HAmHK2
 
 | 方向 | 说明 |
 |------|------|
-| **图片无损压缩** | 内置批量压缩工具，针对 Maker 项目图片资源，减小包体、尽量保持画质 |
 | **无用资源删除** | 结合源码/配置引用审计，识别未引用图片、音频等并安全清理 |
 | **代码混淆** | 对项目脚本提供混淆/加固选项，降低直接抄袭成本（与官方构建链兼容） |
 
@@ -155,6 +167,18 @@ https://qm.qq.com/q/OCt1HAmHK2
 - 可选适配器安装，入口自动备份
 - Cocos 风格变换：`Q/W/E/R/T`、Shift 多选、增量吸附
 - 拖拽手势级撤销 / 重做，RGBA 颜色控制
+- 新手引导：实时编辑两步上手 + 首次弱提示
+
+</details>
+
+<details>
+<summary><b>工具集与资源</b></summary>
+
+- **图片批量压缩**（命令栏「工具」→ 图片压缩）：默认本地压缩（pngquant / jpegoptim / 内置 Jimp），可选开启 TinyPNG 优先
+- 压缩结果面板展示扫描数、压缩数、节省体积；可一键复制「分批提交」提示给 AI
+- TinyPNG API Key 存本机用户目录，不进游戏项目 git
+- 语义资产审计（图片 / 音频 / 视频 / 模型 / 字体引用）
+- 开发技巧面板：本地预览 Token 优化、grill-me、发布前检查等可复制提示
 
 </details>
 
@@ -163,7 +187,7 @@ https://qm.qq.com/q/OCt1HAmHK2
 
 - 原创交付工作台（项目阶段、UI 旁路、Runtime 状态与构建就绪度）
 - VS Code 风格 Git 管理（暂存、取消暂存、提交、同步、文件右键操作与提交图谱）
-- 语义资产审计与全项目 UI 发现
+- 全项目 UI 发现
 - 官方 Preview 状态 / 日志 / 生命周期适配
 - 显式远程构建与测试码流程（就绪度不会自动发布）
 - 离线内置 Monaco 编辑器（无 CDN 依赖）
@@ -228,9 +252,11 @@ npm run dist:all    # 双平台（视构建链而定）
 
 或在桌面应用内按 `Cmd/Ctrl+Shift+B` / 运行 `npm run package:ide`。
 
-产物目录：`outputs/installers`。签名、公证、权限与更新源见 [`docs/DESKTOP_RELEASE.md`](./docs/DESKTOP_RELEASE.md)。
+产物目录：`outputs/installers`。
 
-发布时：本地打包 → 上传到 **GitHub Releases（主）**；Gitee 镜像通过「镜像同步」自动拿到同一批安装包。
+**重要：** 未配置代码签名证书时，打出来的 `.dmg` / `.exe` 只适合内部 QA。普通用户直接安装会遇到 macOS「无法验证开发者」或 Windows SmartScreen 拦截；这不等于侵权，但**不要当作正式下载源对外分发**。正式对外请使用已签名（Mac 还需公证）的包。完整说明、自检方式与环境变量见 [`docs/DESKTOP_RELEASE.md`](./docs/DESKTOP_RELEASE.md)。
+
+发布时：本地/CI 打出**已签名**安装包 → 上传到 **GitHub Releases（主）**；Gitee 镜像通过「镜像同步」自动拿到同一批安装包。
 
 ---
 

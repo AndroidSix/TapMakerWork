@@ -38,10 +38,14 @@ export interface UiNode {
   children: UiNode[];
 }
 
+export type UiBackend = "yoga" | "nanovg";
+
 export interface UiSnapshot {
   revision: number;
   root: UiNode;
   selectedId?: string;
+  /** Runtime tree backend. Yoga walks Widget trees; NanoVG rebuilds virtual nodes from draw proxies. */
+  backend?: UiBackend;
   viewport?: {
     width: number;
     height: number;

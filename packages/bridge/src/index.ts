@@ -44,8 +44,9 @@ import { listProjectEntries, readProjectText, resolveInsideProject, resolveProje
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
-import { commitGitProject, listProjectAssets, mutateGitProject, projectHasRuntimeAdapter, pullGitProject, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
+import { commitGitProject, listProjectAssets, mutateGitProject, projectHasRuntimeAdapter, pullGitProject, readGitDiff, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
 import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
+import { detectUiBackend } from "./ui-backend.js";
 import { findRuntimeFileStatus, normalizeUiTree, writeIdeCommandsFile } from "./runtime-file-channel.js";
 import {
   adoptWindowsMimeForFile,
@@ -60,6 +61,14 @@ import {
   type PreviewPanelFile
 } from "./preview-panel.js";
 import { buildProjectWorkflowOverview, saveProjectWorkflow } from "./project-workflow.js";
+import { loadCommunityConfig } from "./community-config.js";
+import {
+  imageCompressPublicSettings,
+  readImageCompressSettings,
+  resolveDefaultCompressTarget,
+  runImageCompress,
+  writeImageCompressSettings
+} from "./image-compress.js";
 
 let lastAppliedRuntimeRevision = -1;
 let snapshotSource: SnapshotSource = "empty";
@@ -92,7 +101,7 @@ function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
     const sceneText = JSON.stringify(snap.root).slice(0, 8000);
     if (/loadingScreen|bootProgress|overlayProgress|正在加载|渡劫准备|正在开辟|loading_keyart/i.test(sceneText)) {
       runtimeScene = "loading";
-    } else if (/hud|MainShell|Button|Label/i.test(sceneText)) {
+    } else if (/hud|MainShell|Button|Label|NanoVG|"\$backend":"nanovg"/i.test(sceneText)) {
       if (runtimeScene === "loading") {
         broadcast({ type: "log.append", channel: "runtime", lines: ["真机已离开加载画面，正在同步活树…"] });
       }
@@ -109,7 +118,7 @@ function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
     const current = editor.getSnapshot();
     const currentText = JSON.stringify(current.root || {}).slice(0, 8000);
     const currentConcrete = (currentText.match(/"type":"(Panel|Label|Button)"/g) || []).length;
-    const runtimeConcrete = (JSON.stringify(normalized).match(/"type":"(Panel|Label|Button|ProgressBar)"/g) || []).length;
+    const runtimeConcrete = (JSON.stringify(normalized).match(/"type":"(Panel|Label|Button|ProgressBar|Rect|Image|NanoVG)"/g) || []).length;
     const layoutScore = (function score(node: UiNode, depth = 0): number {
       if (!node || typeof node !== "object") return 0;
       const layout = node.props?.$layout as { w?: number; h?: number } | undefined;
@@ -340,6 +349,7 @@ const server = http.createServer(async (request, response) => {
     } else if (request.method === "GET" && url.pathname === "/api/health") {
       const fileStatus = syncRuntimeFileChannel();
       const adapter = project ? projectHasRuntimeAdapter(project.root) : { installed: false, paths: [] as string[] };
+      const uiBackend = project ? (adapter.backend || detectUiBackend(project.root)) : undefined;
       sendJson(response, 200, {
         ok: true,
         capabilities: {
@@ -355,6 +365,7 @@ const server = http.createServer(async (request, response) => {
         runtimeConnectedAt,
         runtimeScene,
         snapshotSource,
+        uiBackend,
         runtimeAdapter: adapter,
         runtimeTransport: fileStatus?.transport || (runtimeSessionId ? "http-or-file" : "none"),
         runtimeFileChannel: fileStatus ? {
@@ -415,6 +426,12 @@ const server = http.createServer(async (request, response) => {
     } else if (request.method === "GET" && url.pathname === "/api/git/status") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, await readGitStatus(project.root));
+    } else if (request.method === "GET" && url.pathname === "/api/git/diff") {
+      if (!project) throw new Error("project_not_open");
+      const filePath = url.searchParams.get("path") || "";
+      const scope = url.searchParams.get("scope") === "staged" ? "staged" : "worktree";
+      if (!filePath) throw new Error("git_path_required");
+      sendJson(response, 200, await readGitDiff(project.root, filePath, scope));
     } else if (request.method === "POST" && url.pathname === "/api/git/pull") {
       if (!project) throw new Error("project_not_open");
       const result = await pullGitProject(project.root);
@@ -422,7 +439,7 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, result.ok ? 200 : 409, result);
     } else if (request.method === "POST" && url.pathname === "/api/git/mutate") {
       if (!project) throw new Error("project_not_open");
-      const body = await readJson(request) as { action?: "stage" | "unstage" | "discard" | "stage-all" | "unstage-all"; path?: string };
+      const body = await readJson(request) as { action?: "stage" | "unstage" | "discard" | "stage-all" | "unstage-all" | "discard-all"; path?: string };
       if (!body.action) throw new Error("git_action_required");
       const result = await mutateGitProject(project.root, body.action, body.path);
       broadcast({ type: "log.append", channel: "build", lines: [`Git ${body.action}${body.path ? `：${body.path}` : ""}`] });
@@ -535,7 +552,14 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, 200, { ok: true, closedProject, project: null });
     } else if (request.method === "POST" && url.pathname === "/api/project/open") {
       const body = await readJson(request) as { path?: string };
-      project = resolveProjectRoot(body.path || "");
+      const nextProject = resolveProjectRoot(body.path || "");
+      if (project?.root !== nextProject.root) {
+        runtimeCommands.length = 0;
+        runtimeConnectedAt = undefined;
+        runtimeSessionId = undefined;
+        runtimeScene = "idle";
+      }
+      project = nextProject;
       uiScreens = scanUiScreens(project.root);
       conversion = pickInitialConversion(uiScreens, defaultUiEntry);
       activeUiEntry = conversion?.sourceFile ?? defaultUiEntry;
@@ -1089,6 +1113,57 @@ const server = http.createServer(async (request, response) => {
       }
       broadcast({ type: "preview.panel", panel, reason: "refresh" });
       sendJson(response, 200, { panel, makerRefresh });
+    } else if (request.method === "GET" && url.pathname === "/api/community") {
+      const force = url.searchParams.get("force") === "1";
+      sendJson(response, 200, { community: await loadCommunityConfig(force) });
+    } else if (request.method === "GET" && url.pathname === "/api/tools/image-compress") {
+      const settings = imageCompressPublicSettings();
+      const stored = readImageCompressSettings();
+      const projectRootParam = url.searchParams.get("projectRoot") || project?.root;
+      const defaultTarget = projectRootParam ? resolveDefaultCompressTarget(projectRootParam) : "";
+      sendJson(response, 200, {
+        settings,
+        keysText: stored.tinyKeys.join("\n"),
+        defaultTarget
+      });
+    } else if (request.method === "POST" && url.pathname === "/api/tools/image-compress") {
+      const body = await readJson(request) as {
+        action?: string;
+        tinyEnabled?: boolean;
+        useWebFallback?: boolean;
+        tinyKeys?: string[];
+        target?: string;
+        projectRoot?: string;
+        recursive?: boolean;
+      };
+      if (body.action === "save-settings") {
+        const patch: Partial<import("./image-compress.js").ImageCompressSettings> = {
+          tinyEnabled: Boolean(body.tinyEnabled),
+          useWebFallback: body.useWebFallback !== false
+        };
+        if (Array.isArray(body.tinyKeys)) patch.tinyKeys = body.tinyKeys.map(String);
+        const saved = writeImageCompressSettings(patch);
+        sendJson(response, 200, {
+          settings: imageCompressPublicSettings(),
+          keysText: saved.tinyKeys.join("\n")
+        });
+      } else if (body.action === "run") {
+        const target = typeof body.target === "string" ? body.target.trim() : "";
+        if (!target) {
+          sendJson(response, 400, { error: "target_required" });
+        } else {
+          const runOpts: { target: string; projectRoot?: string; recursive?: boolean } = {
+            target,
+            recursive: body.recursive !== false
+          };
+          const projectRoot = typeof body.projectRoot === "string" ? body.projectRoot : project?.root;
+          if (projectRoot) runOpts.projectRoot = projectRoot;
+          const result = await runImageCompress(runOpts);
+          sendJson(response, result.error && result.total === 0 ? 400 : 200, result);
+        }
+      } else {
+        sendJson(response, 400, { error: "unknown_action" });
+      }
     } else if (request.method === "POST" && url.pathname === "/api/shell/execute") {
       sendJson(response, 423, { error: "sandbox_unavailable", detail: sandbox.reason });
     } else {

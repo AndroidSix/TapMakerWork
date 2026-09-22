@@ -1,11 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
+import {
+  adapterModuleName,
+  adapterTemplateFile,
+  detectUiBackend,
+  type UiBackend
+} from "./ui-backend.js";
 
 export interface AdapterExportResult {
   outputDir: string;
   files: string[];
   project: string;
   adapterInstalledInProject: boolean;
+  backend?: UiBackend;
   nextSteps: string[];
 }
 
@@ -14,6 +21,7 @@ export interface AdapterInstallResult {
   projectRoot: string;
   adapterPath: string;
   entryPath: string;
+  backend: UiBackend;
   backupPath?: string;
   changed: boolean;
   requiresPreviewRefresh: boolean;
@@ -45,7 +53,7 @@ function stripManagedEditor(source: string): string {
 }
 
 function timestampForPath(): string {
-  return new Date().toISOString().replace(/[:.]/g, "-");
+  return `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.hrtime.bigint()}`;
 }
 
 function resolveMakerClientEntry(projectRoot: string): string {
@@ -77,32 +85,8 @@ function resolveMakerClientEntry(projectRoot: string): string {
   throw new Error("maker_client_entry_not_found");
 }
 
-export function installRuntimeAdapter(options: {
-  bridgePackageRoot: string;
-  projectRoot: string;
-}): AdapterInstallResult {
-  const repoRoot = findRepoRoot(options.bridgePackageRoot);
-  const templatePath = path.join(repoRoot, "runtime", "lua", "TapMakerWorkBridge.lua");
-  if (!fs.existsSync(templatePath)) throw new Error("adapter_template_not_found");
-
-  const projectRoot = path.resolve(options.projectRoot);
-  const entryPath = resolveMakerClientEntry(projectRoot);
-  const original = fs.readFileSync(entryPath, "utf8");
-  const alreadyManaged = editorUpdateIsInScope(original)
-    && original.includes(BOOTSTRAP_START)
-    && original.includes(START_CALL)
-    && original.includes(UPDATE_CALL);
-  let next = alreadyManaged ? original : stripManagedEditor(original);
-
-  if (!alreadyManaged) {
-    const hasAppInit = /\bapp_:Init\(\)/.test(next);
-    const hasStart = /\bfunction\s+Start\s*\(/.test(next);
-    if (!hasAppInit && !hasStart) throw new Error("runtime_adapter_start_hook_not_found");
-    if (!/local\s+dt\s*=\s*eventData:GetFloat\(["']TimeStep["']\)/.test(next)) {
-      throw new Error("runtime_adapter_update_hook_not_found");
-    }
-
-    const bootstrap = `${BOOTSTRAP_START}
+function yogaBootstrap(): string {
+  return `${BOOTSTRAP_START}
 local tapMakerWorkLiveEditor_ = nil
 
 local function TapMakerWorkLiveEditorStart()
@@ -128,6 +112,86 @@ end
 ${BOOTSTRAP_END}
 
 `;
+}
+
+function nanovgBootstrap(): string {
+  return `${BOOTSTRAP_START}
+local tapMakerWorkLiveEditor_ = nil
+
+local function TapMakerWorkLiveEditorStart()
+    if IsServerMode and IsServerMode() then return end
+    local okBridge, bridge = pcall(require, "tapmakerwork/TapMakerWorkNanoVGBridge")
+    if not okBridge then
+        print("[TapMakerWork] NanoVG live editor unavailable: " .. tostring(bridge))
+        return
+    end
+    tapMakerWorkLiveEditor_ = bridge
+    bridge.Start({
+        url = "http://127.0.0.1:43121",
+        pollInterval = 0.05,
+        snapshotInterval = 0.35,
+    })
+end
+
+local function TapMakerWorkLiveEditorUpdate(dt)
+    if tapMakerWorkLiveEditor_ then tapMakerWorkLiveEditor_.Update(dt) end
+end
+${BOOTSTRAP_END}
+
+`;
+}
+
+function bootstrapFor(backend: UiBackend): string {
+  return backend === "nanovg" ? nanovgBootstrap() : yogaBootstrap();
+}
+
+function entryMatchesBackend(source: string, backend: UiBackend): boolean {
+  const moduleName = adapterModuleName(backend);
+  return source.includes(`tapmakerwork/${moduleName}`);
+}
+
+function findRepoRoot(fromDir: string): string {
+  if (process.env.TAPMAKERWORK_APP_ROOT) return process.env.TAPMAKERWORK_APP_ROOT;
+  let current = fromDir;
+  for (let index = 0; index < 8; index += 1) {
+    if (fs.existsSync(path.join(current, "package.json")) && fs.existsSync(path.join(current, "packages"))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return fromDir;
+}
+
+export function installRuntimeAdapter(options: {
+  bridgePackageRoot: string;
+  projectRoot: string;
+  backend?: UiBackend;
+}): AdapterInstallResult {
+  const repoRoot = findRepoRoot(options.bridgePackageRoot);
+  const projectRoot = path.resolve(options.projectRoot);
+  const backend = options.backend ?? detectUiBackend(projectRoot);
+  const templateName = adapterTemplateFile(backend);
+  const templatePath = path.join(repoRoot, "runtime", "lua", templateName);
+  if (!fs.existsSync(templatePath)) throw new Error("adapter_template_not_found");
+
+  const entryPath = resolveMakerClientEntry(projectRoot);
+  const original = fs.readFileSync(entryPath, "utf8");
+  const alreadyManaged = editorUpdateIsInScope(original)
+    && original.includes(BOOTSTRAP_START)
+    && original.includes(START_CALL)
+    && original.includes(UPDATE_CALL)
+    && entryMatchesBackend(original, backend);
+  let next = alreadyManaged ? original : stripManagedEditor(original);
+
+  if (!alreadyManaged) {
+    const hasAppInit = /\bapp_:Init\(\)/.test(next);
+    const hasStart = /\bfunction\s+Start\s*\(/.test(next);
+    if (!hasAppInit && !hasStart) throw new Error("runtime_adapter_start_hook_not_found");
+    if (!/local\s+dt\s*=\s*eventData:GetFloat\(["']TimeStep["']\)/.test(next)) {
+      throw new Error("runtime_adapter_update_hook_not_found");
+    }
+
+    const bootstrap = bootstrapFor(backend);
     if (!/\bfunction\s+Start\s*\(/.test(next)) throw new Error("maker_start_function_not_found");
     next = `${bootstrap}${next}`;
     if (hasAppInit) next = next.replace(/(\bapp_:Init\(\)[^\n]*\n)/, `$1    ${START_CALL}\n`);
@@ -138,7 +202,7 @@ ${BOOTSTRAP_END}
     );
   }
 
-  const adapterPath = path.join(projectRoot, "scripts", "tapmakerwork", "TapMakerWorkBridge.lua");
+  const adapterPath = path.join(projectRoot, "scripts", "tapmakerwork", templateName);
   const adapterSource = fs.readFileSync(templatePath, "utf8");
   const adapterChanged = !fs.existsSync(adapterPath) || fs.readFileSync(adapterPath, "utf8") !== adapterSource;
   const entryChanged = next !== original;
@@ -158,22 +222,11 @@ ${BOOTSTRAP_END}
     projectRoot,
     adapterPath,
     entryPath,
+    backend,
     ...(backupPath ? { backupPath } : {}),
     changed: adapterChanged || entryChanged,
     requiresPreviewRefresh: adapterChanged || entryChanged
   };
-}
-
-function findRepoRoot(fromDir: string): string {
-  if (process.env.TAPMAKERWORK_APP_ROOT) return process.env.TAPMAKERWORK_APP_ROOT;
-  let current = fromDir;
-  for (let index = 0; index < 8; index += 1) {
-    if (fs.existsSync(path.join(current, "package.json")) && fs.existsSync(path.join(current, "packages"))) return current;
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return fromDir;
 }
 
 export function exportRuntimeAdapterPackage(options: {
@@ -182,46 +235,41 @@ export function exportRuntimeAdapterPackage(options: {
   projectRoot?: string | undefined;
 }): AdapterExportResult {
   const repoRoot = findRepoRoot(options.bridgePackageRoot);
-  const templatePath = path.join(repoRoot, "runtime", "lua", "TapMakerWorkBridge.lua");
+  const backend = options.projectRoot ? detectUiBackend(options.projectRoot) : "yoga";
+  const templateName = adapterTemplateFile(backend);
+  const templatePath = path.join(repoRoot, "runtime", "lua", templateName);
+  const yogaTemplate = path.join(repoRoot, "runtime", "lua", "TapMakerWorkBridge.lua");
+  const nanovgTemplate = path.join(repoRoot, "runtime", "lua", "TapMakerWorkNanoVGBridge.lua");
   if (!fs.existsSync(templatePath)) throw new Error("adapter_template_not_found");
   const outputDir = process.env.TAPMAKERWORK_OUTPUTS_DIR
     ? path.join(process.env.TAPMAKERWORK_OUTPUTS_DIR, "runtime-adapter")
     : path.join(repoRoot, "outputs", "runtime-adapter");
   fs.mkdirSync(outputDir, { recursive: true });
 
-  const adapterSource = fs.readFileSync(templatePath, "utf8");
   const files: string[] = [];
-
-  const adapterOut = path.join(outputDir, "TapMakerWorkBridge.lua");
-  fs.writeFileSync(adapterOut, adapterSource, "utf8");
-  files.push(adapterOut);
+  for (const source of [yogaTemplate, nanovgTemplate]) {
+    if (!fs.existsSync(source)) continue;
+    const out = path.join(outputDir, path.basename(source));
+    fs.writeFileSync(out, fs.readFileSync(source, "utf8"), "utf8");
+    files.push(out);
+  }
 
   const projectName = options.projectName ?? "your-maker-project";
   const integration = `-- TapMakerWork Runtime adapter integration sketch
 -- Project: ${projectName}
+-- Detected backend: ${backend}
 -- Generated: ${new Date().toISOString()}
 --
--- 1) Copy TapMakerWorkBridge.lua into the project, e.g. scripts/core/TapMakerWorkBridge.lua
--- 2) From the game bootstrap / main UI host, after the UI root exists:
-
-local TapMakerWorkBridge = require("core.TapMakerWorkBridge")
-
--- Call once after UI.SetRoot / first screen mount:
-TapMakerWorkBridge.Start({
-  url = "http://127.0.0.1:43121",
-  pollInterval = 0.1,
-  frames = false,
-  rootProvider = function()
-    return UI.GetRoot()
-  end,
-})
-
--- Call every frame from the existing update loop:
--- TapMakerWorkBridge.Update(dt)
-
--- 3) Keep TapMakerWork IDE running with the same project bound.
--- 4) Do not use official preview refresh for live visual patches.
+-- Yoga (urhox-libs/UI):
+--   require("tapmakerwork/TapMakerWorkBridge")
+--   bridge.Start({ rootProvider = function() return UI.GetRoot() end })
 --
+-- NanoVG (raw nvg* draw calls):
+--   require("tapmakerwork/TapMakerWorkNanoVGBridge")
+--   bridge.Start({ url = "http://127.0.0.1:43121" })
+--   -- Draw proxies install automatically; no game rewrite required.
+--
+-- Call Update(dt) from the existing update loop.
 -- This export is a review package. It does NOT modify any Maker project.
 `;
   const integrationOut = path.join(outputDir, "integration-main.lua.example");
@@ -236,13 +284,14 @@ This package is generated by TapMakerWork Bridge and is **not installed** into a
 
 ## Contents
 
-- \`TapMakerWorkBridge.lua\` — staged Runtime command-queue adapter
-- \`integration-main.lua.example\` — host bootstrap sketch for ${projectName}
+- \`TapMakerWorkBridge.lua\` — Yoga / \`urhox-libs/UI\` widget-tree adapter
+- \`TapMakerWorkNanoVGBridge.lua\` — NanoVG draw-call proxy adapter
+- \`integration-main.lua.example\` — host bootstrap sketch for ${projectName} (detected: ${backend})
 
 ## Install later (manual review)
 
-1. Copy \`TapMakerWorkBridge.lua\` into the pilot project under \`scripts/core/\` (or another reviewed path).
-2. Wire \`Start\` + \`Update(dt)\` using the example, pointing \`rootProvider\` at the live UI root.
+1. Prefer IDE 「接入当前项目」— it auto-detects Yoga vs NanoVG and injects the matching bridge.
+2. Or copy the matching adapter into \`scripts/tapmakerwork/\` and wire \`Start\` + \`Update(dt)\`.
 3. Start TapMakerWork IDE bound to that project, then start Maker preview.
 4. Confirm Bridge health shows \`runtimeSessionId\`, then apply a visual patch and verify game state survives.
 
@@ -259,6 +308,8 @@ This package is generated by TapMakerWork Bridge and is **not installed** into a
   const projectRoot = options.projectRoot;
   if (projectRoot) {
     adapterInstalledInProject = [
+      "scripts/tapmakerwork/TapMakerWorkBridge.lua",
+      "scripts/tapmakerwork/TapMakerWorkNanoVGBridge.lua",
       "scripts/core/TapMakerWorkBridge.lua",
       "scripts/TapMakerWorkBridge.lua",
       "scripts/ui/TapMakerWorkBridge.lua"
@@ -269,11 +320,12 @@ This package is generated by TapMakerWork Bridge and is **not installed** into a
     outputDir,
     files,
     project: projectName,
+    backend,
     adapterInstalledInProject,
     nextSteps: [
-      "审阅 outputs/runtime-adapter 中的适配器与接入示例",
-      "人工复制到 Maker 项目并在主循环接入 Start/Update",
-      "重启 IDE 绑定项目后启动预览，确认 health 出现 runtimeSessionId",
+      "审阅 outputs/runtime-adapter 中的 Yoga / NanoVG 适配器",
+      "优先用 IDE「接入当前项目」自动识别并注入",
+      "重启预览后确认 health 出现 runtimeSessionId",
       "再在 IDE 中打视觉补丁并验证游戏状态不丢"
     ]
   };

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { ExternalLink, MonitorPlay, RefreshCw, Save } from "lucide-react";
+import { ExternalLink, MonitorPlay, RefreshCw, Save, X } from "lucide-react";
 import type { PreviewPanelState } from "@tapmakerwork/protocol";
 
 const API = "http://127.0.0.1:43121";
@@ -21,6 +21,7 @@ export interface PreviewDockProps {
   onLog: (line: string) => void;
   onToast: (message: string, kind?: "info" | "success" | "error" | "warn") => void;
   onOpenExternal: (url: string) => void;
+  onClose?: (() => void) | undefined;
 }
 
 export function PreviewDock({
@@ -32,7 +33,8 @@ export function PreviewDock({
   onChanged,
   onLog,
   onToast,
-  onOpenExternal
+  onOpenExternal,
+  onClose
 }: PreviewDockProps) {
   const [urlDraft, setUrlDraft] = useState(panel?.url || "");
   const [busy, setBusy] = useState<"save" | "refresh" | "">("");
@@ -216,6 +218,7 @@ export function PreviewDock({
         </label>
         <button className="icon-command" aria-label="刷新" disabled={busy === "refresh"} onClick={() => void reloadPreview(false)}><RefreshCw size={13} /></button>
         <button className="icon-command" aria-label="外部打开" disabled={!url} onClick={() => url && onOpenExternal(url)}><ExternalLink size={13} /></button>
+        {onClose && <button className="icon-command preview-close-button" aria-label="关闭预览" title="关闭预览" onClick={onClose}><X size={14} /></button>}
       </div>
       <div className="preview-stage" ref={frameRef}>
         {(runtimeLive || (!embeddable && url)) && (

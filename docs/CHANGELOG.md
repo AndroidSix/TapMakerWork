@@ -1,5 +1,11 @@
 # Change log
 
+## 2026-09-22 — NanoVG Runtime adapter
+
+- Added `TapMakerWorkNanoVGBridge.lua`: proxies global `nvg*` draw calls into a virtual node tree with stable call-site IDs, real AABB hit boxes, live parameter overrides and `.ui.json` persistence — without rewriting game Lua.
+- 「接入当前项目」now auto-detects Yoga (`urhox-libs/UI`) vs NanoVG and installs the matching bridge; wrong-backend managed hooks are rewired on reinstall.
+- Studio health exposes `uiBackend`; screen scan keeps NanoVG surfaces as runtime stubs when static Lua conversion cannot build a widget tree.
+
 ## 2026-09-21 — Gitee updates and source-control workspace
 
 - Replaced the editable application-update source with a fixed check against the `AndroidSUP/tap-maker-work` Gitee release API, with manual release-page fallback when updater metadata is unavailable.

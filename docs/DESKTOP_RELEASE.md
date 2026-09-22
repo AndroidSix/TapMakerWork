@@ -1,5 +1,45 @@
 # Desktop release and first-run permissions
 
+创建于 2026-09-22（本文随发布流程持续更新）
+
+## 给分发者：安装包能不能直接给普通用户？
+
+**先看结论：**
+
+| 包类型 | 能不能对外给普通用户 | 说明 |
+|--------|----------------------|------|
+| **已正式签名**（Mac：Developer ID + 公证；Win：Authenticode） | 可以 | 安装体验接近正常软件 |
+| **本机一键打包、未配置证书** | **不要对外发** | 仅限自己 / 团队内部 QA |
+| 开发态 `electron .` / `npm run dev` | 不要当安装包发 | 权限与更新行为都不等于正式版 |
+
+自有代码 + 正规依赖打出来的安装包**不涉及侵权**。「没签名」只表示系统还不信任发布者身份，**不是违法、也不是盗用证书**。对外分发时请只用你们自己申请/购买的证书签名，不要使用他人证书或伪造签名。
+
+### 未签名包时，普通用户会遇到什么
+
+- **macOS（`.dmg` / `.zip`）**
+  - 常见提示：「无法验证开发者」「已损坏，无法打开」。
+  - 需要用户右键 → 打开，或手动清除隔离属性后才能装；很多用户会直接放弃。
+  - 屏幕录制 / 辅助功能授权不稳定（身份是 adhoc，不是正式 Developer ID），换机器或升级后可能要重新授权。
+  - 自动更新不可靠。
+- **Windows（`.exe` NSIS）**
+  - SmartScreen：「Windows 已保护你的电脑」，需「更多信息 → 仍要运行」。
+  - 部分杀软可能对未签名安装包误报。
+
+因此：`outputs/installers/` 里刚打出来的包，**默认按未签名 QA 包对待**，除非你已确认本机构建注入了证书、或产物来自配置了 Secrets 的 `desktop-release` CI。
+
+### 正式对外发布前请确认
+
+1. 已配置签名环境变量（见下文「Signing credentials」），或 CI Secrets 齐全。
+2. **Mac**：`codesign -dv --verbose=4 TapMakerWork.app` 可见正式 `Developer ID Application` 与 `TeamIdentifier`；`spctl -a -vv` 可通过；公证完成（`scripts/notarize.cjs` 在提供 Apple 账号变量时执行）。
+3. **Windows**：安装包带 Authenticode（证书表非空）；可用系统属性「数字签名」或签名工具验证。
+4. 上传到 Release 时带齐安装包 + `latest-mac.yml` / `latest.yml` + blockmap（见「Gitee release updates」）。
+
+给下载页 / 群公告写一句即可，例如：
+
+> 请下载带版本号的正式 Release 安装包。若系统提示无法验证开发者或 SmartScreen 拦截，说明当前文件不是已签名正式版，请改从官方 Release 重新下载，不要用同事私自打包的 QA 文件。
+
+---
+
 ## Why a packaged, signed app matters
 
 macOS records Screen Recording and Accessibility consent against the application's stable identity. TapMakerWork uses the fixed bundle ID `com.androidsup.tapmakerwork`; production releases should also be signed with the same Developer ID certificate and notarized. An unpackaged `electron .` process is useful for development, but macOS may show it as Electron and its consent does not reliably carry over to a release build.
@@ -37,12 +77,19 @@ Apple's packaging tools only run on macOS. A Mac can generate both targets in on
 
 For a reliable two-platform release, push a `v*` tag or manually run `.github/workflows/desktop-release.yml`. It executes the same build on native macOS and Windows runners and uploads both artifact groups.
 
-The scripts disable certificate auto-discovery so duplicate local certificates cannot make a build nondeterministic. Supply explicit release credentials through the standard electron-builder variables:
+### Signing credentials
 
-- macOS: `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`.
-- Windows: a compatible code-signing certificate via `CSC_LINK` and `CSC_KEY_PASSWORD`, or configure the organization's signing service in CI.
+The scripts disable certificate auto-discovery (`CSC_IDENTITY_AUTO_DISCOVERY=false`) so duplicate local certificates cannot make a build nondeterministic. Supply explicit release credentials through the standard electron-builder variables:
 
-Unsigned artifacts are useful for local QA only. A signed macOS build is mandatory for automatic updates and provides the stable identity needed for durable permissions.
+- **macOS**: `CSC_LINK`, `CSC_KEY_PASSWORD`, plus notarization `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`.
+- **Windows**: a compatible Authenticode certificate via `CSC_LINK` and `CSC_KEY_PASSWORD`, or the organization's signing service in CI.
+
+CI mapping in `.github/workflows/desktop-release.yml`:
+
+- macOS runner → `MAC_CSC_LINK` / `MAC_CSC_KEY_PASSWORD` + Apple notarization secrets
+- Windows runner → `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`
+
+**Unsigned artifacts are for local QA only.** Do not publish them as the download that end users should install. A signed (and on macOS, notarized) build is required for a normal install experience, durable Screen Recording / Accessibility consent, and reliable automatic updates.
 
 ## Gitee release updates
 
