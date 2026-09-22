@@ -91,6 +91,26 @@ CI mapping in `.github/workflows/desktop-release.yml`:
 
 **Unsigned artifacts are for local QA only.** Do not publish them as the download that end users should install. A signed (and on macOS, notarized) build is required for a normal install experience, durable Screen Recording / Accessibility consent, and reliable automatic updates.
 
+## 应用内更新（version.json）
+
+仓库根目录 [`version.json`](../version.json) 控制 IDE 版本比对与更新说明（与 `community.json` 同款远程拉取：Gitee raw → GitHub raw → 内置兜底）。
+
+发版时同步修改该文件：
+
+- `latest`：最新版本号（可写 `0.1.1` 或 `v0.1.1`）
+- `title` / `notes`：更新弹窗标题与条目
+- `downloads.macArm64` / `macX64` / `windowsX64`：对应平台安装包直链
+- `downloads.page` / `site`：发行页与官网
+- `force: true`：强制提醒（忽略「暂不更新 / 不再提醒」）
+
+IDE 行为：
+
+- 启动后静默检查；菜单 **帮助 → 检查更新**（`Cmd/Ctrl+Shift+U`）与设置页均可手动检查
+- 有新版本时弹窗：**立即更新**（打开本机平台下载链接）、**暂不更新**（24 小时内不弹）、**不再提醒**（跳过该版本，直到出现更高版本）
+- 「立即更新」优先打开 `version.json` 中的平台直链；若发行版具备 electron-updater 元数据，正式包仍可尝试应用内下载
+
+---
+
 ## Gitee release updates
 
 The desktop app checks the fixed Gitee main repository through `GET /api/v5/repos/AndroidSUP/tap-maker-work/releases/latest`. There is no user-editable update source. A repository with no Release is treated as having no available update.

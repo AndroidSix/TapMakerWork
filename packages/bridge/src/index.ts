@@ -77,8 +77,16 @@ let pendingUiOverrides: UiSidecarOverride[] = [];
 let skippedRuntimePersistence = 0;
 const appliedRuntimeOverrideKeys = new Set<string>();
 
+function runtimeFileChannelOptions(): { projectRoot?: string; projectName?: string } | undefined {
+  if (!project) return undefined;
+  return {
+    ...(project.root ? { projectRoot: project.root } : {}),
+    ...(project.name ? { projectName: project.name } : {})
+  };
+}
+
 function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
-  const status = findRuntimeFileStatus();
+  const status = findRuntimeFileStatus(undefined, runtimeFileChannelOptions());
   if (!status) return undefined;
   if (status.sessionId) {
     if (runtimeFileSessionId && runtimeFileSessionId !== status.sessionId) {
@@ -200,6 +208,17 @@ function enqueueRuntimeCommand(command: RuntimeCommandInput): RuntimeCommand {
   const queued = { ...command, id: nextRuntimeCommandId++ } as RuntimeCommand;
   runtimeCommands.push(queued);
   if (runtimeCommands.length > 1_000) runtimeCommands.splice(0, runtimeCommands.length - 1_000);
+  // Maker HttpClient often blocks 127.0.0.1; push patches to savedata immediately.
+  try {
+    const status = findRuntimeFileStatus(undefined, runtimeFileChannelOptions());
+    if (status?.sourcePath) {
+      const cursor = Number(status.cursor || 0);
+      const pending = runtimeCommands.filter((item) => item.id > cursor);
+      writeIdeCommandsFile(status, pending as unknown as Array<Record<string, unknown>>);
+    }
+  } catch {
+    // file channel may be unavailable before the first Runtime heartbeat
+  }
   return queued;
 }
 
@@ -689,12 +708,12 @@ const server = http.createServer(async (request, response) => {
       snapshotSource = useSidecar ? "sidecar" : "conversion";
       const snapshot = editor.reset(baseSnapshot);
       // 打开界面时，若真机已是 live 活树，则优先用真机结构，保证「预览=运行」
-      const fileStatus = findRuntimeFileStatus();
+      const fileStatus = findRuntimeFileStatus(undefined, runtimeFileChannelOptions());
       const runtimeSnap = fileStatus?.snapshot as UiSnapshot | undefined;
       const runtimeText = runtimeSnap?.root ? JSON.stringify(runtimeSnap.root) : "";
       const runtimeLooksLive = Boolean(runtimeSnap?.root)
         && !/loadingScreen|bootProgress|正在加载|正在开辟|渡劫准备/i.test(runtimeText)
-        && /Button|Label|hud|MainShell/i.test(runtimeText);
+        && (/Button|Label|hud|MainShell|NanoVG|"\$backend":"nanovg"/i.test(runtimeText));
       if (runtimeSessionId && runtimeLooksLive && runtimeSnap?.root) {
         try {
           const next = editor.replaceFromRuntime({

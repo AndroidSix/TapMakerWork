@@ -32,6 +32,10 @@ const BOOTSTRAP_END = "-- <<< TapMakerWork live editor (managed)";
 const START_CALL = "TapMakerWorkLiveEditorStart() -- TapMakerWork managed";
 const UPDATE_CALL = "TapMakerWorkLiveEditorUpdate(dt) -- TapMakerWork managed";
 
+/** Maker entries use either VariantMap method or index+GetFloat for TimeStep. */
+const TIME_STEP_DT_LINE =
+  /local\s+dt\s*=\s*(?:eventData:GetFloat\(["']TimeStep["']\)|eventData\[["']TimeStep["']\]:GetFloat\(\))/;
+
 function editorUpdateIsInScope(source: string): boolean {
   const definedAt = source.indexOf("local function TapMakerWorkLiveEditorUpdate");
   const calledAt = source.indexOf(UPDATE_CALL);
@@ -97,11 +101,19 @@ local function TapMakerWorkLiveEditorStart()
         print("[TapMakerWork] live editor unavailable: " .. tostring(okBridge and UI or bridge))
         return
     end
+    local projectName = nil
+    do
+        local okCfg, cfg = pcall(require, "Config")
+        if okCfg and type(cfg) == "table" then
+            projectName = cfg.TITLE or cfg.Name or cfg.APP_NAME or cfg.PRODUCT_NAME
+        end
+    end
     tapMakerWorkLiveEditor_ = bridge
     bridge.Start({
         url = "http://127.0.0.1:43121",
         pollInterval = 0.05,
         snapshotInterval = 0.35,
+        projectName = projectName,
         rootProvider = function() return UI.GetRoot() end,
     })
 end
@@ -125,11 +137,19 @@ local function TapMakerWorkLiveEditorStart()
         print("[TapMakerWork] NanoVG live editor unavailable: " .. tostring(bridge))
         return
     end
+    local projectName = nil
+    do
+        local okCfg, cfg = pcall(require, "Config")
+        if okCfg and type(cfg) == "table" then
+            projectName = cfg.TITLE or cfg.Name or cfg.APP_NAME or cfg.PRODUCT_NAME
+        end
+    end
     tapMakerWorkLiveEditor_ = bridge
     bridge.Start({
         url = "http://127.0.0.1:43121",
         pollInterval = 0.05,
         snapshotInterval = 0.35,
+        projectName = projectName,
     })
 end
 
@@ -162,6 +182,19 @@ function findRepoRoot(fromDir: string): string {
   return fromDir;
 }
 
+function extractManagedBootstrap(source: string): string | undefined {
+  const start = source.indexOf(BOOTSTRAP_START);
+  const end = source.indexOf(BOOTSTRAP_END);
+  if (start < 0 || end < start) return undefined;
+  let cut = end + BOOTSTRAP_END.length;
+  while (source[cut] === "\r" || source[cut] === "\n") cut += 1;
+  return source.slice(start, cut);
+}
+
+function normalizeBootstrapText(value: string): string {
+  return value.replace(/\r\n/g, "\n").trim();
+}
+
 export function installRuntimeAdapter(options: {
   bridgePackageRoot: string;
   projectRoot: string;
@@ -176,28 +209,32 @@ export function installRuntimeAdapter(options: {
 
   const entryPath = resolveMakerClientEntry(projectRoot);
   const original = fs.readFileSync(entryPath, "utf8");
+  const expectedBootstrap = bootstrapFor(backend);
+  const currentBootstrap = extractManagedBootstrap(original);
+  const bootstrapCurrent = Boolean(currentBootstrap)
+    && normalizeBootstrapText(currentBootstrap!) === normalizeBootstrapText(expectedBootstrap);
   const alreadyManaged = editorUpdateIsInScope(original)
     && original.includes(BOOTSTRAP_START)
     && original.includes(START_CALL)
     && original.includes(UPDATE_CALL)
-    && entryMatchesBackend(original, backend);
+    && entryMatchesBackend(original, backend)
+    && bootstrapCurrent;
   let next = alreadyManaged ? original : stripManagedEditor(original);
 
   if (!alreadyManaged) {
     const hasAppInit = /\bapp_:Init\(\)/.test(next);
     const hasStart = /\bfunction\s+Start\s*\(/.test(next);
     if (!hasAppInit && !hasStart) throw new Error("runtime_adapter_start_hook_not_found");
-    if (!/local\s+dt\s*=\s*eventData:GetFloat\(["']TimeStep["']\)/.test(next)) {
+    if (!TIME_STEP_DT_LINE.test(next)) {
       throw new Error("runtime_adapter_update_hook_not_found");
     }
 
-    const bootstrap = bootstrapFor(backend);
     if (!/\bfunction\s+Start\s*\(/.test(next)) throw new Error("maker_start_function_not_found");
-    next = `${bootstrap}${next}`;
+    next = `${expectedBootstrap}${next}`;
     if (hasAppInit) next = next.replace(/(\bapp_:Init\(\)[^\n]*\n)/, `$1    ${START_CALL}\n`);
     else next = next.replace(/(\bfunction\s+Start\s*\([^)]*\)[^\n]*\n)/, `$1    ${START_CALL}\n`);
     next = next.replace(
-      /(local\s+dt\s*=\s*eventData:GetFloat\(["']TimeStep["']\)[^\n]*\n)/,
+      new RegExp(`(${TIME_STEP_DT_LINE.source}[^\\n]*\\n)`),
       `$1    ${UPDATE_CALL}\n`
     );
   }

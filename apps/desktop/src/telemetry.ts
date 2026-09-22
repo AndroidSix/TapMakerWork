@@ -2,22 +2,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-export type TelemetryProp = string | number | boolean | null;
-export type TelemetryProps = Record<string, TelemetryProp>;
-
-export interface TelemetryEvent {
-  name: string;
-  ts: string;
-  sessionId: string;
-  installId: string;
-  appVersion: string;
-  platform: string;
-  props: TelemetryProps;
-}
-
 export interface TelemetrySummary {
   enabled: boolean;
-  endpoint: string;
+  provider: "gamealgo";
   installId: string;
   sessionId: string;
   sessionMs: number;
@@ -25,9 +12,6 @@ export interface TelemetrySummary {
   lifetimeActiveMs: number;
   lifetimeSessionMs: number;
   sessionCount: number;
-  pendingEvents: number;
-  lastFlushAt?: string | undefined;
-  lastFlushError?: string | undefined;
 }
 
 export interface TelemetryPersistedState {
@@ -35,15 +19,7 @@ export interface TelemetryPersistedState {
   lifetimeActiveMs: number;
   lifetimeSessionMs: number;
   sessionCount: number;
-  lastFlushAt?: string | undefined;
-  lastFlushError?: string | undefined;
 }
-
-const MAX_QUEUE = 500;
-const FLUSH_BATCH = 40;
-const HEARTBEAT_MS = 60_000;
-const FLUSH_INTERVAL_MS = 90_000;
-const ALLOWED_EVENT = /^[a-z][a-z0-9_.]{1,63}$/;
 
 export function createInstallId(): string {
   return crypto.randomUUID();
@@ -51,20 +27,6 @@ export function createInstallId(): string {
 
 export function createSessionId(): string {
   return crypto.randomUUID();
-}
-
-export function sanitizeProps(input: Record<string, unknown> | undefined): TelemetryProps {
-  const out: TelemetryProps = {};
-  if (!input) return out;
-  for (const [key, value] of Object.entries(input)) {
-    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,31}$/.test(key)) continue;
-    if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      if (typeof value === "string") out[key] = value.slice(0, 120);
-      else if (typeof value === "number") out[key] = Number.isFinite(value) ? value : null;
-      else out[key] = value;
-    }
-  }
-  return out;
 }
 
 export function formatDurationMs(ms: number): string {
@@ -84,9 +46,7 @@ export function readPersistedState(filePath: string): TelemetryPersistedState {
       installId: typeof raw.installId === "string" && raw.installId ? raw.installId : createInstallId(),
       lifetimeActiveMs: Number(raw.lifetimeActiveMs) > 0 ? Number(raw.lifetimeActiveMs) : 0,
       lifetimeSessionMs: Number(raw.lifetimeSessionMs) > 0 ? Number(raw.lifetimeSessionMs) : 0,
-      sessionCount: Number(raw.sessionCount) > 0 ? Number(raw.sessionCount) : 0,
-      ...(typeof raw.lastFlushAt === "string" ? { lastFlushAt: raw.lastFlushAt } : {}),
-      ...(typeof raw.lastFlushError === "string" ? { lastFlushError: raw.lastFlushError } : {})
+      sessionCount: Number(raw.sessionCount) > 0 ? Number(raw.sessionCount) : 0
     };
   } catch {
     return {
@@ -103,84 +63,32 @@ export function writePersistedState(filePath: string, state: TelemetryPersistedS
   fs.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
-export function appendQueue(filePath: string, events: TelemetryEvent[]): void {
-  if (events.length === 0) return;
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.appendFileSync(filePath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
-}
-
-export function readQueue(filePath: string): TelemetryEvent[] {
-  try {
-    const text = fs.readFileSync(filePath, "utf8");
-    return text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        try {
-          return JSON.parse(line) as TelemetryEvent;
-        } catch {
-          return undefined;
-        }
-      })
-      .filter((event): event is TelemetryEvent => Boolean(event?.name));
-  } catch {
-    return [];
-  }
-}
-
-export function rewriteQueue(filePath: string, events: TelemetryEvent[]): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  if (events.length === 0) {
-    if (fs.existsSync(filePath)) fs.writeFileSync(filePath, "", "utf8");
-    return;
-  }
-  const trimmed = events.slice(-MAX_QUEUE);
-  fs.writeFileSync(filePath, `${trimmed.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
-}
-
 export interface TelemetryControllerOptions {
   userDataPath: string;
-  appVersion: string;
-  platform: string;
   enabled: boolean;
-  endpoint?: string | undefined;
-  fetchImpl?: typeof fetch;
   now?: () => number;
-  log?: (message: string) => void;
+  onSessionEnd?: (payload: { session_ms: number; active_ms: number }) => void;
 }
 
+/** Local session/active duration only. Product events go through GameAlgo in the renderer. */
 export class TelemetryController {
   readonly sessionId = createSessionId();
   private readonly statePath: string;
-  private readonly queuePath: string;
-  private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
-  private readonly log: (message: string) => void;
-  private readonly appVersion: string;
-  private readonly platform: string;
+  private readonly onSessionEnd: ((payload: { session_ms: number; active_ms: number }) => void) | undefined;
   private enabled: boolean;
-  private endpoint: string;
   private state: TelemetryPersistedState;
   private sessionStartedAt: number;
   private activeStartedAt: number | undefined;
   private activeMs = 0;
   private focused = false;
-  private heartbeatTimer: NodeJS.Timeout | undefined;
-  private flushTimer: NodeJS.Timeout | undefined;
-  private flushing = false;
-  private pendingMemory: TelemetryEvent[] = [];
+  private running = false;
 
   constructor(options: TelemetryControllerOptions) {
     this.statePath = path.join(options.userDataPath, "telemetry-state.json");
-    this.queuePath = path.join(options.userDataPath, "telemetry-queue.jsonl");
-    this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? Date.now;
-    this.log = options.log ?? (() => undefined);
-    this.appVersion = options.appVersion;
-    this.platform = options.platform;
+    this.onSessionEnd = options.onSessionEnd;
     this.enabled = options.enabled;
-    this.endpoint = (options.endpoint || "").trim();
     this.state = readPersistedState(this.statePath);
     this.sessionStartedAt = this.now();
     writePersistedState(this.statePath, this.state);
@@ -188,33 +96,22 @@ export class TelemetryController {
 
   start(): void {
     if (!this.enabled) return;
-    this.track("app.launch", {
-      session_count: this.state.sessionCount + 1,
-      lifetime_active_ms: this.state.lifetimeActiveMs
-    });
+    this.running = true;
     this.setFocused(true);
-    this.heartbeatTimer = setInterval(() => this.heartbeat(), HEARTBEAT_MS);
-    this.flushTimer = setInterval(() => void this.flush(), FLUSH_INTERVAL_MS);
   }
 
   stop(): void {
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    if (this.flushTimer) clearInterval(this.flushTimer);
-    this.heartbeatTimer = undefined;
-    this.flushTimer = undefined;
     this.setFocused(false);
     const sessionMs = this.sessionMs();
-    if (this.enabled) {
-      this.track("app.quit", {
-        session_ms: sessionMs,
-        active_ms: Math.round(this.activeMs)
-      });
-      this.state.lifetimeActiveMs += Math.round(this.activeMs);
+    const activeMs = Math.round(this.activeMs);
+    if (this.enabled && this.running) {
+      this.state.lifetimeActiveMs += activeMs;
       this.state.lifetimeSessionMs += sessionMs;
       this.state.sessionCount += 1;
       writePersistedState(this.statePath, this.state);
+      this.onSessionEnd?.({ session_ms: sessionMs, active_ms: activeMs });
     }
-    void this.flush(true);
+    this.running = false;
   }
 
   setEnabled(enabled: boolean): TelemetrySummary {
@@ -222,29 +119,13 @@ export class TelemetryController {
     if (next === this.enabled) return this.summary();
     this.enabled = next;
     if (next) {
+      this.running = true;
       this.sessionStartedAt = this.now();
       this.activeMs = 0;
       this.activeStartedAt = this.focused ? this.now() : undefined;
-      this.track("telemetry.enabled", {});
-      if (!this.heartbeatTimer) this.heartbeatTimer = setInterval(() => this.heartbeat(), HEARTBEAT_MS);
-      if (!this.flushTimer) this.flushTimer = setInterval(() => void this.flush(), FLUSH_INTERVAL_MS);
     } else {
-      this.track("telemetry.disabled", {
-        session_ms: this.sessionMs(),
-        active_ms: Math.round(this.activeMs)
-      });
-      if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-      if (this.flushTimer) clearInterval(this.flushTimer);
-      this.heartbeatTimer = undefined;
-      this.flushTimer = undefined;
-      void this.flush(true);
+      this.running = false;
     }
-    return this.summary();
-  }
-
-  setEndpoint(endpoint: string): TelemetrySummary {
-    this.endpoint = endpoint.trim();
-    if (this.enabled && this.endpoint) void this.flush();
     return this.summary();
   }
 
@@ -257,86 +138,19 @@ export class TelemetryController {
     this.activeStartedAt = focused ? this.now() : undefined;
   }
 
-  track(name: string, props?: Record<string, unknown>): void {
-    if (!this.enabled) return;
-    if (!ALLOWED_EVENT.test(name)) return;
-    const event: TelemetryEvent = {
-      name,
-      ts: new Date(this.now()).toISOString(),
-      sessionId: this.sessionId,
-      installId: this.state.installId,
-      appVersion: this.appVersion,
-      platform: this.platform,
-      props: sanitizeProps(props)
-    };
-    this.pendingMemory.push(event);
-    if (this.pendingMemory.length >= 8) this.persistPending();
-    if (this.pendingMemory.length + readQueue(this.queuePath).length >= FLUSH_BATCH) void this.flush();
-  }
-
   summary(): TelemetrySummary {
-    this.persistPending();
-    const queued = readQueue(this.queuePath).length;
+    const live = this.enabled && this.running;
     return {
       enabled: this.enabled,
-      endpoint: this.endpoint,
+      provider: "gamealgo",
       installId: this.state.installId,
       sessionId: this.sessionId,
-      sessionMs: this.sessionMs(),
-      activeMs: this.currentActiveMs(),
-      lifetimeActiveMs: this.state.lifetimeActiveMs + (this.enabled ? this.currentActiveMs() : 0),
-      lifetimeSessionMs: this.state.lifetimeSessionMs + (this.enabled ? this.sessionMs() : 0),
-      sessionCount: this.state.sessionCount + (this.enabled ? 1 : 0),
-      pendingEvents: queued,
-      ...(this.state.lastFlushAt ? { lastFlushAt: this.state.lastFlushAt } : {}),
-      ...(this.state.lastFlushError ? { lastFlushError: this.state.lastFlushError } : {})
+      sessionMs: live ? this.sessionMs() : 0,
+      activeMs: live ? this.currentActiveMs() : 0,
+      lifetimeActiveMs: this.state.lifetimeActiveMs + (live ? this.currentActiveMs() : 0),
+      lifetimeSessionMs: this.state.lifetimeSessionMs + (live ? this.sessionMs() : 0),
+      sessionCount: this.state.sessionCount + (live ? 1 : 0)
     };
-  }
-
-  async flush(force = false): Promise<{ ok: boolean; sent: number; error?: string }> {
-    if (this.flushing) return { ok: true, sent: 0 };
-    this.persistPending();
-    const queue = readQueue(this.queuePath);
-    if (queue.length === 0) return { ok: true, sent: 0 };
-    if (!this.endpoint) {
-      if (queue.length > MAX_QUEUE) rewriteQueue(this.queuePath, queue.slice(-MAX_QUEUE));
-      return { ok: true, sent: 0 };
-    }
-    if (!force && queue.length < 5) return { ok: true, sent: 0 };
-    this.flushing = true;
-    const batch = queue.slice(0, FLUSH_BATCH);
-    try {
-      const response = await this.fetchImpl(this.endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json", "user-agent": `TapMakerWork/${this.appVersion}` },
-        body: JSON.stringify({
-          schemaVersion: 1,
-          sentAt: new Date(this.now()).toISOString(),
-          events: batch
-        })
-      });
-      if (!response.ok) throw new Error(`telemetry_http_${response.status}`);
-      rewriteQueue(this.queuePath, queue.slice(batch.length));
-      this.state.lastFlushAt = new Date(this.now()).toISOString();
-      delete this.state.lastFlushError;
-      writePersistedState(this.statePath, this.state);
-      return { ok: true, sent: batch.length };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.state.lastFlushError = message.slice(0, 200);
-      writePersistedState(this.statePath, this.state);
-      this.log(`telemetry flush failed: ${message}`);
-      return { ok: false, sent: 0, error: message };
-    } finally {
-      this.flushing = false;
-    }
-  }
-
-  private heartbeat(): void {
-    this.track("session.heartbeat", {
-      session_ms: this.sessionMs(),
-      active_ms: this.currentActiveMs()
-    });
   }
 
   private sessionMs(): number {
@@ -346,13 +160,5 @@ export class TelemetryController {
   private currentActiveMs(): number {
     const live = this.focused && this.activeStartedAt !== undefined ? Math.max(0, this.now() - this.activeStartedAt) : 0;
     return Math.round(this.activeMs + live);
-  }
-
-  private persistPending(): void {
-    if (this.pendingMemory.length === 0) return;
-    const batch = this.pendingMemory.splice(0, this.pendingMemory.length);
-    appendQueue(this.queuePath, batch);
-    const queue = readQueue(this.queuePath);
-    if (queue.length > MAX_QUEUE) rewriteQueue(this.queuePath, queue.slice(-MAX_QUEUE));
   }
 }

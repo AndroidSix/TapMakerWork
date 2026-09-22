@@ -23,6 +23,7 @@ local state = {
     widgetById = {},
     nextWidgetId = 0,
     revision = 0,
+    projectName = nil,
 }
 
 local METHOD = {
@@ -132,6 +133,7 @@ local function writeStatus()
         revision = state.revision,
         transport = "file+http",
         url = state.url,
+        projectName = state.projectName,
         lastHttpError = state.lastHttpError,
         lastCommandError = state.lastCommandError,
         lastCommandResult = state.lastCommandResult,
@@ -440,9 +442,12 @@ function Bridge.Start(options)
     state.pollInterval = math.max(0.016, tonumber(options.pollInterval) or state.pollInterval)
     state.snapshotInterval = math.max(0.1, tonumber(options.snapshotInterval) or state.snapshotInterval)
     state.sessionId = options.sessionId or tostring(os.time())
+    if type(options.projectName) == "string" and options.projectName ~= "" then
+        state.projectName = options.projectName
+    end
     writeStatus()
     Bridge.PushSnapshot()
-    request("POST", "/api/runtime/hello", { sessionId = state.sessionId, frames = false })
+    request("POST", "/api/runtime/hello", { sessionId = state.sessionId, frames = false, projectName = state.projectName })
 end
 
 function Bridge.Update(dt)

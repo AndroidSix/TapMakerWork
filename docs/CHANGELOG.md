@@ -1,5 +1,16 @@
 # Change log
 
+## 2026-09-22 — app update manifest
+
+- Added root `version.json` for IDE version comparison, release notes and per-platform download URLs (Gitee/GitHub raw, same pattern as `community.json`).
+- Desktop update flow now prompts with **立即更新 / 暂不更新 / 不再提醒**, plus menu **帮助 → 检查更新**.
+
+## 2026-09-22 — GameAlgo IDE telemetry
+
+- Switched anonymous usage analytics to the domestic GameAlgo Web SDK (`@gamealgo/web`); product events and milestones report with `platform=web`.
+- Removed the local Node telemetry receiver, custom HTTP endpoint, and leftover main-process flush stubs; Settings keep an opt-out switch and local session/active duration.
+- Registered IDE custom events in the GameAlgo catalog and linked the admin dashboard from Settings.
+
 ## 2026-09-22 — NanoVG Runtime adapter
 
 - Added `TapMakerWorkNanoVGBridge.lua`: proxies global `nvg*` draw calls into a virtual node tree with stable call-site IDs, real AABB hit boxes, live parameter overrides and `.ui.json` persistence — without rewriting game Lua.
@@ -23,8 +34,8 @@
 ## 2026-09-21 — anonymous usage telemetry
 
 - Added opt-out anonymous usage telemetry focused on session duration and active time, with local lifetime totals shown in Settings.
-- Tracks bounded product events (`app.launch` / `app.quit`, project open, preview, live-edit, adapter install, build) without project paths, source or Maker credentials.
-- Added a free local receiver (`npm run telemetry:receiver`) and optional HTTPS / localhost endpoint flush from desktop settings.
+- Tracks bounded product events without project paths, source or Maker credentials.
+- Superseded by the 2026-09-22 GameAlgo Web SDK integration (local HTTP receiver removed).
 
 ## 2026-09-21 — desktop delivery, permissions and updates
 

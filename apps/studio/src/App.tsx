@@ -75,7 +75,8 @@ import {
   Package,
   ShieldCheck,
   Lightbulb,
-  Wrench
+  Wrench,
+  Clock3
 } from "lucide-react";
 import {
   DEFAULT_DEVICE_PROFILES,
@@ -115,8 +116,9 @@ import {
 } from "./NewbieGuide";
 import { rgbaCss, rgbaFromHex, rgbaFromValue, rgbaToHex, type RgbaColor } from "./color-utils";
 import { angleBetween, resizeRect, scaleRatio, snapValue, toolForShortcut, type TransformTool } from "./runtime-transform";
-import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopUpdateState } from "./desktop-api";
+import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopTelemetryState, DesktopUpdateState } from "./desktop-api";
 import { extractRuntimeErrorReport, type RuntimeErrorReport } from "./runtime-error";
+import { flushStudioGameAlgo, initStudioGameAlgo, setStudioGameAlgoEnabled, trackStudioGameAlgo } from "./gamealgo";
 import wechatPayImage from "../../../docs/sponsor/wechat-pay.png";
 
 const BUILTIN_QQ_GROUP_ID = "1124103038";
@@ -1066,6 +1068,52 @@ function PermissionGuide({ state, busy, confirmed, onAction, onClose }: {
   );
 }
 
+function UpdatePromptDialog({
+  state,
+  busy,
+  onUpdate,
+  onSnooze,
+  onMute,
+  onClose
+}: {
+  state: DesktopUpdateState;
+  busy: string;
+  onUpdate: () => void;
+  onSnooze: () => void;
+  onMute: () => void;
+  onClose: () => void;
+}) {
+  return <div className="legal-backdrop update-prompt-backdrop" role="presentation">
+    <section className="sponsor-dialog update-prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="update-prompt-title">
+      <header>
+        <div>
+          <span>应用更新</span>
+          <h2 id="update-prompt-title">{state.title || `发现新版本 ${state.availableVersion || ""}`}</h2>
+          <p>当前 {state.currentVersion} → 可更新 {state.availableVersion}。立即更新将打开对应平台安装包下载页。</p>
+        </div>
+        <button className="icon-command" aria-label="关闭更新提示" onClick={onClose}><XCircle size={18} /></button>
+      </header>
+      <div className="update-prompt-body">
+        {(state.notes && state.notes.length > 0) ? (
+          <ul className="update-notes">
+            {state.notes.map((note) => <li key={note}>{note}</li>)}
+          </ul>
+        ) : (
+          <p className="desktop-card-note">请下载并安装新版本后重启 TapMakerWork。</p>
+        )}
+        {state.message && <p className="desktop-card-note" role="status">{state.message}</p>}
+      </div>
+      <footer>
+        <button disabled={Boolean(busy) || Boolean(state.force)} onClick={onMute}>不再提醒</button>
+        <button disabled={Boolean(busy) || Boolean(state.force)} onClick={onSnooze}>暂不更新</button>
+        <button className="primary" disabled={Boolean(busy)} onClick={onUpdate}>
+          <Download size={13} />立即更新
+        </button>
+      </footer>
+    </section>
+  </div>;
+}
+
 function LegalConsentDialog({ state, busy, onAccept, onDecline, onClose }: {
   state: DesktopLegalState | undefined;
   busy: "accept" | "decline" | "";
@@ -1333,9 +1381,12 @@ export function App() {
   const [permissionConfirmed, setPermissionConfirmed] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState>();
   const [desktopUpdateBusy, setDesktopUpdateBusy] = useState("");
+  const [updatePromptOpen, setUpdatePromptOpen] = useState(false);
   const [desktopHardware, setDesktopHardware] = useState<DesktopHardwareAccelerationState>();
   const [hardwareBusy, setHardwareBusy] = useState(false);
   const [desktopLegal, setDesktopLegal] = useState<DesktopLegalState>();
+  const [desktopTelemetry, setDesktopTelemetry] = useState<DesktopTelemetryState>();
+  const [telemetryBusy, setTelemetryBusy] = useState(false);
   const [legalDialogOpen, setLegalDialogOpen] = useState(Boolean(window.tapMakerWork?.legal));
   const [legalBusy, setLegalBusy] = useState<"accept" | "decline" | "">("");
   const [workflow, setWorkflow] = useState<ProjectWorkflowOverview>();
@@ -1369,7 +1420,7 @@ export function App() {
   }, []);
 
   const trackTelemetry = useCallback((name: string, props?: Record<string, unknown>) => {
-    void window.tapMakerWork?.telemetry?.track(name, props).catch(() => undefined);
+    trackStudioGameAlgo(name, props);
   }, []);
   const qrCloseTimer = useRef<number | null>(null);
   const copyInFlightRef = useRef(false);
@@ -1543,7 +1594,8 @@ export function App() {
     const updatesApi = window.tapMakerWork?.updates;
     const hardwareApi = window.tapMakerWork?.hardwareAcceleration;
     const legalApi = window.tapMakerWork?.legal;
-    if (!permissionsApi && !updatesApi && !hardwareApi && !legalApi) return;
+    const telemetryApi = window.tapMakerWork?.telemetry;
+    if (!permissionsApi && !updatesApi && !hardwareApi && !legalApi && !telemetryApi) return;
     let active = true;
     if (permissionsApi) {
       void permissionsApi.get().then((state) => {
@@ -1574,6 +1626,18 @@ export function App() {
         if (active) toast(`无法读取用户协议状态：${error instanceof Error ? error.message : String(error)}`, "error");
       });
     }
+    if (telemetryApi) {
+      void telemetryApi.get().then(async (state) => {
+        if (!active) return;
+        setDesktopTelemetry(state);
+        await initStudioGameAlgo({
+          enabled: state.enabled,
+          gameKey: state.gameKey,
+          appVersion: typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.1.0",
+          isDebug: import.meta.env.DEV
+        });
+      }).catch(() => undefined);
+    }
     const removePermissionListener = permissionsApi?.onChanged((state) => {
       setDesktopPermissions(state);
       if (state.ready) {
@@ -1584,10 +1648,39 @@ export function App() {
     const removeUpdateListener = updatesApi?.onState((state) => {
       setDesktopUpdate(state);
     });
+    const removeUpdatePromptListener = updatesApi?.onPrompt((state) => {
+      setDesktopUpdate(state);
+      if (state.phase === "available") {
+        setUpdatePromptOpen(true);
+      } else if (state.phase === "up-to-date") {
+        setUpdatePromptOpen(false);
+        toast(state.message || "当前已是最新版本", "success");
+      } else if (state.phase === "error") {
+        toast(state.message || "检查更新失败", "error");
+      }
+    });
+    const removeTrackListener = telemetryApi?.onTrack?.((name, props) => {
+      trackStudioGameAlgo(name, props);
+    });
+    const removeSessionEndListener = telemetryApi?.onSessionEnd?.((payload) => {
+      trackStudioGameAlgo("ide.session", payload);
+      void flushStudioGameAlgo();
+    });
+    const telemetryTimer = telemetryApi
+      ? window.setInterval(() => {
+        void telemetryApi.get().then((state) => {
+          if (active) setDesktopTelemetry(state);
+        }).catch(() => undefined);
+      }, 15_000)
+      : undefined;
     return () => {
       active = false;
+      if (telemetryTimer) window.clearInterval(telemetryTimer);
       removePermissionListener?.();
       removeUpdateListener?.();
+      removeUpdatePromptListener?.();
+      removeTrackListener?.();
+      removeSessionEndListener?.();
     };
   }, [toast]);
 
@@ -1627,13 +1720,26 @@ export function App() {
     setPermissionGuideOpen(false);
   }, []);
 
-  const runDesktopUpdateAction = useCallback(async (action: "check" | "download" | "restart") => {
+  const runDesktopUpdateAction = useCallback(async (action: "check" | "download" | "restart" | "snooze" | "mute") => {
     const api = window.tapMakerWork?.updates;
     if (!api) return;
     setDesktopUpdateBusy(action);
     try {
       const state = await api[action]();
       setDesktopUpdate(state);
+      if (action === "check") {
+        if (state.phase === "available") setUpdatePromptOpen(true);
+        else if (state.phase === "up-to-date") toast(state.message || "当前已是最新版本", "success");
+        else if (state.phase === "error") toast(state.message || "检查更新失败", "error");
+      } else if (action === "download") {
+        toast(state.message || "已打开下载页", "success");
+      } else if (action === "snooze") {
+        setUpdatePromptOpen(false);
+        toast(state.message || "已暂不更新", "info");
+      } else if (action === "mute") {
+        setUpdatePromptOpen(false);
+        toast(state.message || "已不再提醒此版本", "info");
+      }
     } catch (error) {
       toast(`应用更新失败：${error instanceof Error ? error.message : String(error)}`, "error");
     } finally {
@@ -1664,11 +1770,36 @@ export function App() {
       const state = await api.accept();
       setDesktopLegal(state);
       setLegalDialogOpen(false);
+      trackTelemetry("eula.accept", { version: state.version });
       toast("已接受用户协议与隐私政策", "success");
     } catch (error) {
       toast(`协议状态保存失败：${error instanceof Error ? error.message : String(error)}`, "error");
     } finally {
       setLegalBusy("");
+    }
+  }, [toast, trackTelemetry]);
+
+  const setTelemetryEnabled = useCallback(async (enabled: boolean) => {
+    const api = window.tapMakerWork?.telemetry;
+    if (!api) return;
+    setTelemetryBusy(true);
+    try {
+      const state = await api.setEnabled(enabled);
+      setDesktopTelemetry(state);
+      setStudioGameAlgoEnabled(enabled);
+      if (enabled) {
+        await initStudioGameAlgo({
+          enabled: true,
+          gameKey: state.gameKey,
+          appVersion: typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.1.0",
+          isDebug: false
+        });
+      }
+      toast(enabled ? "已开启 GameAlgo 匿名使用统计" : "已关闭匿名使用统计", "success");
+    } catch (error) {
+      toast(`遥测设置失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setTelemetryBusy(false);
     }
   }, [toast]);
 
@@ -3553,6 +3684,16 @@ export function App() {
   const permissionOverlay = !legalDialogOpen && permissionGuideOpen && desktopPermissions
     ? <PermissionGuide state={desktopPermissions} busy={permissionBusy} confirmed={permissionConfirmed} onAction={(action) => void runPermissionAction(action)} onClose={closePermissionGuide} />
     : null;
+  const updatePromptOverlay = !legalDialogOpen && updatePromptOpen && desktopUpdate?.phase === "available"
+    ? <UpdatePromptDialog
+      state={desktopUpdate}
+      busy={desktopUpdateBusy}
+      onUpdate={() => void runDesktopUpdateAction("download")}
+      onSnooze={() => void runDesktopUpdateAction("snooze")}
+      onMute={() => void runDesktopUpdateAction("mute")}
+      onClose={() => setUpdatePromptOpen(false)}
+    />
+    : null;
 
   if (!projectLoaded || !project) {
     return (
@@ -3582,7 +3723,7 @@ export function App() {
           </div>
           <div className="welcome-decoration" aria-hidden="true"><div /><div /><div /></div>
         </section>
-      </main>{legalOverlay}{projectRejectOverlay}{permissionOverlay}</>
+      </main>{legalOverlay}{projectRejectOverlay}{permissionOverlay}{updatePromptOverlay}</>
     );
   }
 
@@ -3796,6 +3937,14 @@ export function App() {
                   <button onClick={() => { setToolsMenuOpen(false); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
                   <button onClick={() => { setToolsMenuOpen(false); setTipsOpen(true); }}><Lightbulb size={13} />开发技巧</button>
                   <button onClick={() => { setToolsMenuOpen(false); setNewbieGuideOpen(true); }}><Sparkles size={13} />新手引导</button>
+                  {window.tapMakerWork?.updates && (
+                    <button
+                      disabled={Boolean(desktopUpdateBusy) || desktopUpdate?.phase === "checking"}
+                      onClick={() => { setToolsMenuOpen(false); void runDesktopUpdateAction("check"); }}
+                    >
+                      <RefreshCw size={13} />检查更新
+                    </button>
+                  )}
                 </div>
               </section>
               <section>
@@ -3957,6 +4106,34 @@ export function App() {
                 <div className="desktop-card-actions"><button onClick={() => setLegalDialogOpen(true)}>查看 EULA 与隐私政策</button></div>
               </section>
             )}
+            {window.tapMakerWork?.telemetry && desktopTelemetry && (
+              <section className="desktop-system-card" aria-labelledby="telemetry-settings-heading">
+                <div className="desktop-card-heading">
+                  <div>
+                    <h3 id="telemetry-settings-heading">匿名使用统计（GameAlgo）</h3>
+                    <p>上报到国内 GameAlgo。不上传项目路径、源码或 Maker 凭证。本机仍显示使用时长。</p>
+                  </div>
+                  <span className={desktopTelemetry.enabled ? "ready" : "neutral"}>{desktopTelemetry.enabled ? "已开启" : "已关闭"}</span>
+                </div>
+                <label className="settings-switch-row">
+                  <span><Clock3 size={15} /><strong>发送匿名使用统计</strong><small>关闭后停止 GameAlgo 上报；本机累计时长仍可查看。</small></span>
+                  <input type="checkbox" checked={desktopTelemetry.enabled} disabled={telemetryBusy} onChange={(event) => void setTelemetryEnabled(event.target.checked)} />
+                </label>
+                <div className="desktop-permission-rows">
+                  <div><span>本次会话</span><strong>{desktopTelemetry.sessionLabel}</strong></div>
+                  <div><span>本次活跃</span><strong>{desktopTelemetry.activeLabel}</strong></div>
+                  <div><span>累计活跃</span><strong>{desktopTelemetry.lifetimeActiveLabel}</strong></div>
+                  <div><span>累计启动</span><strong>{desktopTelemetry.sessionCount} 次</strong></div>
+                </div>
+                <p className="desktop-card-note">
+                  看板：{desktopTelemetry.dashboardUrl}
+                  {desktopTelemetry.gameKeyConfigured ? " · Client Key 已配置" : " · 缺少 ga_live Client Key"}
+                </p>
+                <div className="desktop-card-actions">
+                  <button onClick={() => window.open(desktopTelemetry.dashboardUrl, "_blank", "noopener,noreferrer")}>打开 GameAlgo 后台</button>
+                </div>
+              </section>
+            )}
             {window.tapMakerWork?.permissions && desktopPermissions && (
               <section className="desktop-system-card" aria-labelledby="desktop-permissions-heading">
                 <div className="desktop-card-heading">
@@ -3986,22 +4163,70 @@ export function App() {
             {window.tapMakerWork?.updates && desktopUpdate && (
               <section className="desktop-system-card" aria-labelledby="desktop-update-heading">
                 <div className="desktop-card-heading">
-                  <div><h3 id="desktop-update-heading">应用更新</h3><p>代码主仓 GitHub · 发行版检查 Gitee · 当前 {desktopUpdate.currentVersion}{desktopUpdate.availableVersion && desktopUpdate.availableVersion !== desktopUpdate.currentVersion ? ` · 可更新 ${desktopUpdate.availableVersion}` : ""}</p></div>
-                  <span className={desktopUpdate.phase === "error" ? "attention" : desktopUpdate.phase === "downloaded" ? "ready" : "neutral"}>
-                    {desktopUpdate.phase === "checking" ? "检查中" : desktopUpdate.phase === "available" ? "有新版本" : desktopUpdate.phase === "downloading" ? "下载中" : desktopUpdate.phase === "downloaded" ? "待重启" : desktopUpdate.phase === "up-to-date" ? "最新" : desktopUpdate.phase === "error" ? "失败" : "就绪"}
+                  <div>
+                    <h3 id="desktop-update-heading">应用更新</h3>
+                    <p>
+                      版本清单 version.json · 当前 {desktopUpdate.currentVersion}
+                      {desktopUpdate.availableVersion && desktopUpdate.availableVersion !== desktopUpdate.currentVersion
+                        ? ` · 可更新 ${desktopUpdate.availableVersion}`
+                        : ""}
+                      {desktopUpdate.source ? ` · 来源 ${desktopUpdate.source}` : ""}
+                    </p>
+                  </div>
+                  <span className={desktopUpdate.phase === "error" ? "attention" : desktopUpdate.phase === "available" ? "ready" : "neutral"}>
+                    {desktopUpdate.phase === "checking" ? "检查中"
+                      : desktopUpdate.phase === "available" ? "有新版本"
+                      : desktopUpdate.phase === "downloading" ? "下载中"
+                      : desktopUpdate.phase === "downloaded" ? "待重启"
+                      : desktopUpdate.phase === "up-to-date" ? "最新"
+                      : desktopUpdate.phase === "error" ? "失败"
+                      : "就绪"}
                   </span>
                 </div>
-                {(desktopUpdate.phase === "downloading" || desktopUpdate.phase === "downloaded") && <div className="update-progress" aria-label={`更新下载 ${Math.round(desktopUpdate.percent || 0)}%`}><i style={{ width: `${desktopUpdate.percent || 0}%` }} /><span>{Math.round(desktopUpdate.percent || 0)}%</span></div>}
-                {desktopUpdate.message && <p className={desktopUpdate.phase === "error" ? "desktop-card-error" : "desktop-card-note"} role="status">{desktopUpdate.message}</p>}
+                {(desktopUpdate.phase === "downloading" || desktopUpdate.phase === "downloaded") && (
+                  <div className="update-progress" aria-label={`更新下载 ${Math.round(desktopUpdate.percent || 0)}%`}>
+                    <i style={{ width: `${desktopUpdate.percent || 0}%` }} />
+                    <span>{Math.round(desktopUpdate.percent || 0)}%</span>
+                  </div>
+                )}
+                {desktopUpdate.notes && desktopUpdate.notes.length > 0 && desktopUpdate.phase === "available" && (
+                  <ul className="update-notes compact">
+                    {desktopUpdate.notes.map((note) => <li key={note}>{note}</li>)}
+                  </ul>
+                )}
+                {desktopUpdate.message && (
+                  <p className={desktopUpdate.phase === "error" ? "desktop-card-error" : "desktop-card-note"} role="status">
+                    {desktopUpdate.message}
+                  </p>
+                )}
                 <div className="desktop-card-actions">
-                  <button disabled={Boolean(desktopUpdateBusy) || desktopUpdate.phase === "checking" || desktopUpdate.phase === "downloading"} onClick={() => void runDesktopUpdateAction("check")}><RefreshCw size={13} className={desktopUpdate.phase === "checking" ? "spin" : ""} />检查更新</button>
-                  {desktopUpdate.phase === "available" && <button className="primary" disabled={Boolean(desktopUpdateBusy)} onClick={() => void runDesktopUpdateAction("download")}><Download size={13} />{desktopUpdate.packaged ? "下载更新" : "打开 Gitee 发行版"}</button>}
-                  {desktopUpdate.phase === "downloaded" && <button className="primary" onClick={() => void runDesktopUpdateAction("restart")}>立即重启安装</button>}
+                  <button
+                    disabled={Boolean(desktopUpdateBusy) || desktopUpdate.phase === "checking" || desktopUpdate.phase === "downloading"}
+                    onClick={() => void runDesktopUpdateAction("check")}
+                  >
+                    <RefreshCw size={13} className={desktopUpdate.phase === "checking" ? "spin" : ""} />检查更新
+                  </button>
+                  {desktopUpdate.phase === "available" && (
+                    <>
+                      <button className="primary" disabled={Boolean(desktopUpdateBusy)} onClick={() => void runDesktopUpdateAction("download")}>
+                        <Download size={13} />立即更新
+                      </button>
+                      <button disabled={Boolean(desktopUpdateBusy) || Boolean(desktopUpdate.force)} onClick={() => void runDesktopUpdateAction("snooze")}>
+                        暂不更新
+                      </button>
+                      <button disabled={Boolean(desktopUpdateBusy) || Boolean(desktopUpdate.force)} onClick={() => void runDesktopUpdateAction("mute")}>
+                        不再提醒
+                      </button>
+                    </>
+                  )}
+                  {desktopUpdate.phase === "downloaded" && (
+                    <button className="primary" onClick={() => void runDesktopUpdateAction("restart")}>立即重启安装</button>
+                  )}
                 </div>
                 <div className="repository-links" aria-label="TapMakerWork 官网与代码仓库">
-                  <button onClick={() => openExternalUrl(OFFICIAL_SITE_URL)}><ExternalLink size={14} />官网</button>
+                  <button onClick={() => openExternalUrl(desktopUpdate.siteUrl || OFFICIAL_SITE_URL)}><ExternalLink size={14} />官网</button>
                   <button onClick={() => openExternalUrl("https://github.com/AndroidSix/TapMakerWork")}><ExternalLink size={14} />GitHub 主仓</button>
-                  <button onClick={() => openExternalUrl("https://gitee.com/AndroidSUP/tap-maker-work")}><ExternalLink size={14} />Gitee 镜像</button>
+                  <button onClick={() => openExternalUrl(desktopUpdate.releaseUrl || "https://gitee.com/AndroidSUP/tap-maker-work/releases")}><ExternalLink size={14} />发行版</button>
                 </div>
               </section>
             )}
@@ -4876,6 +5101,6 @@ export function App() {
         <span>{connected ? "本机连接" : "离线"}</span>
       </footer>
       <ToastStack items={toasts} />
-    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{sponsorOverlay}{roadmapOverlay}{newbieOverlay}{permissionOverlay}</>
+    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{sponsorOverlay}{roadmapOverlay}{newbieOverlay}{permissionOverlay}{updatePromptOverlay}</>
   );
 }
