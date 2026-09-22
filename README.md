@@ -279,7 +279,7 @@ node /absolute/path/to/packages/bridge/dist/mcp.js
 - **不修改**官方 Maker 安装；预览/构建/测试码依赖你本机已安装的官方环境。
 - 商标归 TapTap 及相关权利人所有。
 
-架构与路线图：[ARCHITECTURE.md](./docs/ARCHITECTURE.md) · [ROADMAP.md](./docs/ROADMAP.md) · [CHANGELOG.md](./docs/CHANGELOG.md)
+架构与路线图：[ARCHITECTURE.md](./docs/ARCHITECTURE.md) · [ROADMAP.md](./docs/ROADMAP.md) · [CHANGELOG.md](./docs/CHANGELOG.md) · [ACKNOWLEDGMENTS.md](./docs/ACKNOWLEDGMENTS.md)
 
 ---
 
@@ -316,12 +316,29 @@ node /absolute/path/to/packages/bridge/dist/mcp.js
 
 ---
 
+## 致谢与借鉴
+
+TapMakerWork **版权归属本仓库作者**（见下方许可证），与 **KayingAI** 无隶属、无股权关系。  
+产品思路上参考了第三方开源项目 **KayingCodex**（KayingAI 出品），特此鸣谢；完整说明见 [docs/ACKNOWLEDGMENTS.md](./docs/ACKNOWLEDGMENTS.md)。
+
+| 项 | 链接 |
+|----|------|
+| **KayingCodex 仓库（GitCode）** | [gitcode.com/kayingai/kaying-codex](https://gitcode.com/kayingai/kaying-codex) |
+| **参考提交** | [`fbc60cab`](https://gitcode.com/kayingai/kaying-codex/commit/fbc60cab953b85181d15709635b09be20ccfe8de?ref=main) |
+| **GitHub 镜像** | [github.com/kaying-studio/kaying-codex](https://github.com/kaying-studio/kaying-codex) |
+| **项目主页** | [kayingai.com](https://kayingai.com/) |
+
+KayingCodex / KayingAI 的名称、商标与代码版权仍归其权利人所有。本仓库为面向 TapTap Maker 的独立实现，**不是** KayingCodex 的 fork；借鉴的是工作台组织与交付节奏，未并入其源码。
+
+---
+
 ## 许可证
 
-[MIT License](./LICENSE) © 2026 KayingAI
+[MIT License](./LICENSE) © 2026 androidsup
 
 ```text
 自由使用、修改、分发；保留版权与许可声明即可。
+本仓库版权与 KayingAI / KayingCodex 无关。
 ```
 
 ---
@@ -333,6 +350,8 @@ node /absolute/path/to/packages/bridge/dist/mcp.js
     主仓 · <a href="https://github.com/AndroidSix/TapMakerWork">GitHub</a>
     &nbsp;|&nbsp;
     镜像 · <a href="https://gitee.com/AndroidSUP/tap-maker-work">Gitee</a>
+    &nbsp;|&nbsp;
+    致谢 · <a href="./docs/ACKNOWLEDGMENTS.md">ACKNOWLEDGMENTS</a>
     &nbsp;|&nbsp;
     第三方工具 · 非 TapTap 官方
   </sub>
