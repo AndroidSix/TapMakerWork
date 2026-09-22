@@ -8,6 +8,8 @@
 
 修改 IDE 源码后，双击 `Package-TapMakerWork-All.command` 可一次生成 macOS 与 Windows 安装包。
 
+> 一键打包默认多为**未签名 QA 包**，仅供本机/团队验证。给普通用户下载前请按 `docs/DESKTOP_RELEASE.md` 配置签名与公证；未签名包安装时会触发系统拦截，不要当正式 Release 分发。
+
 首次运行时输入 Maker 项目的绝对路径，或把项目文件夹拖进终端窗口再按回车。启动器会记住该路径。也可以将项目文件夹直接拖到启动器图标上。
 
 如果 macOS 阻止打开，可在 Finder 中右键启动器，选择“打开”。
@@ -17,6 +19,8 @@
 双击 `TapMakerWork-Windows.cmd`。
 
 修改 IDE 源码后，双击 `Package-TapMakerWork-All.cmd` 可生成 Windows 安装包。macOS 安装包受 Apple 工具链限制，请在 Mac 上运行双端脚本，或在代码托管页面手动触发 `desktop-release` 工作流。
+
+> 未配置 `WIN_CSC_*` 时生成的 `.exe` 无 Authenticode 签名，普通用户易被 SmartScreen 拦截，仅作内部测试；对外说明见 `docs/DESKTOP_RELEASE.md`。
 
 首次运行时输入 Maker 项目的绝对路径。启动器会记住该路径。也可以将项目文件夹直接拖到 `.cmd` 文件上。
 

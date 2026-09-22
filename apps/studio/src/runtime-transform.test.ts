@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { UiNode } from "@tapmakerwork/protocol";
 import { collectRuntimeBoxes } from "./RuntimeMirror.js";
 import { groupCenter, resizeRect, rotatePoint, scaleRatio, snapValue, toggleSelection, toolForShortcut } from "./runtime-transform.js";
+import { clipRectToSpace, runtimeCoordinateSpace, runtimeHitCandidates } from "./runtime-hit-test.js";
 
 describe("runtime transform helpers", () => {
   it("matches the Cocos transform shortcuts", () => {
@@ -50,5 +51,26 @@ describe("runtime hit order", () => {
     expect(layerOf("popup-button")).toBeGreaterThan(layerOf("deep-button"));
     expect(layerOf("popup")).toBeLessThan(layerOf("deep-button"));
     expect(layerOf("deep-button")).toBeGreaterThan(layerOf("panel"));
+  });
+
+  it("prefers specific front controls and keeps tiny nodes selectable", () => {
+    const space = { width: 720, height: 1280, source: "physical" as const };
+    const candidates = runtimeHitCandidates([
+      { id: "root", x: 0, y: 0, w: 720, h: 1280, depth: 0, layer: 0, order: 0 },
+      { id: "button", x: 100, y: 100, w: 180, h: 50, depth: 2, layer: 2, order: 1 },
+      { id: "icon", x: 270, y: 110, w: 8, h: 8, depth: 3, layer: 3, order: 2 }
+    ], { x: 278, y: 114 }, space, 8);
+    expect(candidates.map((candidate) => candidate.id)).toEqual(["icon", "button"]);
+  });
+
+  it("uses physical viewport coordinates when engine rectangles are physical", () => {
+    const root = { x: 0, y: 0, w: 720, h: 1280 };
+    const snapshot = {
+      revision: 1,
+      root: node("root", [], root),
+      viewport: { width: 360, height: 640, scale: 2, physicalWidth: 720, physicalHeight: 1280 }
+    };
+    expect(runtimeCoordinateSpace(snapshot, root)).toEqual({ width: 720, height: 1280, source: "physical" });
+    expect(clipRectToSpace({ x: -10, y: 100, w: 40, h: 50 }, { width: 720, height: 1280, source: "physical" })).toEqual({ x: 0, y: 100, w: 30, h: 50 });
   });
 });

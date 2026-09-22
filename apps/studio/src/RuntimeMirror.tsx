@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import { BoxSelect, CirclePlay, Crosshair, Magnet, MonitorUp, MousePointer2, Move, RefreshCw, RotateCw, Scaling, Unplug, WandSparkles } from "lucide-react";
 import type { UiNode, UiSnapshot, UiValue, WorkspaceMode } from "@tapmakerwork/protocol";
 import { angleBetween, groupCenter, rectCenter, resizeRect, rotatePoint, scaleRatio, snapValue, toolForShortcut, type Point, type Rect, type TransformTool } from "./runtime-transform";
+import { clipRectToSpace, runtimeCoordinateSpace, runtimeHitCandidates, stagePoint } from "./runtime-hit-test";
+import { CoachMark } from "./NewbieGuide";
 
 interface RuntimeMirrorProps {
   runtimeLive: boolean;
@@ -16,6 +18,8 @@ interface RuntimeMirrorProps {
   selectedIds: string[];
   editRevision: number;
   mode: WorkspaceMode;
+  coachRuntimeStart?: boolean;
+  onCoachRuntimeStartDone?: () => void;
   onModeChange: (mode: WorkspaceMode) => void;
   onStart: () => void;
   onInstallAdapter: () => void;
@@ -26,7 +30,7 @@ interface RuntimeMirrorProps {
 }
 
 type Candidate = { id: string; name: string };
-type RuntimeBox = Rect & { id: string; name: string; type: string; depth: number; layer: number; parentId?: string | undefined; props: Record<string, UiValue> };
+type RuntimeBox = Rect & { id: string; name: string; type: string; depth: number; layer: number; order: number; parentId?: string | undefined; props: Record<string, UiValue> };
 type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 type TransformDraft = { rect: Rect; rotate: number; scale: number };
 type StageSize = { width: number; height: number };
@@ -84,7 +88,7 @@ export function collectRuntimeBoxes(root: UiNode): RuntimeBox[] {
     if (rect && node.props.visible !== false) {
       const container = screen ? isContainer(rect, screen) : false;
       const layer = inOverlay && !container ? 8000 + depth : depth;
-      boxes.push({ ...rect, id: node.id, name: node.name, type: node.type, depth, layer, parentId, props: node.props });
+      boxes.push({ ...rect, id: node.id, name: node.name, type: node.type, depth, layer, order: boxes.length, parentId, props: node.props });
     }
     for (const child of Array.isArray(node.children) ? node.children : []) visit(child, depth + 1, node.id, inOverlay);
   };
@@ -105,16 +109,17 @@ function transformScale(props: Record<string, UiValue>): number {
 function transformPatch(
   item: DragState["boxes"][number],
   current: TransformDraft,
-  kind: DragState["kind"]
+  kind: DragState["kind"],
+  logicalScale: Point
 ): Record<string, UiValue> {
   const props: Record<string, UiValue> = {
     position: "absolute",
-    left: Math.round(current.rect.x - (item.parent?.x || 0)),
-    top: Math.round(current.rect.y - (item.parent?.y || 0))
+    left: Math.round((current.rect.x - (item.parent?.x || 0)) * logicalScale.x),
+    top: Math.round((current.rect.y - (item.parent?.y || 0)) * logicalScale.y)
   };
   if (kind === "move" || kind === "resize") {
-    props.width = Math.round(current.rect.w);
-    props.height = Math.round(current.rect.h);
+    props.width = Math.round(current.rect.w * logicalScale.x);
+    props.height = Math.round(current.rect.h * logicalScale.y);
   }
   if (kind === "rotate") props.rotate = Math.round(current.rotate * 10) / 10;
   if (kind === "scale") {
@@ -140,6 +145,8 @@ export function RuntimeMirror({
   selectedIds,
   editRevision,
   mode,
+  coachRuntimeStart = false,
+  onCoachRuntimeStartDone,
   onModeChange,
   onStart,
   onInstallAdapter,
@@ -170,15 +177,20 @@ export function RuntimeMirror({
   const livePatchChainRef = useRef<Promise<void>>(Promise.resolve());
   const [stageSizes, setStageSizes] = useState<{ editor?: StageSize; live?: StageSize }>({});
   const [frameAspect, setFrameAspect] = useState(0);
+  const [hoveredId, setHoveredId] = useState<string>();
+  const [hitCount, setHitCount] = useState(0);
+  const hitCycleRef = useRef<{ x: number; y: number; ids: string[]; index: number; at: number } | undefined>(undefined);
 
   const boxes = useMemo(() => snapshot && snapshotSource === "runtime" ? collectRuntimeBoxes(snapshot.root) : [], [snapshot, snapshotSource]);
   const boxMap = useMemo(() => new Map(boxes.map((box) => [box.id, box])), [boxes]);
   const selected = snapshot?.selectedId ? boxMap.get(snapshot.selectedId) : undefined;
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const rootRect = asRect(snapshot?.root.props.$screen);
-  const viewport = {
-    width: snapshot?.viewport?.width || rootRect?.w || (orientation === "portrait" ? 390 : 844),
-    height: snapshot?.viewport?.height || rootRect?.h || (orientation === "portrait" ? 844 : 390)
+  const coordinateSpace = runtimeCoordinateSpace(snapshot, rootRect);
+  const viewport = { width: coordinateSpace.width, height: coordinateSpace.height };
+  const logicalScale = {
+    x: snapshot?.viewport?.width ? snapshot.viewport.width / Math.max(1, coordinateSpace.width) : 1,
+    y: snapshot?.viewport?.height ? snapshot.viewport.height / Math.max(1, coordinateSpace.height) : 1
   };
   const editable = runtimeLive && runtimeConnected && snapshotSource === "runtime" && boxes.length > 0;
   const stageRatio = snapshotSource === "runtime" && viewport.height > 0
@@ -349,7 +361,7 @@ export function RuntimeMirror({
             .then(async () => {
               for (const item of activeDrag.boxes) {
                 const current = latestDrafts[item.box.id] || item.start;
-                await onPatch(item.box.id, transformPatch(item, current, activeDrag.kind), { historyGroup: activeDrag.historyGroup });
+                await onPatch(item.box.id, transformPatch(item, current, activeDrag.kind, logicalScale), { historyGroup: activeDrag.historyGroup });
               }
             })
             .catch((error) => onToast(`实时变换失败：${error instanceof Error ? error.message : String(error)}`, "error"));
@@ -375,7 +387,7 @@ export function RuntimeMirror({
             || Math.abs(current.rotate - item.start.rotate) > 0.1
             || Math.abs(current.scale - item.start.scale) > 0.005;
           if (!changed) continue;
-          await onPatch(item.box.id, transformPatch(item, current, drag.kind), { historyGroup: drag.historyGroup });
+          await onPatch(item.box.id, transformPatch(item, current, drag.kind, logicalScale), { historyGroup: drag.historyGroup });
         }
         window.setTimeout(() => {
           if (!dragRef.current) setDraftValues({});
@@ -394,7 +406,7 @@ export function RuntimeMirror({
       window.removeEventListener("pointercancel", onUp);
       if (livePatchTimerRef.current != null) window.clearTimeout(livePatchTimerRef.current);
     };
-  }, [onPatch, onToast, snapEnabled, viewport.height, viewport.width]);
+  }, [logicalScale.x, logicalScale.y, onPatch, onToast, snapEnabled, viewport.height, viewport.width]);
 
   const beginDrag = (box: RuntimeBox, event: ReactPointerEvent, requestedKind?: DragState["kind"], handle?: Handle) => {
     event.preventDefault();
@@ -440,6 +452,39 @@ export function RuntimeMirror({
     (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
   };
 
+  const hitCandidatesForEvent = (event: { clientX: number; clientY: number }): RuntimeBox[] => {
+    const stage = stageRef.current;
+    if (!stage) return [];
+    const bounds = stage.getBoundingClientRect();
+    const point = stagePoint(event.clientX, event.clientY, {
+      x: bounds.left,
+      y: bounds.top,
+      w: bounds.width,
+      h: bounds.height
+    }, coordinateSpace);
+    const tolerance = Math.max(
+      coordinateSpace.width / Math.max(1, bounds.width) * 7,
+      coordinateSpace.height / Math.max(1, bounds.height) * 7
+    );
+    return runtimeHitCandidates(boxes, point, coordinateSpace, tolerance) as RuntimeBox[];
+  };
+
+  const chooseHitForEvent = (event: { clientX: number; clientY: number }): RuntimeBox | undefined => {
+    const candidates = hitCandidatesForEvent(event);
+    setHitCount(candidates.length);
+    if (!candidates.length) return undefined;
+    const ids = candidates.map((candidate) => candidate.id);
+    const previous = hitCycleRef.current;
+    const samePoint = previous
+      && performance.now() - previous.at < 1_200
+      && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= 5
+      && previous.ids.length === ids.length
+      && previous.ids.every((id, index) => id === ids[index]);
+    const index = samePoint ? (previous.index + 1) % candidates.length : 0;
+    hitCycleRef.current = { x: event.clientX, y: event.clientY, ids, index, at: performance.now() };
+    return candidates[index];
+  };
+
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -465,17 +510,17 @@ export function RuntimeMirror({
           const parent = item.parentId ? boxMap.get(item.parentId) : undefined;
           await onPatch(id, {
             position: "absolute",
-            left: Math.round(item.x - (parent?.x || 0) + delta[0]),
-            top: Math.round(item.y - (parent?.y || 0) + delta[1]),
-            width: Math.round(item.w),
-            height: Math.round(item.h)
+            left: Math.round((item.x - (parent?.x || 0)) * logicalScale.x + delta[0]),
+            top: Math.round((item.y - (parent?.y || 0)) * logicalScale.y + delta[1]),
+            width: Math.round(item.w * logicalScale.x),
+            height: Math.round(item.h * logicalScale.y)
           });
         }
       })().catch((error) => onToast(`移动节点失败：${error instanceof Error ? error.message : String(error)}`, "error"));
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [boxMap, editable, mode, onPatch, onToast, selectedIds]);
+  }, [boxMap, editable, logicalScale.x, logicalScale.y, mode, onPatch, onToast, selectedIds]);
 
   const permissionBlocked = Boolean(permission && permission !== "granted");
   const selectedDraft = selected ? drafts[selected.id] : undefined;
@@ -529,10 +574,31 @@ export function RuntimeMirror({
           <div className="runtime-stage-viewport" ref={editorViewportRef}>
             <div
               ref={stageRef}
-              className={`runtime-mirror-stage runtime-editor-stage orientation-${orientation} ${mode === "live-edit" ? "is-editing" : "is-inspecting"}`}
+              className={`runtime-mirror-stage runtime-editor-stage orientation-${orientation} tool-${tool} ${mode === "live-edit" ? "is-editing" : "is-inspecting"}`}
               style={{
                 aspectRatio: `${stageRatio}`,
                 ...(stageSizes.editor ? { width: stageSizes.editor.width, height: stageSizes.editor.height } : {})
+              }}
+              onPointerMove={(event) => {
+                if (dragRef.current) return;
+                const candidates = hitCandidatesForEvent(event);
+                setHoveredId(candidates[0]?.id);
+                setHitCount(candidates.length);
+              }}
+              onPointerLeave={() => { setHoveredId(undefined); setHitCount(0); }}
+              onPointerDown={(event) => {
+                if ((event.target as HTMLElement).closest(".runtime-transform-handle, .runtime-resize-handle")) return;
+                const hit = chooseHitForEvent(event);
+                if (hit) beginDrag(hit, event);
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                const candidates = hitCandidatesForEvent(event);
+                setHitCount(candidates.length);
+                const hit = candidates[0];
+                if (!hit) return;
+                onSelect(hit.id);
+                onContextMenu(hit.id, event.clientX, event.clientY);
               }}
             >
           {frame ? <img src={frame} alt={`Maker Runtime 实际运行画面：${sourceName}`} draggable={false} /> : (
@@ -550,44 +616,56 @@ export function RuntimeMirror({
                         ? "当前不是支持窗口采样的桌面版本；请重启或更新 TapMakerWork。"
                         : error ? `窗口采样失败：${error}` : "启动运行器后，这里直接编辑最终渲染画面。"}
               </p>
-              {!runtimeLive && <button type="button" disabled={runtimeBusy} onClick={onStart}><CirclePlay size={14} aria-hidden="true" />{runtimeBusy ? "启动中…" : "启动 Maker Runtime"}</button>}
+              {!runtimeLive && (
+                <CoachMark label="② 启动 Runtime" active={coachRuntimeStart}>
+                  <button
+                    type="button"
+                    disabled={runtimeBusy}
+                    onClick={() => {
+                      onStart();
+                      onCoachRuntimeStartDone?.();
+                    }}
+                  ><CirclePlay size={14} aria-hidden="true" />{runtimeBusy ? "启动中…" : "启动 Maker Runtime"}</button>
+                </CoachMark>
+              )}
             </div>
           )}
 
           {editable && boxes.map((box) => {
             const currentDraft = drafts[box.id];
-            const rect = currentDraft?.rect || box;
+            const baseRect = currentDraft?.rect || box;
             const rotation = currentDraft?.rotate ?? numeric(box.props.rotate);
             const scale = currentDraft?.scale ?? transformScale(box.props);
+            const draftScaleRatio = currentDraft ? scale / Math.max(.001, transformScale(box.props)) : 1;
+            const rect = currentDraft && Math.abs(draftScaleRatio - 1) > .001
+              ? {
+                  x: baseRect.x + baseRect.w * (1 - draftScaleRatio) / 2,
+                  y: baseRect.y + baseRect.h * (1 - draftScaleRatio) / 2,
+                  w: baseRect.w * draftScaleRatio,
+                  h: baseRect.h * draftScaleRatio
+                }
+              : baseRect;
+            const renderRect = clipRectToSpace(rect, coordinateSpace);
             const isSelected = selectedSet.has(box.id);
             const isPrimary = snapshot?.selectedId === box.id;
             const resizeHandles = rect.w < 72 || rect.h < 72 ? (["se"] as Handle[]) : HANDLES;
             return (
               <div
                 key={box.id}
-                className={`runtime-hit-box tool-${tool} ${isSelected ? "selected" : ""} ${isPrimary ? "primary" : ""}`}
+                className={`runtime-hit-box tool-${tool} ${isSelected ? "selected" : ""} ${isPrimary ? "primary" : ""} ${hoveredId === box.id ? "hovered" : ""}`}
                 data-node-id={box.id}
                 tabIndex={isPrimary ? 0 : -1}
                 aria-selected={isSelected}
                 aria-label={`${box.name || box.type}，${isSelected ? "已选择" : "未选择"}${mode === "live-edit" ? "，按住 Shift 可多选" : ""}`}
                 style={{
-                  left: `${rect.x / viewport.width * 100}%`,
-                  top: `${rect.y / viewport.height * 100}%`,
-                  width: `${rect.w / viewport.width * 100}%`,
-                  height: `${rect.h / viewport.height * 100}%`,
-                  zIndex: 20 + box.layer,
-                  transform: `rotate(${rotation}deg) scale(${scale})`,
-                  transformOrigin: "center"
+                  left: `${renderRect.x / coordinateSpace.width * 100}%`,
+                  top: `${renderRect.y / coordinateSpace.height * 100}%`,
+                  width: `${renderRect.w / coordinateSpace.width * 100}%`,
+                  height: `${renderRect.h / coordinateSpace.height * 100}%`,
+                  zIndex: 20 + box.layer
                 }}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onSelect(box.id);
-                  onContextMenu(box.id, event.clientX, event.clientY);
-                }}
-                onPointerDown={(event) => beginDrag(box, event)}
               >
-                {isPrimary && <span className="runtime-selection-label">{box.name || box.type}<small>{Math.round(rect.w)} × {Math.round(rect.h)}{rotation ? ` · ${Math.round(rotation)}°` : ""}{scale !== 1 ? ` · ${scale.toFixed(2)}×` : ""}</small></span>}
+                {isPrimary && <span className="runtime-selection-label">{box.name || box.type}<small>{Math.round(rect.w * logicalScale.x)} × {Math.round(rect.h * logicalScale.y)}{rotation ? ` · ${Math.round(rotation)}°` : ""}{scale !== 1 ? ` · ${scale.toFixed(2)}×` : ""}</small></span>}
                 {isPrimary && mode === "live-edit" && tool === "move" && <button type="button" className="runtime-move-handle" aria-label="拖动移动选中节点" onPointerDown={(event) => beginDrag(box, event, "move")}><Move size={13} /></button>}
                 {isPrimary && mode === "live-edit" && tool === "rotate" && <button type="button" className="runtime-rotate-handle" aria-label="拖动旋转选中节点" onPointerDown={(event) => beginDrag(box, event, "rotate")}><RotateCw size={12} /></button>}
                 {isPrimary && mode === "live-edit" && tool === "scale" && <button type="button" className="runtime-scale-handle" aria-label="拖动等比缩放选中节点" onPointerDown={(event) => beginDrag(box, event, "scale")}><Scaling size={12} /></button>}
@@ -604,7 +682,7 @@ export function RuntimeMirror({
             );
           })}
 
-            {editable && <span className="runtime-mirror-badge">{frame ? "真实帧" : "Runtime 布局"} · {mode === "live-edit" ? "编辑视图实时同步 · Shift 多选" : "控件树已对齐"}</span>}
+            {editable && <span className="runtime-mirror-badge">{frame ? "真实帧" : "Runtime 布局"} · {mode === "live-edit" ? `编辑视图实时同步${hitCount > 1 ? ` · ${hitCount} 个候选，再点轮换` : " · Shift 多选"}` : "控件树已对齐"}</span>}
             </div>
           </div>
         </section>
@@ -637,13 +715,16 @@ export function RuntimeMirror({
             <div>
               <strong>{adapterInstalled ? "运行时编辑桥尚未连接" : "启用所见即所得编辑"}</strong>
               <p>{adapterInstalled
-                ? "将重新校验客户端入口并重启 Runtime；连接成功后即可读取真实控件树并拖拽编辑。"
-                : "安装项目内编辑桥后，画面上的选择框来自引擎实际布局，不再使用 HTML 模拟布局。"}</p>
+                ? "将重新校验客户端入口并重启 Runtime；连接成功后即可读取真实绘制/控件树并拖拽编辑。"
+                : "安装项目内编辑桥后，画面上的选择框来自引擎实际布局。Yoga 走控件树；NanoVG 项目会自动注入绘制代理，无需改游戏业务代码。"}</p>
             </div>
             <button type="button" disabled={installBusy || runtimeBusy} onClick={onInstallAdapter}>
               {adapterInstalled ? <RefreshCw size={14} /> : <BoxSelect size={14} />}
               {installBusy ? "接入中…" : adapterInstalled ? "重新接入并连接" : "接入当前项目"}
             </button>
+            {adapterInstalled && !editable && (
+              <p className="runtime-editor-gate-hint">因为项目众多，如果启动注入失败，请自行点击这里「重新接入并连接」再注入一次。</p>
+            )}
           </div>
         )}
       </div>
@@ -652,10 +733,10 @@ export function RuntimeMirror({
         <footer className="runtime-editor-status">
           <span><BoxSelect size={13} />{selected.name || selected.type}{selectedIds.length > 1 ? ` +${selectedIds.length - 1}` : ""}</span>
           <span>{selected.type}</span>
-          <span>x {Math.round(selectedRect.x)}</span>
-          <span>y {Math.round(selectedRect.y)}</span>
-          <span>w {Math.round(selectedRect.w)}</span>
-          <span>h {Math.round(selectedRect.h)}</span>
+          <span>x {Math.round(selectedRect.x * logicalScale.x)}</span>
+          <span>y {Math.round(selectedRect.y * logicalScale.y)}</span>
+          <span>w {Math.round(selectedRect.w * logicalScale.x)}</span>
+          <span>h {Math.round(selectedRect.h * logicalScale.y)}</span>
         </footer>
       )}
     </div>

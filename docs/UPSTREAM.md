@@ -17,8 +17,8 @@ TapMakerWork integrates through:
 
 1. the public Maker CLI for preview lifecycle, status and logs;
 2. a separate loopback Editor Bridge;
-3. a project-side Lua development adapter staged at `runtime/lua/TapMakerWorkBridge.lua`;
-4. the existing UIInspector and Widget public behavior in Maker projects.
+3. a project-side Lua development adapter staged at `runtime/lua/TapMakerWorkBridge.lua` (Yoga) or `runtime/lua/TapMakerWorkNanoVGBridge.lua` (NanoVG);
+4. the existing UIInspector and Widget public behavior in Maker projects, or raw NanoVG draw globals for NanoVG-backed games.
 
 The selected channel is stored as a device-level TapMakerWork preference under `~/.tapmakerwork`; project files are not changed by version selection.
 

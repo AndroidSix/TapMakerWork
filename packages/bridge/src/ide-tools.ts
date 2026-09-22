@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveInsideProject } from "./project.js";
+import { detectUiBackend } from "./ui-backend.js";
 
 export interface SearchHit {
   path: string;
@@ -300,11 +301,113 @@ function safeGitPath(filePath: string): string {
   return normalized;
 }
 
-export async function mutateGitProject(projectRoot: string, action: "stage" | "unstage" | "discard" | "stage-all" | "unstage-all", filePath?: string): Promise<{ ok: true; output: string; status: GitStatus }> {
+export interface GitFileDiff {
+  path: string;
+  scope: "worktree" | "staged";
+  status: string;
+  original: string;
+  modified: string;
+  binary: boolean;
+  added: boolean;
+  deleted: boolean;
+  additions: number;
+  deletions: number;
+}
+
+function looksBinary(text: string): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code === 0) return true;
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) return true;
+  }
+  return false;
+}
+
+function countDiffLines(original: string, modified: string): { additions: number; deletions: number } {
+  const beforeLines = original.split(/\r?\n/);
+  const afterLines = modified.split(/\r?\n/);
+  const beforeCounts = new Map<string, number>();
+  for (const line of beforeLines) beforeCounts.set(line, (beforeCounts.get(line) || 0) + 1);
+  const afterCounts = new Map<string, number>();
+  for (const line of afterLines) afterCounts.set(line, (afterCounts.get(line) || 0) + 1);
+  let additions = 0;
+  let deletions = 0;
+  for (const [line, count] of afterCounts) {
+    const seen = beforeCounts.get(line) || 0;
+    if (count > seen) additions += count - seen;
+  }
+  for (const [line, count] of beforeCounts) {
+    const seen = afterCounts.get(line) || 0;
+    if (count > seen) deletions += count - seen;
+  }
+  return { additions, deletions };
+}
+
+async function readGitBlob(projectRoot: string, revision: string, filePath: string): Promise<string> {
+  try {
+    const objectName = revision === ":" ? `:${filePath}` : `${revision}:${filePath}`;
+    return await run("git", ["show", objectName], projectRoot, 15_000);
+  } catch {
+    return "";
+  }
+}
+
+export async function readGitDiff(projectRoot: string, filePath: string, scope: "worktree" | "staged" = "worktree"): Promise<GitFileDiff> {
+  const target = safeGitPath(filePath);
+  const status = await readGitStatus(projectRoot);
+  const change = status.changes.find((item) => item.path === target);
+  if (!change) throw new Error("git_change_not_found");
+
+  const original = change.untracked
+    ? ""
+    : await readGitBlob(projectRoot, scope === "staged" ? "HEAD" : ":", target);
+  let modified = "";
+  if (scope === "staged") {
+    modified = await readGitBlob(projectRoot, ":", target);
+  } else {
+    try {
+      modified = fs.readFileSync(path.join(projectRoot, target), "utf8");
+    } catch {
+      modified = "";
+    }
+  }
+
+  const binary = looksBinary(original) || looksBinary(modified);
+  const { additions, deletions } = countDiffLines(original, modified);
+  return {
+    path: target,
+    scope,
+    status: change.status,
+    original: binary ? "" : original,
+    modified: binary ? "" : modified,
+    binary,
+    added: change.untracked || (!original && Boolean(modified)),
+    deleted: Boolean(original) && !modified && (scope === "staged" ? change.indexStatus === "D" : change.workTreeStatus === "D"),
+    additions,
+    deletions
+  };
+}
+
+
+export type GitMutateAction = "stage" | "unstage" | "discard" | "stage-all" | "unstage-all" | "discard-all";
+
+export async function mutateGitProject(projectRoot: string, action: GitMutateAction, filePath?: string): Promise<{ ok: true; output: string; status: GitStatus }> {
   let output = "";
   if (action === "stage-all") output = await run("git", ["add", "-A"], projectRoot, 30_000);
   else if (action === "unstage-all") output = await run("git", ["restore", "--staged", "."], projectRoot, 30_000);
-  else {
+  else if (action === "discard-all") {
+    const before = await readGitStatus(projectRoot);
+    if (before.changes.some((item) => item.staged)) {
+      output += await run("git", ["restore", "--staged", "."], projectRoot, 30_000);
+    }
+    const unstaged = await readGitStatus(projectRoot);
+    if (unstaged.changes.some((item) => !item.untracked)) {
+      output += await run("git", ["restore", "--worktree", "."], projectRoot, 30_000);
+    }
+    for (const change of unstaged.changes.filter((item) => item.untracked)) {
+      output += await run("git", ["clean", "-f", "--", change.path], projectRoot, 30_000);
+    }
+  } else {
     const target = safeGitPath(filePath || "");
     const current = await readGitStatus(projectRoot);
     const change = current.changes.find((item) => item.path === target);
@@ -423,14 +526,28 @@ export function readMakerPreviewLogs(projectRoot: string, supervisorLogPath?: st
   return { lines: ["暂无 Runtime 日志。请先启动预览，或确认 Maker supervisor 日志路径。"] };
 }
 
-export function projectHasRuntimeAdapter(projectRoot: string): { installed: boolean; paths: string[] } {
+export function projectHasRuntimeAdapter(projectRoot: string): {
+  installed: boolean;
+  paths: string[];
+  backend?: "yoga" | "nanovg";
+} {
   const candidates = [
+    "scripts/tapmakerwork/TapMakerWorkNanoVGBridge.lua",
     "scripts/tapmakerwork/TapMakerWorkBridge.lua",
     "scripts/TapMakerWorkBridge.lua",
     "scripts/ui/TapMakerWorkBridge.lua",
     "scripts/core/TapMakerWorkBridge.lua",
-    "runtime/lua/TapMakerWorkBridge.lua"
+    "runtime/lua/TapMakerWorkBridge.lua",
+    "runtime/lua/TapMakerWorkNanoVGBridge.lua"
   ];
   const paths = candidates.filter((relative) => fs.existsSync(path.join(projectRoot, relative)));
-  return { installed: paths.length > 0, paths };
+  const hasNano = paths.some((item) => item.includes("NanoVG"));
+  const hasYoga = paths.some((item) => !item.includes("NanoVG"));
+  let backend: "yoga" | "nanovg" | undefined;
+  if (hasNano && hasYoga) {
+    // Defer to project markers when both adapter files exist (e.g. after a backend switch).
+    backend = detectUiBackend(projectRoot);
+  } else if (hasNano) backend = "nanovg";
+  else if (hasYoga) backend = "yoga";
+  return { installed: paths.length > 0, paths, ...(backend ? { backend } : {}) };
 }

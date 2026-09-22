@@ -27,6 +27,7 @@ declare global {
       platform: string;
       desktop: boolean;
       chooseProject?: () => Promise<string | undefined>;
+      chooseDirectory?: (opts?: { title?: string; defaultPath?: string }) => Promise<string | undefined>;
       clipboard?: {
         writeText: (text: string) => Promise<{ ok: boolean; error?: string }>;
       };

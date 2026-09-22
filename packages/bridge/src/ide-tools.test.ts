@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { mutateGitProject, readGitStatus } from "./ide-tools.js";
+import { mutateGitProject, readGitDiff, readGitStatus } from "./ide-tools.js";
 
 const temporary: string[] = [];
 
@@ -57,5 +57,34 @@ describe("Git workspace operations", () => {
     expect(fs.readFileSync(path.join(root, "tracked.txt"), "utf8")).toBe("before\n");
     expect(fs.existsSync(path.join(root, "scratch.txt"))).toBe(false);
     expect((await readGitStatus(root)).dirty).toBe(false);
+  });
+
+  it("compares working-tree changes with the index and staged changes with HEAD", async () => {
+    const root = repository();
+    fs.writeFileSync(path.join(root, "tracked.txt"), "staged\n", "utf8");
+    git(root, "add", "tracked.txt");
+    fs.writeFileSync(path.join(root, "tracked.txt"), "working tree\n", "utf8");
+
+    const staged = await readGitDiff(root, "tracked.txt", "staged");
+    expect(staged.original).toBe("before\n");
+    expect(staged.modified).toBe("staged\n");
+
+    const worktree = await readGitDiff(root, "tracked.txt", "worktree");
+    expect(worktree.original).toBe("staged\n");
+    expect(worktree.modified).toBe("working tree\n");
+  });
+
+  it("stages and discards every working-tree change", async () => {
+    const root = repository();
+    fs.writeFileSync(path.join(root, "tracked.txt"), "after\n", "utf8");
+    fs.writeFileSync(path.join(root, "scratch.txt"), "scratch\n", "utf8");
+
+    const staged = await mutateGitProject(root, "stage-all");
+    expect(staged.status.changes.every((change) => change.staged)).toBe(true);
+
+    const discarded = await mutateGitProject(root, "discard-all");
+    expect(discarded.status.dirty).toBe(false);
+    expect(fs.readFileSync(path.join(root, "tracked.txt"), "utf8")).toBe("before\n");
+    expect(fs.existsSync(path.join(root, "scratch.txt"))).toBe(false);
   });
 });

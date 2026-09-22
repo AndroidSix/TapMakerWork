@@ -37,15 +37,24 @@ Only executed UI states can be observed. Conditional variants are captured as se
 创建于 2026-09-18
 更新于 2026-09-19
 
-The existing `urhox-libs/UI/Core/UIInspector` is the runtime editing kernel. The project dev bridge adds transport and stable node identifiers without changing the official Runtime binary. Layout and appearance patches mutate live widgets. Behavior or custom-widget code changes replace only the affected UI subtree.
+The existing `urhox-libs/UI/Core/UIInspector` is the runtime editing kernel for Yoga widget trees. Projects that draw with raw NanoVG (`nvgText` / `nvgRect` / …) use a parallel adapter that proxies draw calls into a virtual node tree. Neither path changes the official Runtime binary. Visual patches mutate live widgets or replace NanoVG draw parameters before the real API runs. Behavior or custom-widget code changes still require binding existing functions or generating Lua.
 
 IDE 内运行视图（当前里程碑）：
-- 「运行时场景」直接采样官方 Maker Runtime 的最终窗口帧，并把 Runtime 活控件树的绝对命中布局叠到同一画布；不再用 HTML 控件树冒充最终效果。
+- 「运行时场景」直接采样官方 Maker Runtime 的最终窗口帧，并把 Runtime 活控件树 / NanoVG 虚拟节点的绝对命中布局叠到同一画布；不再用 HTML 控件树冒充最终效果。
 - 点击最终画面只选择控件；源码跳转是右侧属性栏中的显式动作。
-- `live-edit` 模式支持画面内拖动、八向缩放、方向键微调和属性输入，并通过项目内桥立即调用 `Widget:SetStyle`。
+- `live-edit` 模式支持画面内拖动、八向缩放、方向键微调和属性输入；Yoga 走 `Widget:SetStyle`，NanoVG 由绘制代理在调用真正 `nvg*` 前替换参数。
 - 属性修改同时防抖同步到同目录 `*.ui.json` 作为视觉草稿；**当前不会自动改写 Lua AST**。
 - 打开界面时若存在 `*.ui.json`，优先加载旁路作为视觉源；Lua 仍负责行为。
-- 未安装适配器时仍可查看最终画面；安装项目适配器并刷新 Runtime 后启用活树选取与编辑。
+- 「接入当前项目」会自动识别 Yoga vs NanoVG 并安装对应桥；未安装适配器时仍可查看最终画面。
+
+### NanoVG 适配边界
+
+创建于 2026-09-22
+
+- 可编辑已有绘制元素的位置、尺寸、文字、颜色、图片与层级。
+- 可创建纯视觉节点，由适配器在 `nvgEndFrame` 前额外绘制。
+- 新建带业务行为的按钮时，IDE 只创建外观与点击区域；点击逻辑仍需绑定已有函数或生成代码。
+- 动态列表用「调用位置 + 实例序号」稳定节点 ID，可靠性低于标准 UI 控件树。
 
 ### 内嵌预览与 LocalRuntime
 
@@ -56,7 +65,7 @@ IDE 内运行视图（当前里程碑）：
 - **改完自动刷新**：`live-edit` 写入 `.ui.json` 后 Bridge 递增 `reloadToken` 并广播 `preview.panel`；可选触发官方 `maker preview refresh`。
 - **LocalRuntime**：`play` 模式将 IR / `.ui.json` 以可交互控件树渲染（Image 走项目资产 API，Button 有点击反馈），不启动官方 Runtime。
 
-The adapter first attempts a Runtime-initiated loopback HTTP channel. Maker projects whose URL whitelist blocks localhost automatically use a bounded savedata file channel for status, snapshots and commands. Lua polls from the existing game update loop and applies property changes through `Widget:SetStyle`, avoiding the official `preview refresh` path that restarts Runtime and loses memory state.
+The adapter first attempts a Runtime-initiated loopback HTTP channel. Maker projects whose URL whitelist blocks localhost automatically use a bounded savedata file channel for status, snapshots and commands. Lua polls from the existing game update loop and applies property changes through `Widget:SetStyle` (Yoga) or draw-parameter overrides (NanoVG), avoiding the official `preview refresh` path that restarts Runtime and loses memory state.
 
 ## Runtime view
 
@@ -70,7 +79,7 @@ Channels are isolated by purpose: Runtime, Build, Lua diagnostics, Shell, Lua RE
 
 Official Maker changes are kept behind adapters. Any unavoidable upstream modification must include the exact upstream commit, a patch series, a rationale, replay instructions, and compatibility tests. Runtime binary changes are a last resort.
 
-The current milestone does not modify the official Maker Runtime. Project integration is isolated to a managed entry hook plus `scripts/tapmakerwork/TapMakerWorkBridge.lua`, with an entry backup under `.tapmakerwork/backups`. See `UPSTREAM.md`.
+The current milestone does not modify the official Maker Runtime. Project integration is isolated to a managed entry hook plus `scripts/tapmakerwork/TapMakerWorkBridge.lua` (Yoga) or `TapMakerWorkNanoVGBridge.lua` (NanoVG), with an entry backup under `.tapmakerwork/backups`. See `UPSTREAM.md`.
 
 ## Delivery workflow and validation
 

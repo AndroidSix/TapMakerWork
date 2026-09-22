@@ -12,8 +12,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@tapmakerwork/protocol": "*",
     "@modelcontextprotocol/sdk": "1.27.1",
+    "@tapmakerwork/protocol": "*",
+    "jimp": "^1.6.1",
     "luaparse": "^0.3.1",
     "ws": "^8.18.3",
     "zod": "^3.25.76"
