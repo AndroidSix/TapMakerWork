@@ -338,7 +338,6 @@ KayingCodex / KayingAI 的名称、商标与代码版权仍归其权利人所有
 
 ```text
 自由使用、修改、分发；保留版权与许可声明即可。
-本仓库版权与 KayingAI / KayingCodex 无关。
 ```
 
 ---
