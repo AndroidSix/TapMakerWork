@@ -350,14 +350,18 @@ export function parseWindowsSourceId(sourceId: string | undefined): string | und
   return hwnd;
 }
 
-export function chooseWindowsRuntimeWindow(windows: ListedWindow[], projectName: string, sourceId = ""): ListedWindow | undefined {
+export function chooseWindowsRuntimeWindow(windows: ListedWindow[], projectName: string, sourceId = "", targetAspect?: number): ListedWindow | undefined {
   const eligible = windows.filter((item) => item.width >= 80 && item.height >= 80 && !/^TapMakerWork$/i.test(item.title));
   if (sourceId) {
-    const hwnd = parseWindowsSourceId(sourceId);
+    const hwnd = parseWindowsSourceId(sourceId) || (/^\d{1,20}$/.test(sourceId) ? sourceId : undefined);
     if (!hwnd) return undefined;
     return eligible.find((item) => item.hwnd === hwnd);
   }
-  return selectRuntimeWindow(eligible.map((item) => ({ ...item, name: item.title, executable: item.exe })), projectName);
+  return selectRuntimeWindow(
+    eligible.map((item) => ({ ...item, name: item.title, executable: item.exe })),
+    projectName,
+    targetAspect != null ? { targetAspect } : {}
+  );
 }
 
 export class WindowsRuntime {

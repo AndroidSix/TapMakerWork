@@ -83,7 +83,12 @@ async function captureOnWindows(opts?: {
   try {
     const windows = await windowsBridge().list();
     candidates = windowsCaptureCandidates(windows);
-    const selected = chooseWindowsRuntimeWindow(windows, opts?.projectName?.trim() || "", opts?.sourceId || "");
+    const selected = chooseWindowsRuntimeWindow(
+      windows,
+      opts?.projectName?.trim() || "",
+      opts?.sourceId || "",
+      runtimeTargetAspect(opts)
+    );
     if (!selected) return { ok: false as const, error: "runtime_window_not_found", permission, candidates };
     const shot = await windowsBridge().capture(selected.hwnd, 1280, 1280);
     // Keep the real window aspect. Cropping to the 720x1280 design cuts a wider desktop Runtime.
@@ -832,9 +837,20 @@ ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
     const candidates = eligibleSources
       .map((source) => ({ id: source.id, name: source.name }));
     const normalizedProjectName = opts?.projectName?.trim().toLocaleLowerCase() || "";
-    const selected = opts?.sourceId
-      ? eligibleSources.find((source) => source.id === opts.sourceId)
-      : selectRuntimeWindow(eligibleSources, normalizedProjectName);
+    const targetAspect = runtimeTargetAspect(opts);
+    const rankedSources = eligibleSources.map((source) => {
+      const size = source.thumbnail.getSize();
+      return {
+        source,
+        name: source.name,
+        width: size.width,
+        height: size.height
+      };
+    });
+    const selectedRanked = opts?.sourceId
+      ? rankedSources.find((item) => item.source.id === opts.sourceId)
+      : selectRuntimeWindow(rankedSources, normalizedProjectName, { targetAspect });
+    const selected = selectedRanked?.source;
     // A bare project-name window is commonly the editor (Cursor/VS Code). Do
     // not present it as the game's final frame unless the user picks it.
     if (!selected) {
@@ -854,7 +870,6 @@ ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
       };
     }
     let frame = selected.thumbnail;
-    const targetAspect = runtimeTargetAspect(opts);
     const size = frame.getSize();
     const rawAspect = size.width / Math.max(1, size.height);
     // Runtime window captures include native title chrome on macOS. Crop the largest

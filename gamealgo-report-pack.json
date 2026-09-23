@@ -1,0 +1,240 @@
+{
+  "schemaVersion": 2,
+  "title": "TapMakerWork IDE 数据看板",
+  "milestones": [
+    {
+      "type": "new_user",
+      "title": "新用户启动流程",
+      "windowDays": 14,
+      "entryMode": "cohortUsers",
+      "points": ["启动 IDE", "接受用户协议"]
+    },
+    {
+      "type": "global",
+      "title": "核心功能渗透",
+      "windowDays": 30,
+      "entryMode": "firstPoint",
+      "points": ["打开项目", "进入实时编辑", "安装运行时适配器"]
+    }
+  ],
+  "events": {
+    "_preview_action": {
+      "fields": {
+        "action": {
+          "path": "$.action",
+          "type": "string",
+          "valueLabels": {
+            "start": "启动预览",
+            "stop": "停止预览",
+            "refresh": "刷新预览"
+          }
+        },
+        "result": {
+          "path": "$.result",
+          "type": "string",
+          "valueLabels": {
+            "ok": "成功",
+            "fail": "失败",
+            "error": "异常"
+          }
+        }
+      }
+    },
+    "_build_trigger": {
+      "fields": {
+        "result": {
+          "path": "$.result",
+          "type": "string",
+          "valueLabels": {
+            "ok": "成功",
+            "fail": "失败",
+            "error": "异常"
+          }
+        }
+      }
+    },
+    "_ide_session": {
+      "fields": {
+        "session_ms": { "path": "$.session_ms", "type": "number" },
+        "active_ms": { "path": "$.active_ms", "type": "number" }
+      }
+    },
+    "_project_open": {
+      "fields": {
+        "result": { "path": "$.result", "type": "string" }
+      }
+    },
+    "_project_open_fail": {
+      "fields": {}
+    },
+    "_update_check": {
+      "fields": {
+        "silent": { "path": "$.silent", "type": "boolean" }
+      }
+    }
+  },
+  "datasets": {
+    "preview_daily": {
+      "type": "event",
+      "fromEvent": "_preview_action",
+      "groupBy": ["dt", "action", "result"],
+      "metrics": {
+        "events": { "agg": "count" },
+        "users": { "agg": "count_distinct", "field": "userId" }
+      }
+    },
+    "build_daily": {
+      "type": "event",
+      "fromEvent": "_build_trigger",
+      "groupBy": ["dt", "result"],
+      "metrics": {
+        "events": { "agg": "count" },
+        "users": { "agg": "count_distinct", "field": "userId" }
+      }
+    },
+    "session_daily": {
+      "type": "event",
+      "fromEvent": "_ide_session",
+      "groupBy": ["dt"],
+      "metrics": {
+        "sessions": { "agg": "count" },
+        "users": { "agg": "count_distinct", "field": "userId" },
+        "session_ms_sum": { "agg": "sum", "field": "session_ms" },
+        "active_ms_sum": { "agg": "sum", "field": "active_ms" }
+      }
+    },
+    "project_open_daily": {
+      "type": "event",
+      "fromEvents": ["_project_open", "_project_open_fail"],
+      "groupBy": ["dt", "eventType"],
+      "metrics": {
+        "events": { "agg": "count" },
+        "users": { "agg": "count_distinct", "field": "userId" }
+      }
+    }
+  },
+  "groups": [
+    {
+      "id": "core",
+      "title": "核心概览",
+      "standard": "core.overview@1"
+    },
+    {
+      "id": "versions",
+      "title": "版本覆盖",
+      "standard": "device.version_coverage@1"
+    },
+    {
+      "id": "retention",
+      "title": "留存",
+      "standard": "retention.cohort@1"
+    },
+    {
+      "id": "new_user_flow",
+      "title": "新用户流程",
+      "standard": "milestone.funnel@1"
+    },
+    {
+      "id": "ide_usage",
+      "title": "IDE 功能使用",
+      "views": [
+        {
+          "id": "preview_trend",
+          "title": "预览操作趋势",
+          "type": "line",
+          "x": "dt",
+          "y": "events",
+          "series": "action",
+          "data": {
+            "dataset": "preview_daily",
+            "groupBy": ["dt", "action"],
+            "metrics": {
+              "events": { "agg": "sum", "field": "events" }
+            }
+          }
+        },
+        {
+          "id": "preview_result_table",
+          "title": "预览结果汇总",
+          "type": "table",
+          "data": {
+            "dataset": "preview_daily",
+            "groupBy": ["action", "result"],
+            "metrics": {
+              "events": { "agg": "sum", "field": "events" },
+              "user_days": { "agg": "sum", "field": "users" }
+            }
+          },
+          "orderBy": [{ "field": "events", "direction": "desc" }],
+          "limit": 20
+        },
+        {
+          "id": "build_trend",
+          "title": "构建触发趋势",
+          "type": "line",
+          "x": "dt",
+          "y": "events",
+          "series": "result",
+          "data": {
+            "dataset": "build_daily",
+            "groupBy": ["dt", "result"],
+            "metrics": {
+              "events": { "agg": "sum", "field": "events" }
+            }
+          }
+        },
+        {
+          "id": "project_open_trend",
+          "title": "打开项目趋势",
+          "type": "line",
+          "x": "dt",
+          "y": "events",
+          "series": "eventType",
+          "data": {
+            "dataset": "project_open_daily",
+            "groupBy": ["dt", "eventType"],
+            "metrics": {
+              "events": { "agg": "sum", "field": "events" }
+            }
+          }
+        },
+        {
+          "id": "session_duration",
+          "title": "会话时长趋势",
+          "type": "line",
+          "x": "dt",
+          "y": "avg_session_min",
+          "format": "number",
+          "data": {
+            "dataset": "session_daily",
+            "groupBy": ["dt"],
+            "metrics": {
+              "sessions": { "agg": "sum", "field": "sessions" },
+              "session_ms_sum": { "agg": "sum", "field": "session_ms_sum" },
+              "active_ms_sum": { "agg": "sum", "field": "active_ms_sum" },
+              "avg_session_min": { "formula": "session_ms_sum / sessions / 60000" },
+              "avg_active_min": { "formula": "active_ms_sum / sessions / 60000" }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "tabs": [
+    {
+      "id": "overview",
+      "title": "概览",
+      "groups": ["core", "versions", "retention"]
+    },
+    {
+      "id": "onboarding",
+      "title": "新用户与渗透",
+      "groups": ["new_user_flow"]
+    },
+    {
+      "id": "ide",
+      "title": "IDE 使用",
+      "groups": ["ide_usage"]
+    }
+  ]
+}

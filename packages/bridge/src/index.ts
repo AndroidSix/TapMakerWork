@@ -31,6 +31,9 @@ import {
   readMakerRuntimePreference,
   runMakerBuild,
   runMakerCommand,
+  runMakerPreviewStartWithRecovery,
+  formatMakerPreviewError,
+  isPreviewSupervisorUnreachable,
   runMakerDoctor,
   runMakerQrcode,
   runMakerReadOnly,
@@ -40,7 +43,7 @@ import {
   type MakerRuntimeMode
 } from "./maker.js";
 import { scanUiScreens, uiNodeCount, type UiScreenSummary } from "./ui-screens.js";
-import { listProjectEntries, readProjectText, resolveInsideProject, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
+import { listProjectEntries, readProjectSource, resolveInsideProject, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
@@ -623,7 +626,8 @@ const server = http.createServer(async (request, response) => {
       if (!project) throw new Error("project_not_open");
       const sourceFile = url.searchParams.get("path");
       if (!sourceFile) throw new Error("project_file_path_required");
-      sendJson(response, 200, { path: sourceFile, text: readProjectText(project.root, sourceFile), readOnly: false });
+      const opened = readProjectSource(project.root, sourceFile);
+      sendJson(response, 200, { path: opened.path, text: opened.text, readOnly: false });
     } else if (request.method === "POST" && url.pathname === "/api/project/file") {
       if (!project) throw new Error("project_not_open");
       const body = await readJson(request, 5_500_000) as { path?: string; text?: string };
@@ -1099,9 +1103,29 @@ const server = http.createServer(async (request, response) => {
       if (!makerRuntime) throw new Error("maker_cli_not_found");
       const command = url.pathname.split("/").at(-1) as "start" | "stop" | "refresh";
       broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command}…`] });
-      const result = await runMakerCommand(makerRuntime, project.root, command);
-      broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command} 完成。`] });
-      sendJson(response, 200, result);
+      try {
+        const result = command === "start"
+          ? await runMakerPreviewStartWithRecovery(makerRuntime, project.root, 60_000, (message) => {
+            broadcast({ type: "log.append", channel: "runtime", lines: [message] });
+          })
+          : await runMakerCommand(makerRuntime, project.root, command);
+        const failed = result && typeof result === "object" && "ok" in result && (result as { ok?: boolean }).ok === false;
+        if (failed) {
+          const message = formatMakerPreviewError(JSON.stringify(result));
+          broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command} 失败：${message}`] });
+          sendJson(response, 400, { error: message, maker: result });
+          return;
+        }
+        broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command} 完成。`] });
+        sendJson(response, 200, result);
+      } catch (error) {
+        const message = formatMakerPreviewError(error);
+        broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command} 失败：${message}`] });
+        sendJson(response, 400, {
+          error: message,
+          recoverable: isPreviewSupervisorUnreachable(error)
+        });
+      }
     } else if (request.method === "GET" && url.pathname === "/api/preview/panel") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, {

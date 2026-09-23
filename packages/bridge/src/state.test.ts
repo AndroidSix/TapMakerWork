@@ -25,6 +25,26 @@ describe("editor history", () => {
     expect(refreshed.selectedId).toBe("home.single-player");
   });
 
+  it("drops a stale selection that is missing from the runtime tree", () => {
+    const state = new EditorState();
+    const current = state.getSnapshot();
+    const refreshed = state.replaceFromRuntime({
+      revision: 99,
+      selectedId: "scripts/main.lua:module:0",
+      root: {
+        id: "nanovg-root",
+        type: "NanoVG",
+        name: "NanoVG",
+        props: {},
+        source: { file: "runtime", line: 0 },
+        children: []
+      }
+    });
+    expect(refreshed.selectedId).toBeUndefined();
+    expect(refreshed.root.id).toBe("nanovg-root");
+    expect(current.selectedId).toBe("home.single-player");
+  });
+
   it("coalesces realtime drag patches into one undo step", () => {
     const state = new EditorState();
     const initial = state.getSnapshot();

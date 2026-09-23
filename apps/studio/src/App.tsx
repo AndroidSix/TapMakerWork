@@ -1634,7 +1634,8 @@ export function App() {
           enabled: state.enabled,
           gameKey: state.gameKey,
           appVersion: typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.1.0",
-          isDebug: import.meta.env.DEV
+          // 正式看板只统计非 debug；需要调试事件时在控制台执行 localStorage.setItem("tapmakerwork.gamealgo.debug","1")
+          isDebug: typeof localStorage !== "undefined" && localStorage.getItem("tapmakerwork.gamealgo.debug") === "1"
         });
       }).catch(() => undefined);
     }
@@ -1792,7 +1793,7 @@ export function App() {
           enabled: true,
           gameKey: state.gameKey,
           appVersion: typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.1.0",
-          isDebug: false
+          isDebug: typeof localStorage !== "undefined" && localStorage.getItem("tapmakerwork.gamealgo.debug") === "1"
         });
       }
       toast(enabled ? "已开启 GameAlgo 匿名使用统计" : "已关闭匿名使用统计", "success");
@@ -1966,13 +1967,15 @@ export function App() {
 
   const readFile = useCallback(async (filePath: string, reveal = true) => {
     const response = await fetch(`${API}/api/project/file?path=${encodeURIComponent(filePath)}`);
-    const result = await response.json() as { text?: string; error?: string };
+    const result = await response.json() as { path?: string; text?: string; error?: string };
     if (!response.ok || result.text == null) throw new Error(result.error || "无法读取文件");
-    setSelectedFile(filePath);
+    const resolvedPath = result.path || filePath;
+    setSelectedFile(resolvedPath);
     setCode(result.text);
     setCodeDirty(false);
     setSaveState("idle");
     if (reveal) setCenterTab("code");
+    return resolvedPath;
   }, []);
 
   const loadProjectContents = useCallback(async () => {
@@ -2164,15 +2167,14 @@ export function App() {
     setLeftTab("hierarchy");
     if (additive) return;
     const sourceFile = node?.source?.file;
-    if (!sourceFile) return;
-    setActiveUiPath(sourceFile);
+    if (!sourceFile || sourceFile === "runtime") return;
     if (node.source?.line) setRevealLine(node.source.line);
-    if (sourceFile !== selectedFile) {
-      void readFile(sourceFile, false).catch((error) => {
-        toast(`打开节点对应 UI 文件失败：${error instanceof Error ? error.message : String(error)}`, "error");
-      });
-    }
-  }, [readFile, selectNode, selectedFile, snapshot, toast]);
+    void readFile(sourceFile, false).then((resolved) => {
+      setActiveUiPath(resolved);
+    }).catch((error) => {
+      toast(`打开节点对应 UI 文件失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    });
+  }, [readFile, selectNode, snapshot, toast]);
 
   useEffect(() => {
     if (leftTab !== "hierarchy" || !snapshot?.selectedId) return;
@@ -3451,8 +3453,12 @@ export function App() {
       const response = await fetch(`${API}/api/maker/preview/${action}`, { method: "POST" });
       const result = await response.json() as { error?: string; state?: string; message?: string };
       if (!response.ok) {
-        setLogs((current) => ({ ...current, runtime: [...current.runtime, `Runtime 操作失败：${result.error ?? response.statusText}`] }));
-        toast(result.error || "Runtime 操作失败", "error");
+        const detail = result.error ?? response.statusText;
+        setLogs((current) => ({ ...current, runtime: [...current.runtime, `Runtime 操作失败：${detail}`] }));
+        const toastText = detail.includes("Supervisor 不可达")
+          ? "预览 Supervisor 不可达。已自动 stop / 退役残留会话并重试；仍失败请看 Runtime 日志。"
+          : (detail.split("\n")[0] || "Runtime 操作失败");
+        toast(toastText, "error");
         trackTelemetry("preview.action", { action, result: "fail" });
       } else {
         trackTelemetry("preview.action", { action, result: "ok" });

@@ -1,4 +1,4 @@
-import { applyUiPatch, applyUiTreeOp, type UiPatch, type UiSnapshot, type UiTreeOp } from "@tapmakerwork/protocol";
+import { applyUiPatch, applyUiTreeOp, findUiNode, type UiPatch, type UiSnapshot, type UiTreeOp } from "@tapmakerwork/protocol";
 
 export function initialUiSnapshot(): UiSnapshot {
   return {
@@ -92,11 +92,15 @@ export class EditorState {
   }
 
   replaceFromRuntime(snapshot: UiSnapshot): UiSnapshot {
-    this.snapshot = {
+    const candidate = snapshot.selectedId || this.snapshot.selectedId;
+    const selectedId = candidate && findUiNode(snapshot.root, candidate) ? candidate : undefined;
+    const next: UiSnapshot = {
       ...snapshot,
-      revision: this.snapshot.revision + 1,
-      ...(snapshot.selectedId || !this.snapshot.selectedId ? {} : { selectedId: this.snapshot.selectedId })
+      revision: this.snapshot.revision + 1
     };
+    if (selectedId) next.selectedId = selectedId;
+    else delete next.selectedId;
+    this.snapshot = next;
     return this.snapshot;
   }
 

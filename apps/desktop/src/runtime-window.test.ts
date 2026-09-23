@@ -11,9 +11,19 @@ describe("Maker Runtime window selection", () => {
     expect(selected?.id).toBe("runtime");
   });
 
-  it("rejects a bare project-title window instead of presenting an editor as the game", () => {
-    expect(scoreRuntimeWindow("乱世夺城", "乱世夺城")).toBeLessThan(70);
-    expect(selectRuntimeWindow([{ id: "cursor", name: "乱世夺城" }], "乱世夺城")).toBeUndefined();
+  it("accepts a bare Maker preview title for the open project", () => {
+    expect(scoreRuntimeWindow("台球大师", "台球大师")).toBeGreaterThanOrEqual(70);
+    expect(selectRuntimeWindow([{ id: "game", name: "台球大师" }], "台球大师")?.id).toBe("game");
+  });
+
+  it("rejects Cursor / editor titles that merely contain the project name", () => {
+    expect(scoreRuntimeWindow("App.tsx — 台球大师", "台球大师")).toBeLessThan(70);
+    expect(scoreRuntimeWindow("main.lua - 台球大师", "台球大师")).toBeLessThan(70);
+    const selected = selectRuntimeWindow([
+      { id: "cursor", name: "DrawUtil.lua — 台球大师", width: 1440, height: 900 },
+      { id: "game", name: "台球大师", width: 516, height: 918 }
+    ], "台球大师", { targetAspect: 720 / 1280 });
+    expect(selected?.id).toBe("game");
   });
 
   it("accepts known Maker and UrhoX Runtime titles", () => {
@@ -29,5 +39,13 @@ describe("Maker Runtime window selection", () => {
       { id: "game", name: "乱世夺城", executable: "UrhoXRuntime.exe" }
     ], "乱世夺城")?.id).toBe("game");
     expect(selectRuntimeWindow([{ id: "node", name: "乱世夺城", executable: "node.exe" }], "乱世夺城")?.id).toBe("node");
+  });
+
+  it("prefers the portrait game window when an IDE also includes the project name", () => {
+    const selected = selectRuntimeWindow([
+      { id: "ide", name: "台球大师 — Cursor", width: 1600, height: 1000 },
+      { id: "game", name: "台球大师", width: 516, height: 918 }
+    ], "台球大师", { targetAspect: 720 / 1280 });
+    expect(selected?.id).toBe("game");
   });
 });
