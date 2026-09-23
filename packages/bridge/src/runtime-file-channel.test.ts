@@ -65,4 +65,42 @@ describe("runtime file channel", () => {
     const status = findRuntimeFileStatus([root], { projectName: "丧尸来袭：最后的防线" });
     expect(status?.sessionId).toBe("zombie-session");
   });
+
+  it("matches NanoVG status without projectName via preview session realpath", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-channel-"));
+    temporary.push(root);
+    const projectReal = path.join(root, "games", "台球大师");
+    const previewDir = path.join(root, "preview-hash");
+    const savedata = path.join(previewDir, "savedata", "tapmakerwork");
+    fs.mkdirSync(projectReal, { recursive: true });
+    fs.mkdirSync(savedata, { recursive: true });
+    fs.writeFileSync(path.join(savedata, "runtime-status.json"), JSON.stringify({
+      sessionId: "billiard-session",
+      revision: 3,
+      backend: "nanovg",
+      updatedAt: Date.now()
+    }), "utf8");
+    fs.writeFileSync(path.join(savedata, "runtime-snapshot.json"), JSON.stringify({
+      revision: 3,
+      root: { id: "nanovg-root", type: "NanoVG", children: [] }
+    }), "utf8");
+    // Newer unrelated status without matching hints.
+    const other = path.join(root, "other", "tapmakerwork");
+    fs.mkdirSync(other, { recursive: true });
+    fs.writeFileSync(path.join(other, "runtime-status.json"), JSON.stringify({
+      sessionId: "other-session",
+      revision: 9,
+      projectName: "别的游戏",
+      updatedAt: Date.now() + 10_000
+    }), "utf8");
+    const now = Date.now() / 1000 + 20;
+    fs.utimesSync(path.join(other, "runtime-status.json"), now, now);
+
+    const status = findRuntimeFileStatus([root], {
+      projectRoot: projectReal,
+      projectName: "台球大师",
+      previewProjects: new Map([[previewDir, projectReal]])
+    });
+    expect(status?.sessionId).toBe("billiard-session");
+  });
 });

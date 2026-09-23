@@ -171,6 +171,7 @@ interface DesktopUpdateState {
   siteUrl?: string | undefined;
   title?: string | undefined;
   notes?: string[] | undefined;
+  links?: Array<{ label: string; url: string }> | undefined;
   reminder?: UpdateReminder | undefined;
   source?: AppUpdateManifest["source"] | "gitee-release" | undefined;
   force?: boolean | undefined;
@@ -363,6 +364,7 @@ async function checkForDesktopUpdates(silent = false): Promise<DesktopUpdateStat
       percent: undefined,
       availableVersion: undefined,
       notes: undefined,
+      links: undefined,
       title: undefined,
       reminder: "hidden"
     });
@@ -390,6 +392,7 @@ async function checkForDesktopUpdates(silent = false): Promise<DesktopUpdateStat
         siteUrl,
         title: manifest.title,
         notes: manifest.notes,
+        links: manifest.links,
         reminder: "hidden",
         source: manifest.source,
         force: manifest.force,
@@ -406,6 +409,7 @@ async function checkForDesktopUpdates(silent = false): Promise<DesktopUpdateStat
       siteUrl,
       title: manifest.title,
       notes: manifest.notes,
+      links: manifest.links,
       reminder,
       source: manifest.source,
       force: manifest.force,

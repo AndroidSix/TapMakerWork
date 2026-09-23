@@ -4,6 +4,10 @@
 -- The host application must call Start({ rootProvider = function() ... end }) once
 -- and Update(dt) from its existing update loop. No game restart is required for patches.
 
+-- Enable Yoga source tracking so live-edit can write props back into project Lua.
+-- Must be set before UI trees are built (see urhox-libs/UI/Core/Widget.lua AddChild).
+UI_INSPECTOR_ENABLED = true
+
 local Bridge = {}
 
 local state = {
@@ -16,6 +20,7 @@ local state = {
     pollInterval = 0.1,
     snapshotInterval = 0.5,
     httpEnabled = true,
+    httpCooldownUntil = 0,
     lastHttpError = nil,
     lastCommandError = nil,
     lastCommandResult = nil,
@@ -144,7 +149,11 @@ local function writeStatus()
 end
 
 local function request(method, route, payload, callback)
-    if not state.httpEnabled then return false end
+    if not state.httpEnabled then
+        local now = os.clock()
+        if (state.httpCooldownUntil or 0) > now then return false end
+        state.httpEnabled = true
+    end
     if state.requestPending then return false end
     local client = http and http:Create() or nil
     if not client then return false end
@@ -157,14 +166,16 @@ local function request(method, route, payload, callback)
         local encodedOk, encoded = pcall(function() return cjson.encode(payload) end)
         if not encodedOk then
             state.requestPending = false
-            state.httpEnabled = false
             state.lastHttpError = "json_encode_failed"
+            state.httpEnabled = false
+            state.httpCooldownUntil = os.clock() + 2
             return false
         end
         client:SetBody(encoded)
     end
     client:OnSuccess(function(_, response)
         state.requestPending = false
+        state.lastHttpError = nil
         local ok, value = pcall(cjson.decode, response.dataAsString or "{}")
         if callback then callback(ok and nil or "invalid_json", ok and value or nil) end
     end)
@@ -172,6 +183,7 @@ local function request(method, route, payload, callback)
         state.requestPending = false
         state.lastHttpError = tostring(message or status or "request_failed")
         state.httpEnabled = false
+        state.httpCooldownUntil = os.clock() + 2
         if callback then callback(tostring(message or status or "request_failed"), nil) end
     end)
     client:Send()
@@ -480,14 +492,20 @@ function Bridge.Update(dt)
     if state.elapsed < state.pollInterval then return end
     state.elapsed = 0
     local changed = handleFileCommands()
+    if not state.requestPending then
+        local polled = request("GET", "/api/runtime/commands?cursor=" .. tostring(state.cursor), nil, function(err, value)
+            local applied = false
+            if not err then applied = handleCommands(value) end
+            if applied or changed or state.snapshotElapsed >= state.snapshotInterval then
+                state.snapshotElapsed = 0
+                Bridge.PushSnapshot()
+            end
+        end)
+        if polled then return end
+    end
     if changed or state.snapshotElapsed >= state.snapshotInterval then
         state.snapshotElapsed = 0
         Bridge.PushSnapshot()
-    end
-    if not state.requestPending then
-        request("GET", "/api/runtime/commands?cursor=" .. tostring(state.cursor), nil, function(err, value)
-            if not err and handleCommands(value) then Bridge.PushSnapshot() end
-        end)
     end
 end
 

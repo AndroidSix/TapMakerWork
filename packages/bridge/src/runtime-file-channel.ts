@@ -28,6 +28,8 @@ export interface RuntimeFileStatus {
 export interface FindRuntimeFileStatusOptions {
   projectRoot?: string;
   projectName?: string;
+  /** Test seam: preview hash dir → project_realpath. Defaults to reading Maker preview session.json files. */
+  previewProjects?: Map<string, string>;
 }
 
 function previewRoot(): string {
@@ -188,6 +190,11 @@ function projectMatchHints(options?: FindRuntimeFileStatusOptions): string[] {
   if (options?.projectRoot) {
     hints.add(path.basename(options.projectRoot));
     try {
+      hints.add(fs.realpathSync(options.projectRoot));
+    } catch {
+      hints.add(path.resolve(options.projectRoot));
+    }
+    try {
       const config = fs.readFileSync(path.join(options.projectRoot, "scripts", "Config.lua"), "utf8");
       for (const match of config.matchAll(/Config\.(TITLE|Name|APP_NAME|PRODUCT_NAME)\s*=\s*["']([^"']+)/g)) {
         if (match[2]) hints.add(match[2]);
@@ -195,17 +202,63 @@ function projectMatchHints(options?: FindRuntimeFileStatusOptions): string[] {
     } catch {
       // Config.lua is optional.
     }
+    try {
+      const metadata = JSON.parse(fs.readFileSync(path.join(options.projectRoot, ".project", "project.json"), "utf8")) as {
+        name?: unknown;
+        taptap_publish?: { title?: unknown };
+      };
+      if (typeof metadata.taptap_publish?.title === "string") hints.add(metadata.taptap_publish.title);
+      if (typeof metadata.name === "string") hints.add(metadata.name);
+    } catch {
+      // project.json is optional for matching.
+    }
   }
   return [...hints].filter(Boolean);
 }
 
-function statusMatchesProject(status: RuntimeFileStatus, hints: string[]): boolean {
+function previewSessionProjectPaths(previewDir: string): Map<string, string> {
+  const mapping = new Map<string, string>();
+  if (!fs.existsSync(previewDir)) return mapping;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(previewDir, { withFileTypes: true });
+  } catch {
+    return mapping;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const sessionPath = path.join(previewDir, entry.name, "session.json");
+    try {
+      const session = JSON.parse(fs.readFileSync(sessionPath, "utf8")) as { project_realpath?: string };
+      if (typeof session.project_realpath === "string" && session.project_realpath) {
+        mapping.set(path.join(previewDir, entry.name), session.project_realpath);
+      }
+    } catch {
+      // ignore malformed sessions
+    }
+  }
+  return mapping;
+}
+
+function statusMatchesProject(
+  status: RuntimeFileStatus,
+  hints: string[],
+  previewProjects?: Map<string, string>
+): boolean {
   if (!hints.length) return true;
-  const haystack = [
+  const haystackParts = [
     status.projectName,
     status.sourcePath,
     status.snapshotPath
-  ].filter(Boolean).join("\n");
+  ];
+  if (status.sourcePath && previewProjects) {
+    for (const [previewRoot, projectRealpath] of previewProjects) {
+      if (status.sourcePath.startsWith(previewRoot)) {
+        haystackParts.push(projectRealpath, path.basename(projectRealpath));
+      }
+    }
+  }
+  const haystack = haystackParts.filter(Boolean).join("\n");
   if (!haystack) return false;
   return hints.some((hint) => haystack.includes(hint));
 }
@@ -221,6 +274,7 @@ export function findRuntimeFileStatus(
   }
   if (!candidates.length) return undefined;
   const hints = projectMatchHints(options);
+  const previewProjects = options?.previewProjects ?? previewSessionProjectPaths(previewRoot());
   let best: RuntimeFileStatus | undefined;
   let bestMtime = 0;
   let bestMatched: RuntimeFileStatus | undefined;
@@ -245,7 +299,7 @@ export function findRuntimeFileStatus(
         best = current;
         bestMtime = stat.mtimeMs;
       }
-      if (hints.length && statusMatchesProject(current, hints) && stat.mtimeMs >= bestMatchedMtime) {
+      if (hints.length && statusMatchesProject(current, hints, previewProjects) && stat.mtimeMs >= bestMatchedMtime) {
         bestMatched = current;
         bestMatchedMtime = stat.mtimeMs;
       }

@@ -16,6 +16,8 @@ export interface UiSidecarOverride {
   selector: UiSidecarOverrideSelector;
   scope: "template";
   props: Record<string, UiValue>;
+  /** Runtime label used to find UiStyle.* call sites after opts_passthrough. */
+  identityText?: string;
 }
 
 export interface UiSidecarDocument {
@@ -42,8 +44,28 @@ function sourceFileMatches(left: string, right: string): boolean {
 export function overrideSelectorForNode(node: UiNode): UiSidecarOverrideSelector | undefined {
   const sourceFile = node.source?.file ? normalizeSourceFile(node.source.file) : "";
   const line = Number(node.source?.line || 0);
-  if (!sourceFile || sourceFile === "runtime" || !Number.isInteger(line) || line <= 0) return undefined;
-  return { sourceFile, line, type: node.type };
+  if (sourceFile && sourceFile !== "runtime" && Number.isInteger(line) && line > 0) {
+    return { sourceFile, line, type: node.type };
+  }
+  // Conversion / sidecar node ids embed `file:line:type:…` even when runtime
+  // source tracking was off (UI_INSPECTOR_ENABLED unset).
+  return selectorFromNodeId(node.id, node.type);
+}
+
+export function selectorFromNodeId(nodeId: string, fallbackType?: string): UiSidecarOverrideSelector | undefined {
+  const match = /^(.*?\.lua):(\d+):([A-Za-z_][A-Za-z0-9_]*):/i.exec(nodeId);
+  if (!match?.[1] || !match[2] || !match[3]) return undefined;
+  const line = Number(match[2]);
+  if (!Number.isInteger(line) || line <= 0) return undefined;
+  const leaf = match[3];
+  const type = fallbackType && fallbackType !== "Widget"
+    ? fallbackType
+    : /button/i.test(leaf) ? "Button"
+      : /label|text/i.test(leaf) ? "Label"
+        : /image|sprite|icon/i.test(leaf) ? "Image"
+          : /panel|container|view|card|chip|dialog|bar/i.test(leaf) ? "Panel"
+            : `${leaf.charAt(0).toUpperCase()}${leaf.slice(1)}`;
+  return { sourceFile: normalizeSourceFile(match[1]), line, type };
 }
 
 function selectorKey(selector: UiSidecarOverrideSelector): string {

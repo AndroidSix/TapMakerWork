@@ -13,6 +13,10 @@ describe("app update manifest", () => {
       latest: "v0.1.2",
       title: "修复注入",
       notes: ["a", "", "b"],
+      links: [
+        { label: "macOS 安装说明", url: "https://example.com/doc#macos-install" },
+        { label: "bad", url: "javascript:alert(1)" }
+      ],
       force: true,
       downloads: {
         macArm64: "https://example.com/arm.dmg",
@@ -23,6 +27,7 @@ describe("app update manifest", () => {
       latest: "0.1.2",
       title: "修复注入",
       notes: ["a", "b"],
+      links: [{ label: "macOS 安装说明", url: "https://example.com/doc#macos-install" }],
       force: true,
       source: "gitee"
     });

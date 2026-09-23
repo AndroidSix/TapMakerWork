@@ -9,10 +9,16 @@ export interface AppUpdateDownloads {
   githubPage?: string;
 }
 
+export interface AppUpdateLink {
+  label: string;
+  url: string;
+}
+
 export interface AppUpdateManifest {
   latest: string;
   title: string;
   notes: string[];
+  links: AppUpdateLink[];
   publishedAt?: string;
   force: boolean;
   downloads: AppUpdateDownloads;
@@ -20,13 +26,24 @@ export interface AppUpdateManifest {
 }
 
 export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
-  latest: "0.1.1",
-  title: "TapMakerWork 0.1.1",
+  latest: "0.1.2",
+  title: "TapMakerWork 0.1.2",
   notes: [
+    "【macOS】未签名安装包会被系统 Gatekeeper 拦截；若「隐私与安全性」里没有「仍要打开」，请自行拉取源码打包。",
     "请从官网或 Gitee / GitHub Releases 下载对应平台安装包。",
     "未配置远程 version.json 时使用内置清单。"
   ],
-  publishedAt: "2026-09-22",
+  links: [
+    {
+      label: "macOS 安装说明",
+      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/README.md#macos-install"
+    },
+    {
+      label: "源码打包详细步骤",
+      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/DESKTOP_RELEASE.md#macos-build-from-source"
+    }
+  ],
+  publishedAt: "2026-09-23",
   force: false,
   downloads: {
     page: "https://gitee.com/AndroidSUP/tap-maker-work/releases",
@@ -54,6 +71,21 @@ function asNotes(value: unknown): string[] {
     .slice(0, 20);
 }
 
+function asLinks(value: unknown): AppUpdateLink[] {
+  if (!Array.isArray(value)) return [];
+  const links: AppUpdateLink[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const label = asNonEmptyString(row.label);
+    const url = asNonEmptyString(row.url);
+    if (!label || !url || !/^https?:\/\//i.test(url)) continue;
+    links.push({ label, url });
+    if (links.length >= 8) break;
+  }
+  return links;
+}
+
 export function normalizeUpdateManifest(raw: unknown, source: AppUpdateManifest["source"]): AppUpdateManifest | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const data = raw as Record<string, unknown>;
@@ -77,11 +109,13 @@ export function normalizeUpdateManifest(raw: unknown, source: AppUpdateManifest[
   if (githubPage) downloads.githubPage = githubPage;
   const title = asNonEmptyString(data.title) || `TapMakerWork ${latest}`;
   const notes = asNotes(data.notes);
+  const links = asLinks(data.links);
   const publishedAt = asNonEmptyString(data.publishedAt);
   return {
     latest,
     title,
     notes: notes.length > 0 ? notes : [`发现新版本 ${latest}，请下载对应平台安装包。`],
+    links,
     ...(publishedAt ? { publishedAt } : {}),
     force: data.force === true,
     downloads,
