@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -439,4 +440,257 @@ export function runMakerCommand(
   timeoutMs = 60_000
 ): Promise<unknown> {
   return runMakerArgs(runtime, project, ["preview", command], timeoutMs);
+}
+
+/** Extract Maker CLI JSON error payloads embedded in thrown Error.message / stdout. */
+export function parseMakerCliFailure(raw: unknown): { ok: false; result?: string; error?: string; message: string } | undefined {
+  const text = raw instanceof Error ? raw.message : typeof raw === "string" ? raw : "";
+  if (!text.trim()) return undefined;
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return undefined;
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1)) as { ok?: boolean; result?: string; error?: string };
+    if (parsed && parsed.ok === false) {
+      const detail = typeof parsed.error === "string" ? parsed.error : text;
+      return {
+        ok: false,
+        message: detail,
+        error: detail,
+        ...(typeof parsed.result === "string" ? { result: parsed.result } : {})
+      };
+    }
+  } catch {
+    // not JSON
+  }
+  return undefined;
+}
+
+export function isPreviewSupervisorUnreachable(raw: unknown): boolean {
+  const text = raw instanceof Error ? raw.message : typeof raw === "string" ? raw : String(raw ?? "");
+  return /Preview supervisor is unreachable/i.test(text)
+    || /Process ownership is unverified/i.test(text)
+    || /Previous preview ownership could not be verified/i.test(text);
+}
+
+export type ProcessPresence = "alive" | "missing" | "unknown";
+
+/** Maker stores per-project preview state under ~/.taptap-maker/preview/<sha256(realpath)>. */
+export function resolveMakerPreviewDirectory(projectRoot: string, makerHome = path.join(os.homedir(), ".taptap-maker")): string {
+  const project = fs.realpathSync(projectRoot);
+  return path.join(makerHome, "preview", createHash("sha256").update(project).digest("hex"));
+}
+
+/**
+ * Same contract as Maker's processPresence, with a Windows tasklist fallback.
+ * PID <= 0 means “no process registered” for recovery purposes.
+ */
+export function probeProcessPresence(pid: number): ProcessPresence {
+  if (!Number.isInteger(pid) || pid <= 0) return "missing";
+  try {
+    process.kill(pid, 0);
+    return "alive";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return "missing";
+  }
+  if (process.platform === "win32") {
+    const output = commandOutput("tasklist.exe", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"]);
+    if (!output || /info:\s*no tasks/i.test(output) || /没有.*任务/i.test(output)) return "missing";
+    if (new RegExp(`(^|,)"?${pid}"?(,|$)`).test(output.replace(/\s+/g, ""))) return "alive";
+    if (output.includes(String(pid))) return "alive";
+  }
+  return "unknown";
+}
+
+function windowsProcessImageName(pid: number): string {
+  if (process.platform !== "win32" || pid <= 0) return "";
+  const output = commandOutput("tasklist.exe", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"]);
+  if (!output || /info:\s*no tasks/i.test(output)) return "";
+  const match = /^"([^"]+)"/.exec(output.trim());
+  return match?.[1]?.toLowerCase() ?? "";
+}
+
+function looksLikeMakerPreviewProcess(pid: number): boolean {
+  if (process.platform !== "win32") return true;
+  const name = windowsProcessImageName(pid);
+  if (!name) return false;
+  return /^(node\.exe|urhoxruntime\.exe|powershell\.exe|pwsh\.exe|cmd\.exe)$/i.test(name);
+}
+
+export interface MakerPreviewSessionRecord {
+  project_realpath?: string;
+  state?: string;
+  supervisor_pid?: number;
+  runtime_pid?: number;
+  session_id?: string;
+  started_at?: string;
+}
+
+export interface RetireStalePreviewSessionResult {
+  retired: boolean;
+  reason: string;
+  sessionPath?: string;
+  supervisorPid?: number;
+  runtimePid?: number;
+}
+
+/**
+ * When Maker refuses start/stop because the control channel is dead but a session.json
+ * still claims ownership, retire that record only if both recorded PIDs are gone
+ * (or reused by an unrelated process on Windows). Never kill processes.
+ */
+export function retireStaleMakerPreviewSession(
+  projectRoot: string,
+  options?: { makerHome?: string; now?: number }
+): RetireStalePreviewSessionResult {
+  let project: string;
+  try {
+    project = fs.realpathSync(projectRoot);
+  } catch {
+    return { retired: false, reason: "project_unreadable" };
+  }
+  const previewDir = resolveMakerPreviewDirectory(project, options?.makerHome ?? path.join(os.homedir(), ".taptap-maker"));
+  const sessionPath = path.join(previewDir, "session.json");
+  if (!fs.existsSync(sessionPath)) return { retired: false, reason: "no_session", sessionPath };
+
+  let record: MakerPreviewSessionRecord;
+  try {
+    record = JSON.parse(fs.readFileSync(sessionPath, "utf8")) as MakerPreviewSessionRecord;
+  } catch {
+    return { retired: false, reason: "session_unreadable", sessionPath };
+  }
+  if (record.project_realpath && record.project_realpath !== project) {
+    return { retired: false, reason: "project_mismatch", sessionPath };
+  }
+  if (record.state === "stopped") {
+    return { retired: false, reason: "already_stopped", sessionPath };
+  }
+
+  const supervisorPid = Number(record.supervisor_pid ?? 0);
+  const runtimePid = Number(record.runtime_pid ?? 0);
+  const supervisorPresence = probeProcessPresence(supervisorPid);
+  const runtimePresence = probeProcessPresence(runtimePid);
+
+  const supervisorSafe = supervisorPresence === "missing"
+    || (supervisorPresence === "alive" && !looksLikeMakerPreviewProcess(supervisorPid));
+  const runtimeSafe = runtimePresence === "missing"
+    || (runtimePresence === "alive" && !looksLikeMakerPreviewProcess(runtimePid));
+
+  if (!supervisorSafe || !runtimeSafe) {
+    return {
+      retired: false,
+      reason: `pids_not_safe:supervisor=${supervisorPresence},runtime=${runtimePresence}`,
+      sessionPath,
+      supervisorPid,
+      runtimePid
+    };
+  }
+
+  const stamp = new Date(options?.now ?? Date.now()).toISOString().replace(/[:.]/g, "-");
+  const retiredPath = path.join(previewDir, `session.json.retired.${stamp}`);
+  try {
+    fs.renameSync(sessionPath, retiredPath);
+  } catch (error) {
+    return {
+      retired: false,
+      reason: `rename_failed:${error instanceof Error ? error.message : String(error)}`,
+      sessionPath,
+      supervisorPid,
+      runtimePid
+    };
+  }
+
+  const lockPath = path.join(previewDir, "operation.lock");
+  if (fs.existsSync(lockPath)) {
+    try {
+      const lock = JSON.parse(fs.readFileSync(lockPath, "utf8")) as { pid?: number };
+      if (probeProcessPresence(Number(lock.pid ?? 0)) === "missing") fs.unlinkSync(lockPath);
+    } catch {
+      // Leave the lock alone when ownership cannot be confirmed.
+    }
+  }
+
+  return {
+    retired: true,
+    reason: "session_retired",
+    sessionPath: retiredPath,
+    supervisorPid,
+    runtimePid
+  };
+}
+
+/**
+ * Windows often leaves a stale preview session after antivirus/WMI launch races.
+ * Maker then refuses start/stop until the dead supervisor record is cleared.
+ * Recovery: stop → retry start → if still stuck, safely retire dead session.json → start again.
+ */
+export async function runMakerPreviewStartWithRecovery(
+  runtime: MakerRuntime,
+  project: string,
+  timeoutMs = 60_000,
+  onRecover?: (message: string) => void
+): Promise<unknown> {
+  const looksFailed = (value: unknown) => {
+    if (isPreviewSupervisorUnreachable(value)) return true;
+    if (value && typeof value === "object" && "ok" in value && (value as { ok?: boolean }).ok === false) {
+      return isPreviewSupervisorUnreachable(JSON.stringify(value));
+    }
+    return false;
+  };
+
+  const attemptStart = async () => {
+    try {
+      const result = await runMakerCommand(runtime, project, "start", timeoutMs);
+      if (!looksFailed(result)) return { ok: true as const, result };
+      return { ok: false as const, result };
+    } catch (error) {
+      if (!isPreviewSupervisorUnreachable(error)) throw error;
+      return { ok: false as const, error };
+    }
+  };
+
+  const first = await attemptStart();
+  if (first.ok) return first.result;
+
+  onRecover?.("检测到预览 Supervisor 不可达（常见于 Windows 残留会话），正在 stop 后重试 start…");
+  try {
+    await runMakerCommand(runtime, project, "stop", Math.min(timeoutMs, 30_000));
+  } catch {
+    // stop may also fail with the same ownership message; continue recovery
+  }
+
+  const second = await attemptStart();
+  if (second.ok) return second.result;
+
+  onRecover?.("stop 后仍不可达，正在安全退役已确认死亡的预览会话记录（不杀进程）…");
+  const retired = retireStaleMakerPreviewSession(project);
+  if (retired.retired) {
+    onRecover?.(`已退役残留会话：${retired.sessionPath}`);
+  } else {
+    onRecover?.(`无法自动退役会话（${retired.reason}）。若 PID 仍存活请先在任务管理器结束 UrhoXRuntime / node。`);
+  }
+
+  const third = await attemptStart();
+  if (third.ok) return third.result;
+  if ("error" in third && third.error) throw third.error;
+  return third.result;
+}
+
+export function formatMakerPreviewError(raw: unknown): string {
+  const parsed = parseMakerCliFailure(raw);
+  const detail = parsed?.error || (raw instanceof Error ? raw.message : String(raw ?? "unknown"));
+  if (isPreviewSupervisorUnreachable(detail)) {
+    return [
+      "Maker 预览 Supervisor 不可达（Windows 常见：上次预览异常退出后会话残留，或杀毒/WMI 后台启动被拦截）。",
+      "已自动尝试：stop 重试 → 退役确认死亡的 session.json → 再次 start。",
+      "若仍失败，请在本机执行：",
+      "1) 任务管理器结束 UrhoXRuntime / TapTap Maker Preview / 相关 node 进程",
+      "2) 删除或重命名：%USERPROFILE%\\.taptap-maker\\preview\\<项目哈希>\\session.json",
+      "3) 在项目目录运行：npx @taptap/maker preview stop --target-dir . --json",
+      "4) 再运行：npx @taptap/maker preview start --target-dir . --json",
+      "5) 若 supervisor 日志为空，检查杀毒软件是否拦截 Node/PowerShell 后台启动；仍不行可重启电脑后再开预览",
+      `原始错误：${detail}`
+    ].join("\n");
+  }
+  return detail;
 }

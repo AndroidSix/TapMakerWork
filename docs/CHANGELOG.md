@@ -1,9 +1,37 @@
 # Change log
 
+## 2026-09-23 — Windows Maker preview supervisor recovery (harder)
+
+- When Maker reports supervisor unreachable / ownership unverified, preview start now: `stop` → retry → **safely retire dead `~/.taptap-maker/preview/<hash>/session.json`** (and stale `operation.lock`) → start again.
+- Session retirement only runs when recorded supervisor/runtime PIDs are confirmed missing (or Windows PID reuse by a non-Maker process). Processes are never killed.
+- Failure copy now points at deleting/renaming `session.json` and reboot as last resorts when auto-recovery cannot clear a live or unknown PID.
+
+## 2026-09-23 — Windows Maker preview supervisor recovery
+
+- Preview `start` now detects Maker’s “Preview supervisor is unreachable / Process ownership is unverified” failure, runs one `stop` then retries `start` automatically.
+- Studio and Runtime logs show Chinese remediation steps for leftover Windows sessions, antivirus/WMI blocks, and Task Manager cleanup instead of raw Maker JSON only.
+
+## 2026-09-23 — live-edit window pick for bare Maker titles
+
+- macOS Runtime capture now prefers the exact project-titled Maker preview window (e.g. `台球大师`) and demotes editor titles that only contain the project name (`App.tsx — 台球大师`).
+- Window ranking also uses portrait/landscape aspect against the game viewport so a wide IDE is not mistaken for the Runtime frame.
+- Runtime snapshot refresh drops stale `selectedId` values that no longer exist in the live tree (fixes empty inspector after opening `main`).
+
+## 2026-09-22 — NanoVG source path open fix
+
+- Runtime NanoVG call-site paths now normalize Maker `require` chunk names (`pool/ui/DrawUtil`) to project files (`scripts/pool/ui/DrawUtil.lua`).
+- Bridge file open resolves the same module / absolute / missing-`.lua` variants, so clicking Runtime nodes opens the real UI source without ENOENT.
+- Yoga snapshot source paths are likewise rewritten to project-relative `scripts/…` paths.
+
 ## 2026-09-22 — app update manifest
 
 - Added root `version.json` for IDE version comparison, release notes and per-platform download URLs (Gitee/GitHub raw, same pattern as `community.json`).
 - Desktop update flow now prompts with **立即更新 / 暂不更新 / 不再提醒**, plus menu **帮助 → 检查更新**.
+
+## 2026-09-23 — GameAlgo Report Pack
+
+- Published the TapMakerWork IDE Report Pack (`gamealgo-report-pack.json`) with overview, retention, version coverage, milestone funnels and IDE usage charts.
+- Desktop telemetry now defaults to non-debug GameAlgo events so formal dashboards can receive traffic from local development builds.
 
 ## 2026-09-22 — GameAlgo IDE telemetry
 

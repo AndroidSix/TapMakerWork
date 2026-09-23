@@ -192,11 +192,34 @@ local function safeValue(value, depth, seen)
     return result
 end
 
+local function normalizeSourceFile(source)
+    if type(source) ~= "string" or source == "" then return "runtime" end
+    source = source:gsub("^@", "")
+    source = source:gsub("\\", "/")
+    if source == "runtime" or source == "=[C]" or source:match("^%[") or source:match("^=") then
+        return source
+    end
+    local scripts = source:match("(scripts/.+)$")
+    if scripts then
+        if not scripts:match("%.lua$") then scripts = scripts .. ".lua" end
+        return scripts
+    end
+    if source:match("%.lua$") then
+        if not source:match("^scripts/") then return "scripts/" .. source end
+        return source
+    end
+    if not source:find("/", 1, true) and source:find(".", 1, true) then
+        source = source:gsub("%.", "/")
+    end
+    if not source:match("^scripts/") then source = "scripts/" .. source end
+    return source .. ".lua"
+end
+
 local function widgetId(widget)
     if widget.__tapmakerworkId then return widget.__tapmakerworkId end
     state.nextWidgetId = state.nextWidgetId + 1
     local explicit = widget.props and widget.props.id
-    local source = tostring(widget._sourceFile or "runtime") .. ":" .. tostring(widget._sourceLine or 0)
+    local source = tostring(normalizeSourceFile(widget._sourceFile or "runtime")) .. ":" .. tostring(widget._sourceLine or 0)
     widget.__tapmakerworkId = explicit or (source .. ":" .. tostring(widget._className or "Widget") .. ":" .. state.nextWidgetId)
     return widget.__tapmakerworkId
 end
@@ -249,7 +272,7 @@ local function snapshotWidget(widget)
             or (type(title) == "string" and title ~= "" and title)
             or (widget._className or "Widget"),
         props = props,
-        source = { file = widget._sourceFile or "runtime", line = widget._sourceLine or 0 },
+        source = { file = normalizeSourceFile(widget._sourceFile or "runtime"), line = widget._sourceLine or 0 },
         children = children,
     }
 end

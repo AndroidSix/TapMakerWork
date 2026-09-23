@@ -218,9 +218,26 @@ local function normalizeSource(source)
     if type(source) ~= "string" or source == "" then return "runtime" end
     source = source:gsub("^@", "")
     source = source:gsub("\\", "/")
+    if source == "runtime" or source == "=[C]" or source:match("^%[") or source:match("^=") then
+        return source
+    end
+    -- Absolute / package paths that already contain scripts/…
     local scripts = source:match("(scripts/.+)$")
-    if scripts then return scripts end
-    return source
+    if scripts then
+        if not scripts:match("%.lua$") then scripts = scripts .. ".lua" end
+        return scripts
+    end
+    -- Maker require() chunk names look like "pool/ui/DrawUtil" (no scripts/, no .lua).
+    if source:match("%.lua$") then
+        if not source:match("^scripts/") then return "scripts/" .. source end
+        return source
+    end
+    -- Dotted module form: pool.ui.DrawUtil
+    if not source:find("/", 1, true) and source:find(".", 1, true) then
+        source = source:gsub("%.", "/")
+    end
+    if not source:match("^scripts/") then source = "scripts/" .. source end
+    return source .. ".lua"
 end
 
 local function callSite(skip)

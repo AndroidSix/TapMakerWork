@@ -104,4 +104,62 @@ describe("Maker runtime selection", () => {
       source: "device"
     });
   });
+
+  it("detects Windows supervisor-unreachable Maker failures", async () => {
+    const { isPreviewSupervisorUnreachable, parseMakerCliFailure, formatMakerPreviewError } = await import("./maker.js");
+    const raw = '{"ok":false,"protocol_version":1,"result":"FAIL","error":"Error: Preview supervisor is unreachable. Process ownership is unverified; no PID was killed and no session was restarted.","artifacts":[]}';
+    expect(isPreviewSupervisorUnreachable(raw)).toBe(true);
+    expect(isPreviewSupervisorUnreachable("Previous preview ownership could not be verified. Refusing to start a duplicate session.")).toBe(true);
+    expect(parseMakerCliFailure(raw)?.ok).toBe(false);
+    expect(formatMakerPreviewError(raw)).toContain("Supervisor 不可达");
+    expect(formatMakerPreviewError(raw)).toContain("session.json");
+  });
+
+  it("retires dead Maker preview session records without killing processes", async () => {
+    const {
+      resolveMakerPreviewDirectory,
+      retireStaleMakerPreviewSession,
+      probeProcessPresence
+    } = await import("./maker.js");
+    const project = temporaryDirectory();
+    const makerHome = temporaryDirectory();
+    const previewDir = resolveMakerPreviewDirectory(project, makerHome);
+    fs.mkdirSync(previewDir, { recursive: true });
+    const sessionPath = path.join(previewDir, "session.json");
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      protocol_version: 1,
+      project_realpath: fs.realpathSync(project),
+      state: "running",
+      supervisor_pid: 0,
+      runtime_pid: 0,
+      session_id: "00000000-0000-4000-8000-000000000001"
+    }), "utf8");
+    fs.writeFileSync(path.join(previewDir, "operation.lock"), JSON.stringify({ pid: 0 }), "utf8");
+
+    expect(probeProcessPresence(0)).toBe("missing");
+    const retired = retireStaleMakerPreviewSession(project, { makerHome });
+    expect(retired.retired).toBe(true);
+    expect(fs.existsSync(sessionPath)).toBe(false);
+    expect(fs.existsSync(path.join(previewDir, "operation.lock"))).toBe(false);
+    expect(fs.readdirSync(previewDir).some((name) => name.startsWith("session.json.retired."))).toBe(true);
+  });
+
+  it("refuses to retire a session when a recorded PID is still alive", async () => {
+    const { resolveMakerPreviewDirectory, retireStaleMakerPreviewSession } = await import("./maker.js");
+    const project = temporaryDirectory();
+    const makerHome = temporaryDirectory();
+    const previewDir = resolveMakerPreviewDirectory(project, makerHome);
+    fs.mkdirSync(previewDir, { recursive: true });
+    fs.writeFileSync(path.join(previewDir, "session.json"), JSON.stringify({
+      protocol_version: 1,
+      project_realpath: fs.realpathSync(project),
+      state: "running",
+      supervisor_pid: process.pid,
+      runtime_pid: 0
+    }), "utf8");
+    const retired = retireStaleMakerPreviewSession(project, { makerHome });
+    expect(retired.retired).toBe(false);
+    expect(retired.reason).toContain("pids_not_safe");
+    expect(fs.existsSync(path.join(previewDir, "session.json"))).toBe(true);
+  });
 });
