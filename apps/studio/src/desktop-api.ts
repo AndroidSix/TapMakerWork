@@ -20,6 +20,7 @@ export interface DesktopUpdateState {
   siteUrl?: string | undefined;
   title?: string | undefined;
   notes?: string[] | undefined;
+  links?: Array<{ label: string; url: string }> | undefined;
   reminder?: "show" | "snoozed" | "muted" | "hidden" | undefined;
   source?: "gitee" | "github" | "builtin" | "gitee-release" | undefined;
   force?: boolean | undefined;

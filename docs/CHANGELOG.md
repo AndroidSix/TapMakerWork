@@ -1,5 +1,19 @@
 # Change log
 
+## 2026-09-23 — NanoVG live-edit sync + terminal tools (0.1.2)
+
+> **macOS 安装提示：** 未签名包会被 Gatekeeper 拦截；系统设置若无「仍要打开」，请自行拉取源码打包。  
+> 一键查看：
+> [macOS 安装说明](../README.md#macos-install) ·
+> [源码打包详细步骤](./DESKTOP_RELEASE.md#macos-build-from-source)
+
+- NanoVG bridge no longer POSTs a runtime snapshot on every `nvgEndFrame`; Update polls `/api/runtime/commands` first so patches are not starved (fixes 台球大师-style games where the IDE tree moved but the preview did not).
+- HTTP client uses a short cooldown instead of permanently disabling after the first failure.
+- Adapter bootstrap embeds `project.json` / folder title as `projectName` when `Config.lua` is missing; file-channel matching also uses Maker `preview/*/session.json` `project_realpath`.
+- Studio terminal panel adds **复制** and **清空** for the active log channel.
+- Version bumped to **0.1.2**.
+- `version.json` release notes now lead with the macOS Gatekeeper tip and expose one-click `links` into the README / DESKTOP_RELEASE anchors above.
+
 ## 2026-09-23 — Windows Maker preview supervisor recovery (harder)
 
 - When Maker reports supervisor unreachable / ownership unverified, preview start now: `stop` → retry → **safely retire dead `~/.taptap-maker/preview/<hash>/session.json`** (and stale `operation.lock`) → start again.

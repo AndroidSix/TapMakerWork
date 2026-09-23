@@ -1068,13 +1068,61 @@ function PermissionGuide({ state, busy, confirmed, onAction, onClose }: {
   );
 }
 
+function UpdateNoteText({ text, onOpen }: { text: string; onOpen: (url: string) => void }) {
+  const nodes: ReactNode[] = [];
+  const pattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
+    const label = match[1] ?? "";
+    const url = match[2] ?? "";
+    if (!url) continue;
+    nodes.push(
+      <button
+        key={`note-link-${key++}`}
+        type="button"
+        className="update-note-link"
+        onClick={() => onOpen(url)}
+      >
+        {label}
+      </button>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return <>{nodes}</>;
+}
+
+function UpdateDocLinks({
+  links,
+  onOpen
+}: {
+  links?: Array<{ label: string; url: string }> | undefined;
+  onOpen: (url: string) => void;
+}) {
+  if (!links || links.length === 0) return null;
+  return (
+    <div className="update-doc-links" role="group" aria-label="发布说明相关文档">
+      {links.map((link) => (
+        <button key={`${link.label}-${link.url}`} type="button" className="update-doc-link" onClick={() => onOpen(link.url)}>
+          <ExternalLink size={12} />
+          {link.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function UpdatePromptDialog({
   state,
   busy,
   onUpdate,
   onSnooze,
   onMute,
-  onClose
+  onClose,
+  onOpenExternal
 }: {
   state: DesktopUpdateState;
   busy: string;
@@ -1082,6 +1130,7 @@ function UpdatePromptDialog({
   onSnooze: () => void;
   onMute: () => void;
   onClose: () => void;
+  onOpenExternal: (url: string) => void;
 }) {
   return <div className="legal-backdrop update-prompt-backdrop" role="presentation">
     <section className="sponsor-dialog update-prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="update-prompt-title">
@@ -1096,11 +1145,14 @@ function UpdatePromptDialog({
       <div className="update-prompt-body">
         {(state.notes && state.notes.length > 0) ? (
           <ul className="update-notes">
-            {state.notes.map((note) => <li key={note}>{note}</li>)}
+            {state.notes.map((note) => (
+              <li key={note}><UpdateNoteText text={note} onOpen={onOpenExternal} /></li>
+            ))}
           </ul>
         ) : (
           <p className="desktop-card-note">请下载并安装新版本后重启 TapMakerWork。</p>
         )}
+        <UpdateDocLinks links={state.links} onOpen={onOpenExternal} />
         {state.message && <p className="desktop-card-note" role="status">{state.message}</p>}
       </div>
       <footer>
@@ -3698,6 +3750,7 @@ export function App() {
       onSnooze={() => void runDesktopUpdateAction("snooze")}
       onMute={() => void runDesktopUpdateAction("mute")}
       onClose={() => setUpdatePromptOpen(false)}
+      onOpenExternal={openExternalUrl}
     />
     : null;
 
@@ -4197,8 +4250,13 @@ export function App() {
                 )}
                 {desktopUpdate.notes && desktopUpdate.notes.length > 0 && desktopUpdate.phase === "available" && (
                   <ul className="update-notes compact">
-                    {desktopUpdate.notes.map((note) => <li key={note}>{note}</li>)}
+                    {desktopUpdate.notes.map((note) => (
+                      <li key={note}><UpdateNoteText text={note} onOpen={openExternalUrl} /></li>
+                    ))}
                   </ul>
+                )}
+                {desktopUpdate.phase === "available" && (
+                  <UpdateDocLinks links={desktopUpdate.links} onOpen={openExternalUrl} />
                 )}
                 {desktopUpdate.message && (
                   <p className={desktopUpdate.phase === "error" ? "desktop-card-error" : "desktop-card-note"} role="status">
@@ -5089,6 +5147,26 @@ export function App() {
           {channels.map((channel) => <button key={channel.id} aria-pressed={activeTerminal === channel.id} className={activeTerminal === channel.id ? "active" : ""} onClick={() => setActiveTerminal(channel.id)}>{channel.label}</button>)}
           <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: layout.terminal <= 42 ? DEFAULT_LAYOUT.terminal : 40 })}>{layout.terminal <= 42 ? "展开" : "收起"}</button>
           <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: terminalMaxHeight() })}>最大化</button>
+          <button
+            className="terminal-size"
+            title="复制当前终端全部输出"
+            onClick={() => {
+              const text = logs[activeTerminal].join("\n");
+              if (!text.trim()) {
+                toast("当前终端没有可复制的内容", "warn");
+                return;
+              }
+              void copyText(text);
+            }}
+          >复制</button>
+          <button
+            className="terminal-size"
+            title="清空当前终端频道"
+            onClick={() => {
+              setLogs((current) => ({ ...current, [activeTerminal]: [] }));
+              toast("已清空终端", "success");
+            }}
+          >清空</button>
           <button className="terminal-reset" onClick={resetLayout} title="一键还原 IDE 布局">还原布局</button>
         </nav>
         <pre className={`terminal-output ${activeTerminal === "shell" ? "locked" : ""}`}>{logs[activeTerminal].join("\n")}</pre>

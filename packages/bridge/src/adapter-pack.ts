@@ -89,7 +89,38 @@ function resolveMakerClientEntry(projectRoot: string): string {
   throw new Error("maker_client_entry_not_found");
 }
 
-function yogaBootstrap(): string {
+function escapeLuaString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+}
+
+/** Prefer publish title / project.json name, then folder basename — Config.lua is optional. */
+export function resolveBootstrapProjectName(projectRoot: string): string {
+  try {
+    const metadata = JSON.parse(fs.readFileSync(path.join(projectRoot, ".project", "project.json"), "utf8")) as {
+      name?: unknown;
+      taptap_publish?: { title?: unknown };
+    };
+    const title = metadata.taptap_publish?.title;
+    if (typeof title === "string" && title.trim()) return title.trim();
+    if (typeof metadata.name === "string" && metadata.name.trim()) return metadata.name.trim();
+  } catch {
+    // project.json is optional during adapter unit tests.
+  }
+  return path.basename(path.resolve(projectRoot));
+}
+
+function projectNameBootstrapSnippet(projectName: string): string {
+  const escaped = escapeLuaString(projectName);
+  return `    local projectName = "${escaped}"
+    do
+        local okCfg, cfg = pcall(require, "Config")
+        if okCfg and type(cfg) == "table" then
+            projectName = cfg.TITLE or cfg.Name or cfg.APP_NAME or cfg.PRODUCT_NAME or projectName
+        end
+    end`;
+}
+
+function yogaBootstrap(projectName: string): string {
   return `${BOOTSTRAP_START}
 local tapMakerWorkLiveEditor_ = nil
 
@@ -101,13 +132,7 @@ local function TapMakerWorkLiveEditorStart()
         print("[TapMakerWork] live editor unavailable: " .. tostring(okBridge and UI or bridge))
         return
     end
-    local projectName = nil
-    do
-        local okCfg, cfg = pcall(require, "Config")
-        if okCfg and type(cfg) == "table" then
-            projectName = cfg.TITLE or cfg.Name or cfg.APP_NAME or cfg.PRODUCT_NAME
-        end
-    end
+${projectNameBootstrapSnippet(projectName)}
     tapMakerWorkLiveEditor_ = bridge
     bridge.Start({
         url = "http://127.0.0.1:43121",
@@ -126,7 +151,7 @@ ${BOOTSTRAP_END}
 `;
 }
 
-function nanovgBootstrap(): string {
+function nanovgBootstrap(projectName: string): string {
   return `${BOOTSTRAP_START}
 local tapMakerWorkLiveEditor_ = nil
 
@@ -137,13 +162,7 @@ local function TapMakerWorkLiveEditorStart()
         print("[TapMakerWork] NanoVG live editor unavailable: " .. tostring(bridge))
         return
     end
-    local projectName = nil
-    do
-        local okCfg, cfg = pcall(require, "Config")
-        if okCfg and type(cfg) == "table" then
-            projectName = cfg.TITLE or cfg.Name or cfg.APP_NAME or cfg.PRODUCT_NAME
-        end
-    end
+${projectNameBootstrapSnippet(projectName)}
     tapMakerWorkLiveEditor_ = bridge
     bridge.Start({
         url = "http://127.0.0.1:43121",
@@ -161,8 +180,8 @@ ${BOOTSTRAP_END}
 `;
 }
 
-function bootstrapFor(backend: UiBackend): string {
-  return backend === "nanovg" ? nanovgBootstrap() : yogaBootstrap();
+function bootstrapFor(backend: UiBackend, projectName: string): string {
+  return backend === "nanovg" ? nanovgBootstrap(projectName) : yogaBootstrap(projectName);
 }
 
 function entryMatchesBackend(source: string, backend: UiBackend): boolean {
@@ -203,13 +222,14 @@ export function installRuntimeAdapter(options: {
   const repoRoot = findRepoRoot(options.bridgePackageRoot);
   const projectRoot = path.resolve(options.projectRoot);
   const backend = options.backend ?? detectUiBackend(projectRoot);
+  const bootstrapName = resolveBootstrapProjectName(projectRoot);
   const templateName = adapterTemplateFile(backend);
   const templatePath = path.join(repoRoot, "runtime", "lua", templateName);
   if (!fs.existsSync(templatePath)) throw new Error("adapter_template_not_found");
 
   const entryPath = resolveMakerClientEntry(projectRoot);
   const original = fs.readFileSync(entryPath, "utf8");
-  const expectedBootstrap = bootstrapFor(backend);
+  const expectedBootstrap = bootstrapFor(backend, bootstrapName);
   const currentBootstrap = extractManagedBootstrap(original);
   const bootstrapCurrent = Boolean(currentBootstrap)
     && normalizeBootstrapText(currentBootstrap!) === normalizeBootstrapText(expectedBootstrap);

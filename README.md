@@ -28,6 +28,60 @@
 
 版本号与根目录 [`package.json`](./package.json) 一致。
 
+<a id="macos-install"></a>
+
+### macOS 安装说明（请先读）
+
+受 **Apple / macOS Gatekeeper** 限制：从网上下载的应用若**没有正式 Developer ID 签名并公证**，系统会拦截安装，这与是否开源无关。
+
+| 情况 | 建议 |
+|------|------|
+| 下载到的是**已签名 + 公证**的正式 Release | 正常双击 `.dmg` 安装即可 |
+| 未签名包 / 系统提示「无法验证开发者」「已损坏」 | 先按下面「仍可尝试」操作；若设置里**没有「仍要打开」**，请改用「自行拉取源码打包」 |
+
+#### 仍可尝试（有「仍要打开」时）
+
+1. 打开 **系统设置 → 隐私与安全性**（或部分系统为「安全性与隐私」）。
+2. 在刚被拦截的提示附近，找 **「仍要打开」** / **「Open Anyway」**，点确认后再打开一次安装包。
+3. 或在 Finder 中对 `.app` / 安装包 **右键 → 打开**，按提示确认。
+
+部分较新的 macOS 版本或策略下，**隐私与安全性里可能根本不出现「仍要打开」**，右键打开也无效——这时不要反复清隔离属性硬闯，直接走下一节自行打包。
+
+<a id="macos-build-from-source"></a>
+
+#### 系统设置没有「仍要打开」时：自行拉取源码打包
+
+本机从源码打出的包由你自己构建，Gatekeeper 对「本机用户构建产物」的处理通常比网上下载的未签名包宽松，适合个人使用。
+
+**环境要求**
+
+- macOS（Apple 打包工具链只能在 Mac 上跑）
+- [Node.js](https://nodejs.org/) **22+**，且终端里 `node` / `npm` 可用（可用 `node -v` 确认）
+- 已安装 Xcode Command Line Tools：`xcode-select --install`（若尚未安装）
+- 磁盘空间充足（首次 `npm install` 与 Electron 下载体积较大）
+
+**步骤**
+
+1. **拉取源码**（任选其一）  
+   - GitHub：`git clone https://github.com/AndroidSix/TapMakerWork.git`  
+   - 国内镜像：`git clone https://gitee.com/AndroidSUP/tap-maker-work.git`
+2. 进入仓库目录：`cd TapMakerWork`（或你 clone 后的目录名）。
+3. 安装依赖：`npm install`  
+   - 若 Electron 下载失败，可先设置国内镜像再装：  
+     `export ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/`  
+     然后重新 `npm install`。
+4. **只打本机可用的 macOS 安装包**（任选其一）：  
+   - 命令行：`npm run package:ide:mac` 或 `npm run dist:mac`  
+   - 或双击：`outputs/launchers/Package-TapMakerWork-All.command`（会打双端；只要 mac 可只用上面的 mac 命令）
+5. 等待构建结束，在 **`outputs/installers/`** 中找到 `TapMakerWork-*-mac-*.dmg`（或同目录下的 `.app` / ZIP）。
+6. 双击本机刚生成的 `.dmg`，将应用拖到「应用程序」后启动。
+
+**说明**
+
+- 未配置 Apple 开发者证书时，打出来的是**本机 QA / 自用包**，不要当作对外正式分发源。
+- 若只想先跑起来、不打安装包：可双击 `outputs/launchers/TapMakerWork-macOS.command`，或 `npm install` 后执行 `npm run dev`（开发态）。
+- 签名、公证、对外发布与环境变量见 [`docs/DESKTOP_RELEASE.md`](./docs/DESKTOP_RELEASE.md)。
+
 ---
 
 ## 这是什么

@@ -906,6 +906,39 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
   border-radius: 8px;
 }
 .update-notes li + li { margin-top: 6px; }
+.update-note-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  color: #8ec8ff;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(142, 200, 255, 0.45);
+  font: inherit;
+  cursor: pointer;
+}
+.update-note-link:hover { color: #b8dcff; border-bottom-color: #b8dcff; }
+.update-doc-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+.update-notes.compact + .update-doc-links { margin-top: 0; margin-bottom: 10px; }
+.update-doc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--control);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.update-doc-link:hover { border-color: #6f879f; }
 .update-prompt-dialog > footer button.primary { display: inline-flex; align-items: center; gap: 6px; }
 @media (max-width: 620px), (max-height: 560px) {
   .legal-backdrop, .runtime-error-backdrop, .project-reject-backdrop, .sponsor-backdrop, .roadmap-backdrop { padding: 10px; }
