@@ -122,10 +122,13 @@ function projectNameBootstrapSnippet(projectName: string): string {
 
 function yogaBootstrap(projectName: string): string {
   return `${BOOTSTRAP_START}
+-- Source tracking for Lua writeback (must run before UI trees are built).
+UI_INSPECTOR_ENABLED = true
 local tapMakerWorkLiveEditor_ = nil
 
 local function TapMakerWorkLiveEditorStart()
     if IsServerMode and IsServerMode() then return end
+    UI_INSPECTOR_ENABLED = true
     local okBridge, bridge = pcall(require, "tapmakerwork/TapMakerWorkBridge")
     local okUi, UI = pcall(require, "urhox-libs/UI")
     if not okBridge or not okUi then

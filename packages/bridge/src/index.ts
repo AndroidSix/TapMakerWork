@@ -56,6 +56,7 @@ import {
   resolveProjectAsset,
   sendProjectAsset
 } from "./asset-handler.js";
+import { collectDirtyLiteralOverrides, writeBackUiOverridesToLua, writeBackUiTreeLiteralsToLua, type LuaWritebackOverride } from "./lua-prop-writeback.js";
 import { findUiNodePath, mergeUiSidecarOverride, mergeUiSidecarOverrides, nodeMatchesUiOverride, overrideSelectorForNode, readUiSidecar, sidecarExists, sidecarRelativePath, snapshotFromSidecar, uiNodeAtLine, writeUiSidecar, type UiSidecarOverride } from "./ui-sidecar.js";
 import {
   applyPreviewPanelPatch,
@@ -72,11 +73,20 @@ import {
   runImageCompress,
   writeImageCompressSettings
 } from "./image-compress.js";
+import {
+  emptyRadarSnapshot,
+  fetchLatestRadarSnapshot,
+  loadRadarSnapshot,
+  proxyTapIcon,
+  readOfflineSnapshot
+} from "./new-game-radar.js";
 
 let lastAppliedRuntimeRevision = -1;
 let snapshotSource: SnapshotSource = "empty";
 let runtimeFileSessionId: string | undefined;
 let pendingUiOverrides: UiSidecarOverride[] = [];
+/** Explicit user patches queued for Lua writeback — never drop `text` as "dynamic". */
+let pendingLuaWritebacks: LuaWritebackOverride[] = [];
 let skippedRuntimePersistence = 0;
 const appliedRuntimeOverrideKeys = new Set<string>();
 
@@ -239,6 +249,31 @@ function isRepeatedRuntimeTemplate(root: UiNode, node: UiNode): boolean {
     if (nodeMatchesUiOverride(candidate, probe)) matches += 1;
   });
   return matches > 1;
+}
+
+/** When runtime source tracking is missing, recover file:line from the active Lua conversion. */
+function attachWritebackSource(node: UiNode): UiNode {
+  if (overrideSelectorForNode(node)) return node;
+  if (!conversion?.root) return node;
+  const text = node.props.text;
+  const hits: UiNode[] = [];
+  visitUiNodes(conversion.root, (candidate) => {
+    if (candidate.type !== node.type) return;
+    if (text !== undefined && candidate.props.text === text) hits.push(candidate);
+  });
+  if (hits.length === 1 && hits[0]?.source?.file && hits[0].source.line) {
+    return { ...node, source: { file: hits[0].source.file, line: hits[0].source.line } };
+  }
+  if (typeof text === "string") return node;
+  // Unique type in the open file.
+  const sameType: UiNode[] = [];
+  visitUiNodes(conversion.root, (candidate) => {
+    if (candidate.type === node.type && candidate.source?.file && candidate.source.line) sameType.push(candidate);
+  });
+  if (sameType.length === 1 && sameType[0]?.source?.file && typeof sameType[0].source.line === "number" && sameType[0].source.line > 0) {
+    return { ...node, source: { file: sameType[0].source.file, line: sameType[0].source.line } };
+  }
+  return node;
 }
 
 function enqueueSavedUiOverrides(snapshot: UiSnapshot): number {
@@ -565,6 +600,7 @@ const server = http.createServer(async (request, response) => {
       snapshotSource = "empty";
       runtimeCommands.length = 0;
       pendingUiOverrides = [];
+      pendingLuaWritebacks = [];
       skippedRuntimePersistence = 0;
       appliedRuntimeOverrideKeys.clear();
       runtimeConnectedAt = undefined;
@@ -586,6 +622,7 @@ const server = http.createServer(async (request, response) => {
       conversion = pickInitialConversion(uiScreens, defaultUiEntry);
       activeUiEntry = conversion?.sourceFile ?? defaultUiEntry;
       pendingUiOverrides = [];
+      pendingLuaWritebacks = [];
       skippedRuntimePersistence = 0;
       appliedRuntimeOverrideKeys.clear();
       const sidecar = conversion ? readUiSidecar(project.root, conversion.sourceFile) : undefined;
@@ -691,6 +728,7 @@ const server = http.createServer(async (request, response) => {
       if (!conversion) throw new Error("ui_screen_not_convertible");
       activeUiEntry = body.path;
       pendingUiOverrides = [];
+      pendingLuaWritebacks = [];
       skippedRuntimePersistence = 0;
       appliedRuntimeOverrideKeys.clear();
       const sidecar = project ? readUiSidecar(project.root, body.path) : undefined;
@@ -799,9 +837,56 @@ const server = http.createServer(async (request, response) => {
             : body.snapshot;
         }
       }
-      const written = writeUiSidecar(project.root, sourceFile, savedSnapshot, "sidecar", overrides);
+      // Yoga writeback:
+      // - pendingLuaWritebacks: explicit user patches (keeps `text` even when siblings share a source line)
+      // - dirty diff / tree literals: structure sketch only — runtime snapshots carry computed layout
+      //   and must not be frozen into Lua (that previously corrupted MainHUD.lua).
+      let conversionBaseline: UiNode | undefined;
+      try {
+        const staticConversion = conversion?.sourceFile === sourceFile
+          ? conversion
+          : convertLuaUiFile(project.root, sourceFile);
+        conversionBaseline = staticConversion.root;
+      } catch {
+        conversionBaseline = undefined;
+      }
+      const dirtyFromSnapshot = (!runtimeSave && conversionBaseline)
+        ? collectDirtyLiteralOverrides(body.snapshot.root, conversionBaseline)
+        : [];
+      const writebackQueue = mergeUiSidecarOverrides(
+        mergeUiSidecarOverrides(pendingLuaWritebacks, overrides),
+        dirtyFromSnapshot
+      );
+      const luaFromOverrides = writeBackUiOverridesToLua(project.root, writebackQueue);
+      const luaFromTree = runtimeSave
+        ? { filesTouched: [] as string[], appliedCount: 0, skippedCount: 0 }
+        : writeBackUiTreeLiteralsToLua(project.root, body.snapshot.root);
+      const durableOverrides = luaFromOverrides.overrides;
+      const luaApplied = luaFromOverrides.appliedCount + luaFromTree.appliedCount;
+      const luaFiles = [...new Set([...luaFromOverrides.filesTouched, ...luaFromTree.filesTouched])];
+      if (luaApplied > 0) {
+        broadcast({
+          type: "log.append",
+          channel: "agent",
+          lines: [`Yoga 已回写 Lua ${luaApplied} 项 → ${luaFiles.join(", ") || sourceFile}`]
+        });
+      } else if (writebackQueue.length > 0) {
+        const skipHints = luaFromOverrides.details
+          .flatMap((detail) => detail.skipped.map((item) => `${detail.type}@${detail.line}.${item.key}:${item.reason}`))
+          .slice(0, 8);
+        broadcast({
+          type: "log.append",
+          channel: "agent",
+          lines: [
+            `Yoga 回写未改动文件（${writebackQueue.length} 条候选未写入）`,
+            ...(skipHints.length ? [`原因：${skipHints.join(" · ")}`] : [])
+          ]
+        });
+      }
+      const written = writeUiSidecar(project.root, sourceFile, savedSnapshot, "sidecar", durableOverrides);
       const skippedInstances = skippedRuntimePersistence;
       pendingUiOverrides = [];
+      pendingLuaWritebacks = [];
       skippedRuntimePersistence = 0;
       appliedRuntimeOverrideKeys.clear();
       if (runtimeSave) {
@@ -814,10 +899,15 @@ const server = http.createServer(async (request, response) => {
         const bumped = bumpPreviewReload(project.root, {}, makerMeta);
         broadcast({ type: "preview.panel", panel: bumped, reason: "sidecar-saved" });
       }
-      let makerRefresh: { requested: boolean; error?: string } = { requested: false };
-      if (panelState.autoRefreshMaker && makerRuntime) {
+      // Runtime live-edit already applies SetStyle in-process. Blocking on Maker
+      // refresh after every autosave is what made the editor feel frozen.
+      let makerRefresh: { requested: boolean; error?: string; skipped?: string } = { requested: false };
+      const shouldRefreshMaker = panelState.autoRefreshMaker && makerRuntime && luaApplied > 0 && snapshotSource !== "runtime";
+      if (panelState.autoRefreshMaker && makerRuntime && !shouldRefreshMaker) {
+        makerRefresh = { requested: false, skipped: snapshotSource === "runtime" ? "runtime_live" : "no_lua_change" };
+      } else if (shouldRefreshMaker) {
         try {
-          await runMakerCommand(makerRuntime, project.root, "refresh", 45_000);
+          await runMakerCommand(makerRuntime!, project.root, "refresh", 45_000);
           makerRefresh = { requested: true };
           broadcast({ type: "log.append", channel: "runtime", lines: ["live-edit 已触发 Maker preview refresh"] });
         } catch (error) {
@@ -834,7 +924,12 @@ const server = http.createServer(async (request, response) => {
         persistence: {
           mode: runtimeSave ? "template-overrides" : "static-tree",
           overrideCount: written.document.overrides.length,
-          skippedInstances
+          skippedInstances,
+          luaWriteback: {
+            applied: luaApplied,
+            skipped: luaFromOverrides.skippedCount + luaFromTree.skippedCount,
+            files: luaFiles
+          }
         },
         preview: {
           reloadToken: resolvePreviewPanel(project.root, makerMeta).reloadToken,
@@ -933,13 +1028,68 @@ const server = http.createServer(async (request, response) => {
       const patch = snapshotSource === "runtime" && requestedPatch.baseRevision !== current.revision
         ? { ...requestedPatch, baseRevision: current.revision }
         : requestedPatch;
-      const target = findUiNode(current.root, patch.nodeId);
-      if (snapshotSource === "runtime" && target) {
+      const targetRaw = findUiNode(current.root, patch.nodeId);
+      const target = targetRaw ? attachWritebackSource(targetRaw) : undefined;
+      // Queue any sourced node for Lua writeback — not only runtime captures.
+      if (target && overrideSelectorForNode(target)) {
+        // Sidecar replay still drops repeated-list data props (text/value/…).
         const merged = mergeUiSidecarOverride(pendingUiOverrides, target, patch.props, {
-          dynamicTemplate: isRepeatedRuntimeTemplate(current.root, target)
+          dynamicTemplate: snapshotSource === "runtime" && isRepeatedRuntimeTemplate(current.root, target)
         });
         pendingUiOverrides = merged.overrides;
-        skippedRuntimePersistence += merged.ignoredProps || (merged.persisted ? 0 : 1);
+        // Lua writeback always keeps user-edited text — dynamic filter would drop it
+        // when AddChild source lines collide across siblings.
+        const forLua = mergeUiSidecarOverride(pendingLuaWritebacks, target, patch.props, {
+          dynamicTemplate: false
+        });
+        const previousProps: Record<string, import("@tapmakerwork/protocol").UiValue> = {};
+        // Identity for call-site routing (text + layout). Walk parents so Label edits
+        // still see the PrimaryButton width/left from the outer kit call.
+        let cursor: typeof target | undefined = target;
+        const seen = new Set<string>();
+        while (cursor && !seen.has(cursor.id)) {
+          seen.add(cursor.id);
+          if (previousProps.text === undefined && cursor.props.text !== undefined) {
+            previousProps.text = cursor.props.text;
+          }
+          for (const key of ["width", "height", "left", "top"] as const) {
+            if (previousProps[key] === undefined && cursor.props[key] !== undefined) {
+              previousProps[key] = cursor.props[key] as import("@tapmakerwork/protocol").UiValue;
+            }
+          }
+          const parent = findParentInfo(current.root, cursor.id);
+          cursor = parent ? findUiNode(current.root, parent.parentId) : undefined;
+        }
+        const selector = overrideSelectorForNode(target);
+        pendingLuaWritebacks = forLua.overrides.map((raw): LuaWritebackOverride => {
+          const item: LuaWritebackOverride = raw;
+          const matched = Boolean(selector)
+            && item.selector.sourceFile === selector!.sourceFile
+            && item.selector.line === selector!.line
+            && item.selector.type === selector!.type;
+          if (!matched && !Object.keys(previousProps).length) return item;
+          const prior = item.previousProps;
+          // previousProps.text stays frozen (first value) for text-literal search.
+          // identityText always tracks the *current* on-screen label for color routing.
+          const mergedPrevious = {
+            ...prior,
+            ...(matched || previousProps.text !== undefined ? previousProps : {}),
+            ...(prior?.text !== undefined ? { text: prior.text } : {})
+          };
+          const next: LuaWritebackOverride = {
+            ...item,
+            previousProps: mergedPrevious
+          };
+          const latestText = previousProps.text !== undefined
+            ? previousProps.text
+            : (matched ? target.props.text : undefined);
+          if (latestText != null) next.identityText = String(latestText);
+          else if (item.identityText) next.identityText = item.identityText;
+          return next;
+        });
+        if (snapshotSource === "runtime") {
+          skippedRuntimePersistence += merged.ignoredProps || (merged.persisted ? 0 : 1);
+        }
       }
       const snapshot = editor.apply(patch);
       const node = findUiNode(snapshot.root, patch.nodeId);
@@ -1206,6 +1356,64 @@ const server = http.createServer(async (request, response) => {
         }
       } else {
         sendJson(response, 400, { error: "unknown_action" });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/tools/new-game-radar/icon") {
+      const iconUrl = url.searchParams.get("url") || "";
+      try {
+        const image = await proxyTapIcon(iconUrl);
+        response.writeHead(200, {
+          "content-type": image.contentType,
+          "cache-control": "public, max-age=86400",
+          "access-control-allow-origin": "*"
+        });
+        response.end(image.body);
+      } catch (error) {
+        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/tools/new-game-radar") {
+      const mode = url.searchParams.get("mode") === "offline" ? "offline" : "auto";
+      try {
+        if (mode === "offline") {
+          const offline = readOfflineSnapshot();
+          sendJson(response, 200, { snapshot: offline || emptyRadarSnapshot("尚无离线快照，请先获取最新排行") });
+        } else {
+          const offline = readOfflineSnapshot();
+          if (offline) {
+            sendJson(response, 200, { snapshot: offline });
+          } else {
+            const snapshot = await fetchLatestRadarSnapshot();
+            sendJson(response, 200, { snapshot });
+          }
+        }
+      } catch (error) {
+        sendJson(response, 502, {
+          snapshot: emptyRadarSnapshot(error instanceof Error ? error.message : String(error)),
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    } else if (request.method === "POST" && url.pathname === "/api/tools/new-game-radar") {
+      const body = await readJson(request) as { action?: string };
+      try {
+        if (body.action === "refresh") {
+          const snapshot = await fetchLatestRadarSnapshot();
+          sendJson(response, 200, { snapshot });
+        } else if (body.action === "offline") {
+          const offline = readOfflineSnapshot();
+          sendJson(response, 200, { snapshot: offline || emptyRadarSnapshot("尚无离线快照") });
+        } else if (body.action === "auto") {
+          const snapshot = await loadRadarSnapshot(false);
+          sendJson(response, 200, { snapshot });
+        } else {
+          sendJson(response, 400, { error: "unknown_action" });
+        }
+      } catch (error) {
+        const offline = readOfflineSnapshot();
+        sendJson(response, offline ? 200 : 502, {
+          snapshot: offline
+            ? { ...offline, error: error instanceof Error ? error.message : String(error) }
+            : emptyRadarSnapshot(error instanceof Error ? error.message : String(error)),
+          error: error instanceof Error ? error.message : String(error)
+        });
       }
     } else if (request.method === "POST" && url.pathname === "/api/shell/execute") {
       sendJson(response, 423, { error: "sandbox_unavailable", detail: sandbox.reason });

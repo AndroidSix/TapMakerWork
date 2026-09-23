@@ -1,5 +1,52 @@
 # Change log
 
+## 2026-09-23 — Yoga 工厂 UI 回写防串写（发布加固）
+
+- **不再**把实例颜色/字段插进邻近无关 Panel（曾误改 `staminaRow`）。
+- nearby 匹配窗口收紧到 ±6；禁止 nearby 插入；表达式优先走 `opts_passthrough`。
+- `PrimaryButton` / `SecondaryButton` / `CaptionBar` / `Chip` / `UpgradeCard`：工厂内 `rim`/`core`/`bg`/`opts.*` 改动路由到**调用处**（`bg`/`rim`/`fontSize`/`title`/`text`…）。
+- 共享文案：优先把 `text = Assets.Subtitle` **冻成该按钮字面量**，避免改到广告按钮或改坏标题用的 Assets。
+- **禁止**控件编辑回写 `Assets.X = "…"`（标题用 `Title .. Subtitle` 拼接时，改按钮会误改整条标题）。
+- `UpgradeCard` 颜色写入 `bg`（不再插入无效的 `backgroundColor`）。
+- 同尺寸兄弟 `PrimaryButton` 的 `fontColor`/`bg` 按文案锚点写，不串到相邻按钮。
+- 游戏工程内容不代改；用新 IDE 在 Studio 里再编辑一次即可正确落到 Lua。
+
+## 2026-09-23 — 为什么改动只在 .ui.json / 重启丢失
+
+- 游戏 Runtime **从不读取** `.ui.json`；旁路只给 IDE 用。重启后只能靠 Lua 源码。
+- 你改的按钮文字落在 `UiStyle.PrimaryButton` 工厂里的 `opts.text or ""`：不能冻进工厂，以前回写失败 → 只剩 `.ui.json`，且 `123123` 还被当成数字。
+- 现已：嵌套行号定位、`text` 保持字符串、跳过 `opts.*` 工厂透传，并在全项目唯一调用处改 `text = "..."` 字面量。
+
+## 2026-09-23 — 文字回写不到代码的根因修复
+
+- 真机快照上的布局数值曾被误写进 Lua（`MainHUD.lua` 被改坏，已建议从 git 恢复）。
+- 列表模板逻辑会丢掉 `text`，导致改字只生效在内存、不进源码。
+- 现改为：专用 `pendingLuaWritebacks` 保留文字；runtime 不再对整树做布局差分回写；无 source 时用当前打开文件的转换树按文案对齐行号。
+
+## 2026-09-23 — 修复结构草图 / 运行时 Lua 回写失效
+
+- 根因：Yoga 仅在 `UI_INSPECTOR_ENABLED` 时记录 `_sourceFile/_sourceLine`；未开启时节点变成 `runtime:0`，回写队列为空。且 `snapshotSource=runtime` 时跳过了树回写。
+- 修复：启动时强制 `UI_INSPECTOR_ENABLED`；从节点 id（`file:line:type`）恢复定位；保存时用「编辑树 vs Lua 转换」差分收集脏属性；始终对提交快照做字面量回写。
+- 乱世夺城已更新 `TapMakerWorkBridge.lua` 与 `client_main.lua` 引导段；需 **Maker preview refresh / 重进界面** 后新建的 UI 才带源码行号。
+
+## 2026-09-23 — live-edit 卡顿 / 属性框 / Lua 回写修复
+
+- Runtime 已连接时，autosave 不再同步阻塞 `maker preview refresh`（画面已由 SetStyle 生效），消除编辑卡顿主因。
+- 属性输入框随选中节点重置；失焦即提交，文字支持防抖 live 提交，不必再按回车。
+- Lua 回写：解析真实项目相对路径、容忍 Runtime 行号漂移（±6），非 runtime 编辑也会进入回写队列。
+
+## 2026-09-23 — Yoga live-edit 回写 Lua 字面量
+
+- 保存视觉旁路时，Yoga 上用户改过的视觉属性会固化进项目 Lua（按 `source.file + line + type`）。
+- 原为 `style.*` / `options.theme.*` 等表达式的字段，若用户给出了具体值，会替换为字面量以真正生效到项目；`onClick` 等行为回调不改。
+- 缺少的视觉字段可插入；无法序列化的残留仍留在 `.ui.json`。
+- Studio 保存提示与 agent 日志会显示回写条数与文件。
+
+## 2026-09-23 — 工具集：新游雷达
+
+- Studio「工具」新增 **新游雷达**：拉取 TapTap 制造 `maker/v1/app-list` 榜单，本地计算赛道机会指数 / 象限，并支持离线快照。
+- 工具入口提供一次性红点（首次打开新游雷达后消失）。
+
 ## 2026-09-23 — NanoVG live-edit sync + terminal tools (0.1.2)
 
 > **macOS 安装提示：** 未签名包会被 Gatekeeper 拦截；系统设置若无「仍要打开」，请自行拉取源码打包。  

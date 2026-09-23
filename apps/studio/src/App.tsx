@@ -76,7 +76,8 @@ import {
   ShieldCheck,
   Lightbulb,
   Wrench,
-  Clock3
+  Clock3,
+  Radar
 } from "lucide-react";
 import {
   DEFAULT_DEVICE_PROFILES,
@@ -103,6 +104,7 @@ import { RuntimeMirror } from "./RuntimeMirror";
 import { Tip } from "./Tip";
 import { DevTipsPanel } from "./DevTipsPanel";
 import { ImageCompressPanel } from "./ImageCompressPanel";
+import { markNewGameRadarSeen, NewGameRadarPanel, readNewGameRadarSeen } from "./NewGameRadarPanel";
 import {
   CoachMark,
   COACH_LIVE_EDIT_KEY,
@@ -833,33 +835,63 @@ function FileTreeEntry({ entry, depth, selectedPath, onOpen }: {
   </>;
 }
 
-function InspectorField({ label, property, value, onCommit, live = false }: {
+function InspectorField({ label, property, value, onCommit, live = false, resetKey }: {
   label: string;
   property: string;
   value: UiValue | undefined;
   onCommit: (property: string, value: UiValue) => void;
   live?: boolean;
+  /** Remount/sync token — usually the selected node id so drafts reset on selection change. */
+  resetKey?: string;
 }) {
   const display = Array.isArray(value) ? value.join(", ") : value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
   const [draft, setDraft] = useState(display);
   const focusedRef = useRef(false);
   const liveTimerRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (!focusedRef.current) setDraft(display);
-  }, [display]);
-  useEffect(() => () => {
-    if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
-  }, []);
+  const displayRef = useRef(display);
+  displayRef.current = display;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+  const propertyRef = useRef(property);
+  propertyRef.current = property;
+
   const parsedValue = (raw: string): UiValue => {
+    // Keep `text` as a string — "123123" must not become number 123123 or Lua writeback breaks.
+    if (property === "text") return raw;
     if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
     if (raw.includes(",") && raw.split(",").every((part) => /^\s*\d+\s*$/.test(part))) return raw.split(",").map(Number);
     return raw;
   };
-  const commit = () => {
+
+  const flush = useCallback((raw: string) => {
+    if (liveTimerRef.current) {
+      window.clearTimeout(liveTimerRef.current);
+      liveTimerRef.current = null;
+    }
+    if (raw === displayRef.current) return;
+    onCommitRef.current(propertyRef.current, parsedValue(raw));
+  }, []);
+
+  // Selection / property identity changed: always drop stale draft.
+  useEffect(() => {
+    if (liveTimerRef.current) {
+      window.clearTimeout(liveTimerRef.current);
+      liveTimerRef.current = null;
+    }
+    focusedRef.current = false;
+    setDraft(display);
+  }, [resetKey, property]);
+
+  useEffect(() => {
+    if (!focusedRef.current) setDraft(display);
+  }, [display]);
+
+  useEffect(() => () => {
     if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
-    if (draft === display) return;
-    onCommit(property, parsedValue(draft));
-  };
+  }, []);
+
   return (
     <label className="property-row">
       <span>{label}</span>
@@ -871,17 +903,18 @@ function InspectorField({ label, property, value, onCommit, live = false }: {
           setDraft(next);
           if (live) {
             if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
-            liveTimerRef.current = window.setTimeout(() => onCommit(property, parsedValue(next)), 120);
+            liveTimerRef.current = window.setTimeout(() => flush(next), 180);
           }
         }}
         onBlur={() => {
           focusedRef.current = false;
-          commit();
+          flush(draftRef.current);
         }}
         onKeyDown={(event) => {
           if (event.key === "Enter") event.currentTarget.blur();
           if (event.key === "Escape") {
-            setDraft(display);
+            setDraft(displayRef.current);
+            focusedRef.current = false;
             event.currentTarget.blur();
           }
         }}
@@ -1383,6 +1416,8 @@ export function App() {
   const [guideOpen, setGuideOpen] = useState(false);
   const [tipsOpen, setTipsOpen] = useState(false);
   const [compressOpen, setCompressOpen] = useState(false);
+  const [radarOpen, setRadarOpen] = useState(false);
+  const [radarSeen, setRadarSeen] = useState(() => readNewGameRadarSeen());
   const [toolkitMenuOpen, setToolkitMenuOpen] = useState(false);
   const [newbieGuideOpen, setNewbieGuideOpen] = useState(false);
   const [coachLiveEdit, setCoachLiveEdit] = useState(() => readCoachMark(COACH_LIVE_EDIT_KEY));
@@ -3098,7 +3133,12 @@ export function App() {
         path?: string;
         savedAt?: string;
         error?: string;
-        persistence?: { mode?: "static-tree" | "template-overrides"; overrideCount?: number; skippedInstances?: number };
+        persistence?: {
+          mode?: "static-tree" | "template-overrides";
+          overrideCount?: number;
+          skippedInstances?: number;
+          luaWriteback?: { applied?: number; skipped?: number; files?: string[] };
+        };
         preview?: { reloadToken?: number; autoRefreshIframe?: boolean; autoRefreshMaker?: boolean; makerRefresh?: { error?: string } };
       };
       if (!response.ok) throw new Error(result.error || "写入 .ui.json 失败");
@@ -3117,10 +3157,14 @@ export function App() {
       if (result.preview?.makerRefresh?.error) {
         setLogs((current) => ({ ...current, runtime: [...current.runtime, `live-edit Maker refresh：${result.preview!.makerRefresh!.error}`] }));
       }
+      const luaWriteback = result.persistence?.luaWriteback;
+      const luaSummary = luaWriteback?.applied
+        ? ` · 回写 Lua ${luaWriteback.applied} 项${luaWriteback.files?.length ? `（${luaWriteback.files.join(", ")}）` : ""}`
+        : "";
       const persistenceSummary = result.persistence?.mode === "template-overrides"
         ? ` · ${result.persistence.overrideCount || 0} 条模板覆盖${result.persistence.skippedInstances ? ` · 已忽略 ${result.persistence.skippedInstances} 个不稳定实例/结构操作` : ""}`
         : " · 静态结构";
-      setLogs((current) => ({ ...current, agent: [...current.agent, `视觉已同步 → ${result.path}${persistenceSummary}${result.preview?.autoRefreshIframe ? " · 预览自动刷新" : ""}`] }));
+      setLogs((current) => ({ ...current, agent: [...current.agent, `视觉已同步 → ${result.path}${persistenceSummary}${luaSummary}${result.preview?.autoRefreshIframe ? " · 预览自动刷新" : ""}`] }));
     } catch (error) {
       setLogs((current) => ({ ...current, agent: [...current.agent, `同步 .ui.json 失败：${error instanceof Error ? error.message : String(error)}`] }));
     }
@@ -3128,7 +3172,7 @@ export function App() {
 
   useEffect(() => {
     if (!sidecarInfo.dirty) return;
-    const timer = window.setTimeout(() => { void saveUiSidecar(); }, 700);
+    const timer = window.setTimeout(() => { void saveUiSidecar(); }, 900);
     return () => window.clearTimeout(timer);
   }, [sidecarEditRevision, sidecarInfo.dirty, saveUiSidecar]);
 
@@ -3883,8 +3927,8 @@ export function App() {
             }}
           ><Columns2 size={14} /><span className="tiny">预览</span></button>
         </Tip>
-        <Tip label="写入 .ui.json（静态节点保存结构；动态节点只保存模板覆盖，不改 Lua）">
-          <button className="icon-command" aria-label="保存视觉旁路" onClick={() => { toast("正在写入 .ui.json…", "info"); void saveUiSidecar(); }} disabled={!activeUiPath || !snapshot}><Save size={14} /></button>
+        <Tip label="写入项目 Lua（视觉属性固化）与 .ui.json（残留旁路）；不改 onClick 等行为">
+          <button className="icon-command" aria-label="保存视觉旁路" onClick={() => { toast("正在同步到项目 Lua…", "info"); void saveUiSidecar(); }} disabled={!activeUiPath || !snapshot}><Save size={14} /></button>
         </Tip>
         <Tip label={sidecarInfo.saveMode === "template-overrides"
           ? `${sidecarInfo.path || "ui.json"} · 动态实例和列表数据不会固化；已保存 ${sidecarInfo.overrideCount || 0} 条模板样式覆盖${sidecarInfo.skippedInstances ? `，忽略 ${sidecarInfo.skippedInstances} 项不稳定修改` : ""}`
@@ -3917,23 +3961,43 @@ export function App() {
           <button className="developer-console-button roadmap-button" onClick={() => setRoadmapOpen(true)}><Map size={13} />后续规划</button>
         </Tip>
         <div className="toolkit-menu-wrap tools-menu-wrap">
-          <Tip label="工具集：图片压缩等实用工具">
+          <Tip label="工具集：图片压缩、新游雷达等实用工具">
             <button
-              className={`developer-console-button toolkit-button ${toolkitMenuOpen || compressOpen ? "active" : ""}`}
+              className={`developer-console-button toolkit-button ${toolkitMenuOpen || compressOpen || radarOpen ? "active" : ""}`}
               aria-label="工具"
               aria-expanded={toolkitMenuOpen}
               onClick={() => { setToolsMenuOpen(false); setToolkitMenuOpen((open) => !open); }}
-            ><Wrench size={13} />工具</button>
+            >
+              <Wrench size={13} />工具
+              {!radarSeen && <span className="tool-entry-dot" aria-label="新工具提示" />}
+            </button>
           </Tip>
           {toolkitMenuOpen && (
             <div className="tools-menu toolkit-menu" role="menu">
               <section>
                 <h3>工具集</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setCompressOpen(true); }}>
+                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setRadarOpen(false); setCompressOpen(true); }}>
                     <Image size={13} />图片压缩
                   </button>
-                  <button onClick={() => { setToolkitMenuOpen(false); setCompressOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setTipsOpen(true); }}>
+                  <button
+                    className="tool-entry-with-dot"
+                    onClick={() => {
+                      setToolkitMenuOpen(false);
+                      setTipsOpen(false);
+                      setSettingsOpen(false);
+                      setSearchOpen(false);
+                      setGuideOpen(false);
+                      setCompressOpen(false);
+                      setRadarOpen(true);
+                      markNewGameRadarSeen();
+                      setRadarSeen(true);
+                    }}
+                  >
+                    <Radar size={13} />新游雷达
+                    {!radarSeen && <span className="tool-entry-dot" aria-label="新" />}
+                  </button>
+                  <button onClick={() => { setToolkitMenuOpen(false); setCompressOpen(false); setRadarOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setTipsOpen(true); }}>
                     <Lightbulb size={13} />开发技巧
                   </button>
                   <button onClick={() => { setToolkitMenuOpen(false); setNewbieGuideOpen(true); }}>
@@ -3993,7 +4057,20 @@ export function App() {
               <section>
                 <h3>工具集</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolsMenuOpen(false); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
+                  <button onClick={() => { setToolsMenuOpen(false); setRadarOpen(false); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
+                  <button
+                    className="tool-entry-with-dot"
+                    onClick={() => {
+                      setToolsMenuOpen(false);
+                      setCompressOpen(false);
+                      setRadarOpen(true);
+                      markNewGameRadarSeen();
+                      setRadarSeen(true);
+                    }}
+                  >
+                    <Radar size={13} />新游雷达
+                    {!radarSeen && <span className="tool-entry-dot" aria-label="新" />}
+                  </button>
                   <button onClick={() => { setToolsMenuOpen(false); setTipsOpen(true); }}><Lightbulb size={13} />开发技巧</button>
                   <button onClick={() => { setToolsMenuOpen(false); setNewbieGuideOpen(true); }}><Sparkles size={13} />新手引导</button>
                   {window.tapMakerWork?.updates && (
@@ -4134,6 +4211,18 @@ export function App() {
           onClose={() => setCompressOpen(false)}
           onCopy={(text) => void copyText(text)}
           onOpenExternal={openExternalUrl}
+        />
+      )}
+
+      {radarOpen && (
+        <NewGameRadarPanel
+          apiBase={API}
+          onOpenExternal={openExternalUrl}
+          onClose={() => {
+            setRadarOpen(false);
+            markNewGameRadarSeen();
+            setRadarSeen(true);
+          }}
         />
       )}
 
@@ -4778,6 +4867,7 @@ export function App() {
                   onContextMenu={openNodeContextMenu}
                   onPatch={patchNodeById}
                   onToast={toast}
+                  uiBackend={health?.uiBackend || health?.runtimeAdapter?.backend || snapshot?.backend}
                 />
               ) : centerTab === "visual" ? (
                 <div className="canvas-area">
@@ -4895,7 +4985,7 @@ export function App() {
                       <span className="sparse-hint">
                         拖动节点调整位置，拖动蓝色控制点调整大小；方向键微调，Shift + 方向键移动 10px。右键可创建、复制或删除节点。
                         <button type="button" onClick={() => void syncFromRuntime()}>从真机同步结构</button>
-                        {" · 修改会自动写入 .ui.json"}
+                        {" · 视觉改动会固化进项目 Lua"}
                       </span>
                     )}
                   </div>
@@ -4996,25 +5086,25 @@ export function App() {
           {selected ? <div className="inspector-body">
             <div className="selection-heading"><span className="selection-icon">{iconForType(selected.type)}</span><div><strong>{selected.name}</strong><small>{selected.type} · {selected.id}</small></div></div>
             {inspectorTab === "properties" && <><section className="property-group"><h3>布局</h3>
-              <InspectorField label="定位" property="position" value={selected.props.position} onCommit={patchNode} />
-              <InspectorField label="X / 左" property="left" value={selected.props.left} onCommit={patchNode} />
-              <InspectorField label="Y / 上" property="top" value={selected.props.top} onCommit={patchNode} />
-              <InspectorField label="宽度" property="width" value={selected.props.width} onCommit={patchNode} />
-              <InspectorField label="高度" property="height" value={selected.props.height} onCommit={patchNode} />
-              <InspectorField label="旋转" property="rotate" value={selected.props.rotate} onCommit={patchNode} />
-              <InspectorField label="缩放" property="transform.scale" value={selectedTransform.scale ?? 1} onCommit={(_property, value) => void patchNodeProps({ transform: { ...selectedTransform, scale: value } })} />
-              <InspectorField label="间距" property="gap" value={selected.props.gap} onCommit={patchNode} />
-              <InspectorField label="Flex 方向" property="flexDirection" value={selected.props.flexDirection} onCommit={patchNode} />
+              <InspectorField label="定位" property="position" value={selected.props.position} onCommit={patchNode} resetKey={selected.id} />
+              <InspectorField label="X / 左" property="left" value={selected.props.left} onCommit={patchNode} resetKey={selected.id} />
+              <InspectorField label="Y / 上" property="top" value={selected.props.top} onCommit={patchNode} resetKey={selected.id} />
+              <InspectorField label="宽度" property="width" value={selected.props.width} onCommit={patchNode} resetKey={selected.id} />
+              <InspectorField label="高度" property="height" value={selected.props.height} onCommit={patchNode} resetKey={selected.id} />
+              <InspectorField label="旋转" property="rotate" value={selected.props.rotate} onCommit={patchNode} resetKey={selected.id} />
+              <InspectorField label="缩放" property="transform.scale" value={selectedTransform.scale ?? 1} onCommit={(_property, value) => void patchNodeProps({ transform: { ...selectedTransform, scale: value } })} resetKey={selected.id} />
+              <InspectorField label="间距" property="gap" value={selected.props.gap} onCommit={patchNode} resetKey={selected.id} />
+              <InspectorField label="Flex 方向" property="flexDirection" value={selected.props.flexDirection} onCommit={patchNode} resetKey={selected.id} />
             </section>
             <section className="property-group"><h3>外观</h3>
-              <InspectorField label="文字" property="text" value={selected.props.text} onCommit={patchNode} live />
-              <InspectorField label="字号" property="fontSize" value={selected.props.fontSize} onCommit={patchNode} />
+              <InspectorField label="文字" property="text" value={selected.props.text} onCommit={patchNode} live resetKey={selected.id} />
+              <InspectorField label="字号" property="fontSize" value={selected.props.fontSize} onCommit={patchNode} resetKey={selected.id} />
               <InspectorAssetField value={selected.props.backgroundImage} assets={assets} onCommit={patchNode} onAssetsChanged={loadAssets} toast={toast} />
               {selectedHasImage && <InspectorColorField label="图片颜色" property="color" value={selected.props.color ?? [255, 255, 255, 255]} onCommit={patchNode} />}
               {selectedHasText && <InspectorColorField label="文字颜色" property={selectedTextColorProperty} value={selected.props[selectedTextColorProperty] ?? [255, 255, 255, 255]} onCommit={patchNode} />}
-              <InspectorField label="透明度" property="opacity" value={selected.props.opacity} onCommit={patchNode} />
+              <InspectorField label="透明度" property="opacity" value={selected.props.opacity} onCommit={patchNode} resetKey={selected.id} />
               <InspectorColorField label="背景颜色" property="backgroundColor" value={selected.props.backgroundColor ?? [0, 0, 0, 0]} onCommit={patchNode} />
-              <InspectorField label="圆角" property="borderRadius" value={selected.props.borderRadius} onCommit={patchNode} />
+              <InspectorField label="圆角" property="borderRadius" value={selected.props.borderRadius} onCommit={patchNode} resetKey={selected.id} />
             </section>
             <Tip label="打开当前选中节点对应的 Lua 源码，并定位到构造行。">
               <button className="source-link" onClick={() => selected ? void jumpToSource(selected) : setCenterTab("code")}><FileCode2 size={14} />{selected.source?.file ?? "运行时节点"}:{selected.source?.line ?? "?"}</button>

@@ -4,6 +4,10 @@
 -- The host application must call Start({ rootProvider = function() ... end }) once
 -- and Update(dt) from its existing update loop. No game restart is required for patches.
 
+-- Enable Yoga source tracking so live-edit can write props back into project Lua.
+-- Must be set before UI trees are built (see urhox-libs/UI/Core/Widget.lua AddChild).
+UI_INSPECTOR_ENABLED = true
+
 local Bridge = {}
 
 local state = {

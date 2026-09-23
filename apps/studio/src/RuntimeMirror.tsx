@@ -27,6 +27,8 @@ interface RuntimeMirrorProps {
   onContextMenu: (nodeId: string, x: number, y: number) => void;
   onPatch: (nodeId: string, props: Record<string, UiValue>, options?: { historyGroup?: string }) => Promise<void>;
   onToast: (message: string, kind?: "info" | "success" | "error" | "warn") => void;
+  /** Project UI backend: NanoVG draw proxies vs Yoga declarative widgets. */
+  uiBackend?: "yoga" | "nanovg" | undefined;
 }
 
 type Candidate = { id: string; name: string };
@@ -153,7 +155,8 @@ export function RuntimeMirror({
   onSelect,
   onContextMenu,
   onPatch,
-  onToast
+  onToast,
+  uiBackend
 }: RuntimeMirrorProps) {
   const [frame, setFrame] = useState("");
   const [liveFrame, setLiveFrame] = useState("");
@@ -525,12 +528,31 @@ export function RuntimeMirror({
   const permissionBlocked = Boolean(permission && permission !== "granted");
   const selectedDraft = selected ? drafts[selected.id] : undefined;
   const selectedRect = selectedDraft?.rect || selected || { x: 0, y: 0, w: 0, h: 0 };
+  const resolvedBackend = uiBackend
+    || (snapshot?.backend === "nanovg" || snapshot?.backend === "yoga" ? snapshot.backend : undefined);
+  const backendTip = resolvedBackend === "nanovg"
+    ? { kind: "nanovg" as const, label: "NanoVG 绘制：只编辑展示，不回写代码" }
+    : resolvedBackend === "yoga"
+      ? { kind: "yoga" as const, label: "Yoga 声明式 UI" }
+      : undefined;
 
   return (
     <div className="runtime-mirror runtime-editor">
       <header className="runtime-mirror-toolbar">
         <div>
-          <strong><MonitorUp size={14} aria-hidden="true" />运行时场景编辑</strong>
+          <strong>
+            <MonitorUp size={14} aria-hidden="true" />运行时场景编辑
+            {backendTip && (
+              <span
+                className={`runtime-backend-tip ${backendTip.kind}`}
+                title={backendTip.kind === "nanovg"
+                  ? "当前项目用 NanoVG 即时绘制。IDE 改动能在预览里看到，默认只存旁路覆盖，不会改写你的游戏 Lua。"
+                  : "当前项目使用 Yoga / UILoader 声明式控件树，编辑可同步到运行时控件与视觉旁路。"}
+              >
+                {backendTip.label}
+              </span>
+            )}
+          </strong>
           <small>{frame ? `${sourceName} · 最终渲染帧` : "Maker Runtime 独立窗口"}</small>
         </div>
         <div className="runtime-edit-modes" aria-label="运行时画布模式">
