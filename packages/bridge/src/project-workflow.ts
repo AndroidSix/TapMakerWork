@@ -173,7 +173,8 @@ export function buildProjectWorkflowOverview(input: ProjectWorkflowInput): Proje
         id: "maker-cli",
         label: "官方 Maker CLI",
         status: input.makerCli ? "pass" : "blocked",
-        detail: input.makerCli ? `已发现 ${input.makerVersion || "Maker runtime"}` : "未发现 @taptap/maker runtime"
+        detail: input.makerCli ? `已发现 ${input.makerVersion || "Maker runtime"}` : "未发现 @taptap/maker runtime",
+        ...(input.makerCli ? {} : { action: "install-maker" as const, actionLabel: "一键修复" })
       },
       {
         id: "git",

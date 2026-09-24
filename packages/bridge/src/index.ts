@@ -16,7 +16,8 @@ import {
   type UiNode,
   type UiPatch,
   type UiSnapshot,
-  type UiTreeOp
+  type UiTreeOp,
+  type UiValue
 } from "@tapmakerwork/protocol";
 import {
   checkNodeRuntimeUpdates,
@@ -56,8 +57,9 @@ import {
   resolveProjectAsset,
   sendProjectAsset
 } from "./asset-handler.js";
-import { collectDirtyLiteralOverrides, writeBackUiOverridesToLua, writeBackUiTreeLiteralsToLua, type LuaWritebackOverride } from "./lua-prop-writeback.js";
+import { collectDirtyLiteralOverrides, writeBackUiOverridesToLua, writeBackUiTreeLiteralsToLua, type LuaOverridesWritebackDetail, type LuaWritebackOverride } from "./lua-prop-writeback.js";
 import { findUiNodePath, mergeUiSidecarOverride, mergeUiSidecarOverrides, nodeMatchesUiOverride, overrideSelectorForNode, readUiSidecar, sidecarExists, sidecarRelativePath, snapshotFromSidecar, uiNodeAtLine, writeUiSidecar, type UiSidecarOverride } from "./ui-sidecar.js";
+import { combineInstanceOverrides, loadInstanceOverridesExcept, mergeInstanceOverrides, planInstancePersistence, writeUiOverridesModule } from "./ui-overrides.js";
 import {
   applyPreviewPanelPatch,
   bumpPreviewReload,
@@ -74,8 +76,10 @@ import {
   writeImageCompressSettings
 } from "./image-compress.js";
 import {
+  emptyDailyReport,
   emptyRadarSnapshot,
   fetchLatestRadarSnapshot,
+  getDailyLaunchReport,
   loadRadarSnapshot,
   proxyTapIcon,
   readOfflineSnapshot
@@ -87,6 +91,7 @@ let runtimeFileSessionId: string | undefined;
 let pendingUiOverrides: UiSidecarOverride[] = [];
 /** Explicit user patches queued for Lua writeback — never drop `text` as "dynamic". */
 let pendingLuaWritebacks: LuaWritebackOverride[] = [];
+let pendingInstanceEdits = new Map<string, Record<string, UiValue>>();
 let skippedRuntimePersistence = 0;
 const appliedRuntimeOverrideKeys = new Set<string>();
 
@@ -240,6 +245,59 @@ function visitUiNodes(node: UiNode, visit: (node: UiNode) => void): void {
   for (const child of node.children) visitUiNodes(child, visit);
 }
 
+/** Value that restores a live prop; `null` (was unset) maps to Yoga defaults where SetStyle cannot unset. */
+function liveRevertValue(
+  key: string,
+  stored: UiValue | null,
+  previousProps: Record<string, UiValue> | undefined
+): UiValue | undefined {
+  if (stored !== null) return stored;
+  if (key === "position") return "relative";
+  if (key === "left" || key === "top" || key === "right" || key === "bottom") return 0;
+  if ((key === "width" || key === "height") && typeof previousProps?.[key] === "number") return previousProps[key];
+  return undefined;
+}
+
+/** Push the pre-edit values back to the editor tree and the Runtime for props Lua rejected. */
+function revertUnpersistedLiveEdits(
+  details: LuaOverridesWritebackDetail[],
+  queue: LuaWritebackOverride[]
+): { keys: string[]; nodes: number } {
+  const keys: string[] = [];
+  let nodes = 0;
+  for (const detail of details) {
+    if (!detail.nodeId || !detail.revert) continue;
+    const override = queue.find((item) => item.nodeId === detail.nodeId);
+    const props: Record<string, UiValue> = {};
+    for (const [key, stored] of Object.entries(detail.revert)) {
+      const value = liveRevertValue(key, stored, override?.previousProps);
+      if (value !== undefined) props[key] = value;
+    }
+    if (!Object.keys(props).length) continue;
+    const live = editor.getSnapshot();
+    if (!findUiNode(live.root, detail.nodeId)) continue;
+    const patch: UiPatch = {
+      requestId: crypto.randomUUID(),
+      baseRevision: live.revision,
+      nodeId: detail.nodeId,
+      props,
+      historyGroup: `revert:${detail.nodeId}`
+    };
+    let snapshot: UiSnapshot;
+    try {
+      snapshot = editor.apply(patch);
+    } catch {
+      continue;
+    }
+    enqueueRuntimeCommand({ type: "ui.patch", patch: { ...patch, source: findUiNode(snapshot.root, detail.nodeId)?.source } });
+    broadcast({ type: "ui.patch.applied", requestId: patch.requestId, snapshot });
+    keys.push(...Object.keys(props));
+    nodes += 1;
+  }
+  if (nodes) syncRuntimeFileChannel();
+  return { keys, nodes };
+}
+
 function isRepeatedRuntimeTemplate(root: UiNode, node: UiNode): boolean {
   const selector = overrideSelectorForNode(node);
   if (!selector) return false;
@@ -256,13 +314,23 @@ function attachWritebackSource(node: UiNode): UiNode {
   if (overrideSelectorForNode(node)) return node;
   if (!conversion?.root) return node;
   const text = node.props.text;
+  const id = node.props.id;
   const hits: UiNode[] = [];
   visitUiNodes(conversion.root, (candidate) => {
     if (candidate.type !== node.type) return;
+    if (id !== undefined && candidate.props.id === id) {
+      hits.push(candidate);
+      return;
+    }
     if (text !== undefined && candidate.props.text === text) hits.push(candidate);
   });
-  if (hits.length === 1 && hits[0]?.source?.file && hits[0].source.line) {
-    return { ...node, source: { file: hits[0].source.file, line: hits[0].source.line } };
+  // Prefer unique id match over ambiguous text matches.
+  const byId = id !== undefined
+    ? hits.filter((candidate) => candidate.props.id === id)
+    : [];
+  const chosen = byId.length === 1 ? byId : hits.length === 1 ? hits : [];
+  if (chosen.length === 1 && chosen[0]?.source?.file && chosen[0].source.line) {
+    return { ...node, source: { file: chosen[0].source.file, line: chosen[0].source.line } };
   }
   if (typeof text === "string") return node;
   // Unique type in the open file.
@@ -280,10 +348,15 @@ function enqueueSavedUiOverrides(snapshot: UiSnapshot): number {
   if (!project || !activeUiEntry) return 0;
   const sidecar = readUiSidecar(project.root, activeUiEntry);
   if (!sidecar?.overrides.length) return 0;
+  const geometryKeys = new Set(["left", "top", "right", "bottom", "width", "height", "position"]);
   let queued = 0;
   visitUiNodes(snapshot.root, (node) => {
     sidecar.overrides.forEach((override, index) => {
       if (!nodeMatchesUiOverride(node, override)) return;
+      const safeProps = Object.fromEntries(
+        Object.entries(override.props).filter(([key]) => !geometryKeys.has(key) && !key.startsWith("$"))
+      );
+      if (!Object.keys(safeProps).length) return;
       const key = `${runtimeSessionId || runtimeFileSessionId || "runtime"}:${sidecar.savedAt}:${index}:${node.id}`;
       if (appliedRuntimeOverrideKeys.has(key)) return;
       appliedRuntimeOverrideKeys.add(key);
@@ -293,7 +366,7 @@ function enqueueSavedUiOverrides(snapshot: UiSnapshot): number {
           requestId: crypto.randomUUID(),
           baseRevision: snapshot.revision,
           nodeId: node.id,
-          props: override.props,
+          props: safeProps,
           source: node.source
         }
       });
@@ -601,6 +674,7 @@ const server = http.createServer(async (request, response) => {
       runtimeCommands.length = 0;
       pendingUiOverrides = [];
       pendingLuaWritebacks = [];
+      pendingInstanceEdits = new Map();
       skippedRuntimePersistence = 0;
       appliedRuntimeOverrideKeys.clear();
       runtimeConnectedAt = undefined;
@@ -623,6 +697,7 @@ const server = http.createServer(async (request, response) => {
       activeUiEntry = conversion?.sourceFile ?? defaultUiEntry;
       pendingUiOverrides = [];
       pendingLuaWritebacks = [];
+      pendingInstanceEdits = new Map();
       skippedRuntimePersistence = 0;
       appliedRuntimeOverrideKeys.clear();
       const sidecar = conversion ? readUiSidecar(project.root, conversion.sourceFile) : undefined;
@@ -729,6 +804,7 @@ const server = http.createServer(async (request, response) => {
       activeUiEntry = body.path;
       pendingUiOverrides = [];
       pendingLuaWritebacks = [];
+      pendingInstanceEdits = new Map();
       skippedRuntimePersistence = 0;
       appliedRuntimeOverrideKeys.clear();
       const sidecar = project ? readUiSidecar(project.root, body.path) : undefined;
@@ -861,32 +937,85 @@ const server = http.createServer(async (request, response) => {
       const luaFromTree = runtimeSave
         ? { filesTouched: [] as string[], appliedCount: 0, skippedCount: 0 }
         : writeBackUiTreeLiteralsToLua(project.root, body.snapshot.root);
+      // Sidecar only stores leftovers that are safe to re-apply (never failed geometry).
       const durableOverrides = luaFromOverrides.overrides;
       const luaApplied = luaFromOverrides.appliedCount + luaFromTree.appliedCount;
       const luaFiles = [...new Set([...luaFromOverrides.filesTouched, ...luaFromTree.filesTouched])];
+      // Live edit must survive restart. Keys with a stable $path are replayed from
+      // UiOverrides.lua; only keys with no path are undone in the preview.
+      const partitioned = planInstancePersistence(
+        luaFromOverrides.details,
+        [...pendingInstanceEdits.entries()].map(([instancePath, props]) => ({ path: instancePath, props }))
+      );
+      const reverted = revertUnpersistedLiveEdits(partitioned.revertDetails, writebackQueue);
+      const instances = mergeInstanceOverrides(existing?.instances ?? [], partitioned.updates);
+      const instanceKeyCount = partitioned.updates.reduce((sum, item) => {
+        const dropped = new Set(item.removeKeys);
+        return sum + Object.keys(item.props).filter((key) => !dropped.has(key)).length;
+      }, 0);
+      const unpersisted = partitioned.revertDetails.flatMap((detail) => (
+        Object.entries(detail.revert ?? {}).map(([key]) => ({
+          key,
+          type: detail.type,
+          line: detail.line,
+          file: detail.sourceFile,
+          reason: detail.skipped.find((item) => item.key === key)?.reason
+        }))
+      ));
+      const gameComplete = unpersisted.length === 0;
       if (luaApplied > 0) {
         broadcast({
           type: "log.append",
           channel: "agent",
           lines: [`Yoga 已回写 Lua ${luaApplied} 项 → ${luaFiles.join(", ") || sourceFile}`]
         });
-      } else if (writebackQueue.length > 0) {
-        const skipHints = luaFromOverrides.details
-          .flatMap((detail) => detail.skipped.map((item) => `${detail.type}@${detail.line}.${item.key}:${item.reason}`))
-          .slice(0, 8);
+      }
+      if (instanceKeyCount > 0) {
+        broadcast({
+          type: "log.append",
+          channel: "agent",
+          lines: [`已按实例覆盖保存 ${instanceKeyCount} 项 → scripts/tapmakerwork/UiOverrides.lua（重启与正式运行都会重放）`]
+        });
+      }
+      if (reverted.keys.length) {
+        broadcast({
+          type: "log.append",
+          channel: "agent",
+          lines: [`已还原 ${reverted.keys.length} 项无法定位的实时修改（${reverted.nodes} 个节点）：${[...new Set(reverted.keys)].join(" · ")}`]
+        });
+      }
+      if (!gameComplete) {
+        const skipHints = unpersisted
+          .map((item) => `${item.type}@${item.line}.${item.key}:${item.reason ?? "unpersisted"}`)
+          .slice(0, 12);
+        const pendingKeys = [...new Set(unpersisted.map((item) => item.key))].slice(0, 12);
         broadcast({
           type: "log.append",
           channel: "agent",
           lines: [
-            `Yoga 回写未改动文件（${writebackQueue.length} 条候选未写入）`,
+            `Yoga 回写未完成：${unpersisted.length} 项没有稳定节点身份，预览已还原（重启不会保留）`,
+            `未落盘属性：${pendingKeys.join(" · ") || "（见详情）"}`,
             ...(skipHints.length ? [`原因：${skipHints.join(" · ")}`] : [])
           ]
         });
+      } else if (writebackQueue.length > 0 && luaApplied === 0 && instanceKeyCount === 0) {
+        broadcast({
+          type: "log.append",
+          channel: "agent",
+          lines: [`Yoga 回写无文件变更（候选均已是目标值）`]
+        });
       }
-      const written = writeUiSidecar(project.root, sourceFile, savedSnapshot, "sidecar", durableOverrides);
+      const written = writeUiSidecar(project.root, sourceFile, savedSnapshot, "sidecar", durableOverrides, instances);
+      const replayInstances = combineInstanceOverrides(
+        loadInstanceOverridesExcept(project.root, written.path),
+        instances,
+        partitioned.updates.map((item) => item.path)
+      );
+      writeUiOverridesModule(project.root, replayInstances);
       const skippedInstances = skippedRuntimePersistence;
       pendingUiOverrides = [];
       pendingLuaWritebacks = [];
+      pendingInstanceEdits = new Map();
       skippedRuntimePersistence = 0;
       appliedRuntimeOverrideKeys.clear();
       if (runtimeSave) {
@@ -923,8 +1052,12 @@ const server = http.createServer(async (request, response) => {
         selectedId: written.document.selectedId,
         persistence: {
           mode: runtimeSave ? "template-overrides" : "static-tree",
+          complete: gameComplete,
           overrideCount: written.document.overrides.length,
+          instanceOverrides: { keys: instanceKeyCount, paths: instances.length },
           skippedInstances,
+          unpersisted,
+          reverted: { count: reverted.keys.length, nodes: reverted.nodes, keys: [...new Set(reverted.keys)] },
           luaWriteback: {
             applied: luaApplied,
             skipped: luaFromOverrides.skippedCount + luaFromTree.skippedCount,
@@ -1030,8 +1163,9 @@ const server = http.createServer(async (request, response) => {
         : requestedPatch;
       const targetRaw = findUiNode(current.root, patch.nodeId);
       const target = targetRaw ? attachWritebackSource(targetRaw) : undefined;
+      const persistEdit = patch.persist !== false;
       // Queue any sourced node for Lua writeback — not only runtime captures.
-      if (target && overrideSelectorForNode(target)) {
+      if (persistEdit && target && overrideSelectorForNode(target)) {
         // Sidecar replay still drops repeated-list data props (text/value/…).
         const merged = mergeUiSidecarOverride(pendingUiOverrides, target, patch.props, {
           dynamicTemplate: snapshotSource === "runtime" && isRepeatedRuntimeTemplate(current.root, target)
@@ -1052,10 +1186,21 @@ const server = http.createServer(async (request, response) => {
           if (previousProps.text === undefined && cursor.props.text !== undefined) {
             previousProps.text = cursor.props.text;
           }
-          for (const key of ["width", "height", "left", "top"] as const) {
+          if (previousProps.title === undefined && cursor.props.title !== undefined) {
+            previousProps.title = cursor.props.title;
+          }
+          for (const key of ["width", "height", "left", "top", "id", "bg", "rim", "backgroundColor"] as const) {
             if (previousProps[key] === undefined && cursor.props[key] !== undefined) {
               previousProps[key] = cursor.props[key] as import("@tapmakerwork/protocol").UiValue;
             }
+          }
+          // Yoga $layout holds evaluated box — needed when props.top is still an expression.
+          const layout = cursor.props?.$layout as { x?: number; y?: number; w?: number; h?: number } | undefined;
+          if (layout) {
+            if (previousProps.left === undefined && typeof layout.x === "number") previousProps.left = layout.x;
+            if (previousProps.top === undefined && typeof layout.y === "number") previousProps.top = layout.y;
+            if (previousProps.width === undefined && typeof layout.w === "number") previousProps.width = layout.w;
+            if (previousProps.height === undefined && typeof layout.h === "number") previousProps.height = layout.h;
           }
           const parent = findParentInfo(current.root, cursor.id);
           cursor = parent ? findUiNode(current.root, parent.parentId) : undefined;
@@ -1069,17 +1214,40 @@ const server = http.createServer(async (request, response) => {
             && item.selector.type === selector!.type;
           if (!matched && !Object.keys(previousProps).length) return item;
           const prior = item.previousProps;
-          // previousProps.text stays frozen (first value) for text-literal search.
-          // identityText always tracks the *current* on-screen label for color routing.
-          const mergedPrevious = {
+          // Freeze first-seen identity anchors (text + geometry + colors) so later
+          // drag frames don't erase the pre-edit baseline used for contentTop+N rewrite.
+          const frozenKeys = [
+            "text", "title", "id",
+            "left", "top", "width", "height",
+            "bg", "rim", "backgroundColor"
+          ] as const;
+          const mergedPrevious: Record<string, import("@tapmakerwork/protocol").UiValue> = {
             ...prior,
-            ...(matched || previousProps.text !== undefined ? previousProps : {}),
-            ...(prior?.text !== undefined ? { text: prior.text } : {})
+            ...(matched || previousProps.text !== undefined ? previousProps : {})
           };
+          for (const key of frozenKeys) {
+            if (prior?.[key] !== undefined) mergedPrevious[key] = prior[key]!;
+          }
           const next: LuaWritebackOverride = {
             ...item,
             previousProps: mergedPrevious
           };
+          if (matched) {
+            // First-seen raw prop per key (null = unset) so a failed writeback can undo the live SetStyle.
+            // Siblings share a selector (UiStyle.lua:259:Label); only keep the baseline of the node being edited.
+            const revertProps: Record<string, import("@tapmakerwork/protocol").UiValue | null> = item.nodeId === target.id
+              ? { ...item.revertProps }
+              : {};
+            for (const key of Object.keys(patch.props)) {
+              if (key.startsWith("$") || key in revertProps) continue;
+              const raw = targetRaw!.props[key];
+              revertProps[key] = raw === undefined ? null : raw;
+            }
+            next.nodeId = target.id;
+            next.revertProps = revertProps;
+            const rawPath = targetRaw?.props.$path;
+            if (typeof rawPath === "string" && rawPath !== "") next.instancePath = rawPath;
+          }
           const latestText = previousProps.text !== undefined
             ? previousProps.text
             : (matched ? target.props.text : undefined);
@@ -1089,6 +1257,17 @@ const server = http.createServer(async (request, response) => {
         });
         if (snapshotSource === "runtime") {
           skippedRuntimePersistence += merged.ignoredProps || (merged.persisted ? 0 : 1);
+        }
+      }
+      if (persistEdit && snapshotSource === "runtime" && targetRaw) {
+        const rawPath = targetRaw.props.$path;
+        if (typeof rawPath === "string" && rawPath !== "") {
+          const nextProps: Record<string, UiValue> = { ...(pendingInstanceEdits.get(rawPath) ?? {}) };
+          for (const [key, value] of Object.entries(patch.props)) {
+            if (key.startsWith("$") || value === undefined) continue;
+            nextProps[key] = value;
+          }
+          if (Object.keys(nextProps).length) pendingInstanceEdits.set(rawPath, nextProps);
         }
       }
       const snapshot = editor.apply(patch);
@@ -1392,7 +1571,12 @@ const server = http.createServer(async (request, response) => {
         });
       }
     } else if (request.method === "POST" && url.pathname === "/api/tools/new-game-radar") {
-      const body = await readJson(request) as { action?: string };
+      const body = await readJson(request) as {
+        action?: string;
+        from?: string;
+        to?: string;
+        refresh?: boolean;
+      };
       try {
         if (body.action === "refresh") {
           const snapshot = await fetchLatestRadarSnapshot();
@@ -1403,10 +1587,28 @@ const server = http.createServer(async (request, response) => {
         } else if (body.action === "auto") {
           const snapshot = await loadRadarSnapshot(false);
           sendJson(response, 200, { snapshot });
+        } else if (body.action === "daily") {
+          const report = await getDailyLaunchReport({
+            ...(typeof body.from === "string" ? { from: body.from } : {}),
+            ...(typeof body.to === "string" ? { to: body.to } : {}),
+            refresh: body.refresh === true
+          });
+          sendJson(response, 200, { report });
         } else {
           sendJson(response, 400, { error: "unknown_action" });
         }
       } catch (error) {
+        if (body.action === "daily") {
+          sendJson(response, 502, {
+            report: emptyDailyReport(
+              error instanceof Error ? error.message : String(error),
+              typeof body.from === "string" ? body.from : undefined,
+              typeof body.to === "string" ? body.to : undefined
+            ),
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return;
+        }
         const offline = readOfflineSnapshot();
         sendJson(response, offline ? 200 : 502, {
           snapshot: offline

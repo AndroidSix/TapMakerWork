@@ -13,7 +13,7 @@ finish() {
   if [[ "$exit_code" -eq 0 ]]; then
     print "双端安装包已生成：$TAPMAKERWORK_ROOT/outputs/installers"
     print "请安装「文件名版本号最新」的包；一键打包不会自动覆盖本机已安装的 App。"
-    print "macOS：打开新 DMG，把 App 拖进「应用程序」覆盖旧版后再启动。"
+    print "macOS：双击新的 .pkg。若提示无法验证开发者，到「系统设置 → 隐私与安全性」点「仍要打开」。"
   else
     print -u2 "打包失败，错误码 $exit_code。请保留上方日志。"
   fi

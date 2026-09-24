@@ -14,6 +14,7 @@ import {
   FolderOpen,
   GitBranch,
   Image,
+  Paintbrush,
   Layers3,
   MonitorPlay,
   PanelBottom,
@@ -127,6 +128,7 @@ const BUILTIN_QQ_GROUP_ID = "1124103038";
 const BUILTIN_QQ_GROUP_NAME = "TapMakerWork工具交流群";
 const BUILTIN_QQ_GROUP_JOIN_URL = "https://qm.qq.com/q/OCt1HAmHK2";
 const OFFICIAL_SITE_URL = "https://androidsix.github.io/tapmakerwork-site/";
+const PHOTOPEA_URL = "https://www.photopea.com/";
 import alipayImage from "../../../docs/sponsor/alipay.png";
 
 interface CommunityInfo {
@@ -201,6 +203,28 @@ interface ProjectState {
 
 type RecentProject = { root: string; name: string };
 const OPEN_PROJECTS_STORAGE_KEY = "tapmakerwork.openProjects";
+const SYNC_UI_CODE_STORAGE_KEY = "tapmakerwork.syncUiEditsToCode";
+
+function loadSyncUiEditsToCode(): boolean {
+  try {
+    return localStorage.getItem(SYNC_UI_CODE_STORAGE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+/** Bridge Lua-writeback skip reasons → what the user should do instead. */
+const WRITEBACK_SKIP_REASON_TEXT: Record<string, string> = {
+  kit_internal_geometry: "共用组件内部节点没有稳定身份，无法按实例保存",
+  opts_passthrough: "该属性由共用组件的 opts 透传，请在调用处修改",
+  widget_not_found: "在 Lua 里找不到对应控件",
+  layout_expression: "位置由布局表达式计算，无法冻结为字面量",
+  measured_geometry: "拖动结果是父级相对测量值，未写入设计值",
+  container_forbidden: "布局容器不接受背景，也不接受把整行缩成单卡尺寸",
+  font_overflow: "字号会撑爆控件高度",
+  call_site_ambiguous: "多个调用处同名，无法确定目标",
+  call_site_no_match: "找不到唯一调用处"
+};
 
 function loadOpenProjects(): RecentProject[] {
   try {
@@ -923,15 +947,20 @@ function InspectorField({ label, property, value, onCommit, live = false, resetK
   );
 }
 
-function InspectorColorField({ label, property, value, onCommit }: {
+function InspectorColorField({ label, property, value, onCommit, resetKey }: {
   label: string;
   property: string;
   value: UiValue | undefined;
   onCommit: (property: string, value: UiValue) => void;
+  /** Selected node id — collapse editor when switching buttons/nodes. */
+  resetKey?: string;
 }) {
   const parsed = useMemo(() => rgbaFromValue(value), [value]);
   const [draft, setDraft] = useState<RgbaColor>(parsed);
   const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    setExpanded(false);
+  }, [resetKey, property]);
   useEffect(() => setDraft(parsed), [parsed[0], parsed[1], parsed[2], parsed[3]]);
   const update = (next: RgbaColor) => {
     setDraft(next);
@@ -1501,7 +1530,21 @@ export function App() {
       : [...list, { id, kind, message }]);
     window.setTimeout(() => setToasts((list) => list.filter((item) => item.id !== id)), 2800);
   }, []);
+  const [syncUiEditsToCode, setSyncUiEditsToCode] = useState(loadSyncUiEditsToCode);
+  const syncUiEditsToCodeRef = useRef(syncUiEditsToCode);
+  const setSyncUiEditsToCodePersisted = useCallback((enabled: boolean) => {
+    syncUiEditsToCodeRef.current = enabled;
+    setSyncUiEditsToCode(enabled);
+    try {
+      localStorage.setItem(SYNC_UI_CODE_STORAGE_KEY, enabled ? "1" : "0");
+    } catch {
+      // 偏好留在当前窗口即可。
+    }
+    if (!enabled) setSidecarInfo((current) => (current.dirty ? { ...current, dirty: false } : current));
+    toast(enabled ? "已打开代码同步，界面改动会写回代码" : "已关闭代码同步，界面改动只留在预览", "info");
+  }, [toast]);
   const markSidecarDirty = useCallback(() => {
+    if (!syncUiEditsToCodeRef.current) return;
     setSidecarInfo((current) => ({ ...current, dirty: true }));
     setSidecarEditRevision((revision) => revision + 1);
   }, []);
@@ -2248,6 +2291,20 @@ export function App() {
     });
   }, []);
 
+  /**
+   * A press inside an already-selected node keeps that selection: the DOM canvas
+   * fires on the deepest child, but the user wants to drag what they picked in the tree.
+   */
+  const canvasPressTarget = useCallback((pressedId: string): string => {
+    if (!snapshot || selectedNodeIds.includes(pressedId)) return pressedId;
+    for (const selectedId of selectedNodeIds) {
+      if (selectedId === snapshot.root.id) continue;
+      const selectedNode = findUiNode(snapshot.root, selectedId);
+      if (selectedNode && findUiNode(selectedNode, pressedId)) return selectedId;
+    }
+    return pressedId;
+  }, [selectedNodeIds, snapshot]);
+
   const selectCanvasNode = useCallback((nodeId: string, additive = false) => {
     const node = snapshot ? findUiNode(snapshot.root, nodeId) : undefined;
     selectNode(nodeId, additive);
@@ -2316,7 +2373,8 @@ export function App() {
       baseRevision: snapshot.revision,
       nodeId,
       props,
-      ...(options?.historyGroup ? { historyGroup: options.historyGroup } : {})
+      ...(options?.historyGroup ? { historyGroup: options.historyGroup } : {}),
+      ...(syncUiEditsToCodeRef.current ? {} : { persist: false })
     };
     const response = await fetch(`${API}/api/ui/patch`, {
       method: "POST",
@@ -2763,16 +2821,30 @@ export function App() {
     }
   }, [refreshMakerHealth, toast]);
 
-  const installMakerChannel = useCallback(async (channel: "stable" | "beta") => {
-    const target = makerVersions?.channels[channel].latest;
+  const installMakerChannel = useCallback(async (channel: "stable" | "beta", options?: { confirm?: boolean }) => {
+    const needsConfirm = options?.confirm !== false;
+    let target = makerVersions?.channels[channel].latest;
     if (!target) {
-      toast("请先检查更新，获取可安装版本", "warn");
+      try {
+        const refresh = await fetch(`${API}/api/maker/versions?refresh=1`);
+        if (refresh.ok) {
+          const versions = await refresh.json() as MakerVersionState;
+          setMakerVersions(versions);
+          target = versions.channels[channel].latest;
+        }
+      } catch {
+        // fall through to missing-version toast
+      }
+    }
+    if (!target) {
+      toast("无法获取可安装的 Maker 版本，请检查网络后重试", "warn");
       return;
     }
     const label = channel === "stable" ? "稳定版" : "Beta 版";
-    if (!window.confirm(`安装 Maker MCP ${target}（${label}）并立即切换？`)) return;
+    if (needsConfirm && !window.confirm(`安装 Maker MCP ${target}（${label}）并立即切换？`)) return;
     setMakerVersionBusy(channel);
     try {
+      toast(`正在安装 Maker MCP ${target}（${label}）…`, "info");
       const response = await fetch(`${API}/api/maker/version/install`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -3121,6 +3193,7 @@ export function App() {
   };
 
   const saveUiSidecar = useCallback(async (snapshotOverride?: UiSnapshot) => {
+    if (!syncUiEditsToCodeRef.current) return;
     const snap = snapshotOverride ?? snapshotRef.current;
     if (!snap || !activeUiPath) return;
     try {
@@ -3135,8 +3208,12 @@ export function App() {
         error?: string;
         persistence?: {
           mode?: "static-tree" | "template-overrides";
+          complete?: boolean;
           overrideCount?: number;
           skippedInstances?: number;
+          unpersisted?: Array<{ key: string; type: string; line: number; file: string; reason?: string }>;
+          reverted?: { count?: number; nodes?: number; keys?: string[] };
+          instanceOverrides?: { keys?: number; paths?: number };
           luaWriteback?: { applied?: number; skipped?: number; files?: string[] };
         };
         preview?: { reloadToken?: number; autoRefreshIframe?: boolean; autoRefreshMaker?: boolean; makerRefresh?: { error?: string } };
@@ -3162,13 +3239,34 @@ export function App() {
         ? ` · 回写 Lua ${luaWriteback.applied} 项${luaWriteback.files?.length ? `（${luaWriteback.files.join(", ")}）` : ""}`
         : "";
       const persistenceSummary = result.persistence?.mode === "template-overrides"
-        ? ` · ${result.persistence.overrideCount || 0} 条模板覆盖${result.persistence.skippedInstances ? ` · 已忽略 ${result.persistence.skippedInstances} 个不稳定实例/结构操作` : ""}`
+        ? ` · ${result.persistence.overrideCount || 0} 条模板覆盖${result.persistence.instanceOverrides?.keys ? ` · 实例覆盖 ${result.persistence.instanceOverrides.keys} 项（重启与正式运行一致）` : ""}${result.persistence.skippedInstances ? ` · 已忽略 ${result.persistence.skippedInstances} 个不稳定实例/结构操作` : ""}`
         : " · 静态结构";
-      setLogs((current) => ({ ...current, agent: [...current.agent, `视觉已同步 → ${result.path}${persistenceSummary}${luaSummary}${result.preview?.autoRefreshIframe ? " · 预览自动刷新" : ""}`] }));
+      const incomplete = result.persistence?.complete === false;
+      const pendingKeys = [...new Set((result.persistence?.unpersisted || []).map((item) => item.key))].slice(0, 8);
+      if (incomplete) {
+        const revertedCount = result.persistence?.reverted?.count || 0;
+        const reasons = [...new Set((result.persistence?.unpersisted || []).map((item) => item.reason).filter(Boolean))] as string[];
+        const reasonText = reasons.map((reason) => WRITEBACK_SKIP_REASON_TEXT[reason] || reason).slice(0, 2).join("；");
+        toast(
+          revertedCount > 0
+            ? `${revertedCount} 项修改无法写入游戏 Lua，预览已还原：${pendingKeys.join("、") || "见日志"}${reasonText ? `（${reasonText}）` : ""}`
+            : `有修改未写入游戏 Lua（重启会丢失）：${pendingKeys.join("、") || "见日志"}${reasonText ? `（${reasonText}）` : ""}`,
+          "warn"
+        );
+        setLogs((current) => ({
+          ...current,
+          agent: [
+            ...current.agent,
+            `视觉同步不完整 → ${result.path}${persistenceSummary}${luaSummary} · 未落盘 ${result.persistence?.unpersisted?.length || 0} 项`
+          ]
+        }));
+      } else {
+        setLogs((current) => ({ ...current, agent: [...current.agent, `视觉已同步 → ${result.path}${persistenceSummary}${luaSummary}${result.preview?.autoRefreshIframe ? " · 预览自动刷新" : ""}`] }));
+      }
     } catch (error) {
       setLogs((current) => ({ ...current, agent: [...current.agent, `同步 .ui.json 失败：${error instanceof Error ? error.message : String(error)}`] }));
     }
-  }, [activeUiPath]);
+  }, [activeUiPath, toast]);
 
   useEffect(() => {
     if (!sidecarInfo.dirty) return;
@@ -3466,7 +3564,8 @@ export function App() {
           baseRevision: drag.baseRevision,
           nodeId,
           props,
-          ...(drag.source ? { source: drag.source } : {})
+          ...(drag.source ? { source: drag.source } : {}),
+          ...(syncUiEditsToCodeRef.current ? {} : { persist: false })
         };
         const response = await fetch(`${API}/api/ui/patch`, {
           method: "POST",
@@ -3673,6 +3772,7 @@ export function App() {
     setWorkflowBusyAction(action);
     try {
       if (action === "doctor") await runMakerDoctor();
+      else if (action === "install-maker") await installMakerChannel("stable", { confirm: false });
       else if (action === "open-design") {
         setMode("live-edit");
         setCenterTab("visual");
@@ -3927,8 +4027,10 @@ export function App() {
             }}
           ><Columns2 size={14} /><span className="tiny">预览</span></button>
         </Tip>
-        <Tip label="写入项目 Lua（视觉属性固化）与 .ui.json（残留旁路）；不改 onClick 等行为">
-          <button className="icon-command" aria-label="保存视觉旁路" onClick={() => { toast("正在同步到项目 Lua…", "info"); void saveUiSidecar(); }} disabled={!activeUiPath || !snapshot}><Save size={14} /></button>
+        <Tip label={syncUiEditsToCode
+          ? "写入项目 Lua（视觉属性固化）与 .ui.json（残留旁路）；不改 onClick 等行为"
+          : "代码同步已关闭，界面改动只留在预览"}>
+          <button className="icon-command" aria-label="保存视觉旁路" onClick={() => { toast("正在同步到项目 Lua…", "info"); void saveUiSidecar(); }} disabled={!syncUiEditsToCode || !activeUiPath || !snapshot}><Save size={14} /></button>
         </Tip>
         <Tip label={sidecarInfo.saveMode === "template-overrides"
           ? `${sidecarInfo.path || "ui.json"} · 动态实例和列表数据不会固化；已保存 ${sidecarInfo.overrideCount || 0} 条模板样式覆盖${sidecarInfo.skippedInstances ? `，忽略 ${sidecarInfo.skippedInstances} 项不稳定修改` : ""}`
@@ -3961,7 +4063,7 @@ export function App() {
           <button className="developer-console-button roadmap-button" onClick={() => setRoadmapOpen(true)}><Map size={13} />后续规划</button>
         </Tip>
         <div className="toolkit-menu-wrap tools-menu-wrap">
-          <Tip label="工具集：图片压缩、新游雷达等实用工具">
+          <Tip label="工具集：图片压缩、新游雷达、在线 PS 等实用工具">
             <button
               className={`developer-console-button toolkit-button ${toolkitMenuOpen || compressOpen || radarOpen ? "active" : ""}`}
               aria-label="工具"
@@ -3996,6 +4098,14 @@ export function App() {
                   >
                     <Radar size={13} />新游雷达
                     {!radarSeen && <span className="tool-entry-dot" aria-label="新" />}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setToolkitMenuOpen(false);
+                      openExternalUrl(PHOTOPEA_URL);
+                    }}
+                  >
+                    <Paintbrush size={13} />在线 PS
                   </button>
                   <button onClick={() => { setToolkitMenuOpen(false); setCompressOpen(false); setRadarOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setTipsOpen(true); }}>
                     <Lightbulb size={13} />开发技巧
@@ -4071,6 +4181,7 @@ export function App() {
                     <Radar size={13} />新游雷达
                     {!radarSeen && <span className="tool-entry-dot" aria-label="新" />}
                   </button>
+                  <button onClick={() => { setToolsMenuOpen(false); openExternalUrl(PHOTOPEA_URL); }}><Paintbrush size={13} />在线 PS</button>
                   <button onClick={() => { setToolsMenuOpen(false); setTipsOpen(true); }}><Lightbulb size={13} />开发技巧</button>
                   <button onClick={() => { setToolsMenuOpen(false); setNewbieGuideOpen(true); }}><Sparkles size={13} />新手引导</button>
                   {window.tapMakerWork?.updates && (
@@ -4868,6 +4979,8 @@ export function App() {
                   onPatch={patchNodeById}
                   onToast={toast}
                   uiBackend={health?.uiBackend || health?.runtimeAdapter?.backend || snapshot?.backend}
+                  syncCode={syncUiEditsToCode}
+                  onSyncCodeChange={setSyncUiEditsToCodePersisted}
                 />
               ) : centerTab === "visual" ? (
                 <div className="canvas-area">
@@ -4955,8 +5068,8 @@ export function App() {
                             rootId={snapshot.root.id}
                             selectedId={snapshot.selectedId}
                             selectedIds={selectedNodeIds}
-                            onSelect={selectCanvasNode}
-                            onDragStart={beginNodeDrag}
+                            onSelect={(id, additive) => selectCanvasNode(additive ? id : canvasPressTarget(id), additive)}
+                            onDragStart={(id, event, operation) => beginNodeDrag(canvasPressTarget(id), event, operation)}
                             onContextMenu={openNodeContextMenu}
                             mode={mode}
                             canvasTool={canvasTool}
@@ -5100,10 +5213,10 @@ export function App() {
               <InspectorField label="文字" property="text" value={selected.props.text} onCommit={patchNode} live resetKey={selected.id} />
               <InspectorField label="字号" property="fontSize" value={selected.props.fontSize} onCommit={patchNode} resetKey={selected.id} />
               <InspectorAssetField value={selected.props.backgroundImage} assets={assets} onCommit={patchNode} onAssetsChanged={loadAssets} toast={toast} />
-              {selectedHasImage && <InspectorColorField label="图片颜色" property="color" value={selected.props.color ?? [255, 255, 255, 255]} onCommit={patchNode} />}
-              {selectedHasText && <InspectorColorField label="文字颜色" property={selectedTextColorProperty} value={selected.props[selectedTextColorProperty] ?? [255, 255, 255, 255]} onCommit={patchNode} />}
+              {selectedHasImage && <InspectorColorField label="图片颜色" property="color" value={selected.props.color ?? [255, 255, 255, 255]} onCommit={patchNode} resetKey={selected.id} />}
+              {selectedHasText && <InspectorColorField label="文字颜色" property={selectedTextColorProperty} value={selected.props[selectedTextColorProperty] ?? [255, 255, 255, 255]} onCommit={patchNode} resetKey={selected.id} />}
               <InspectorField label="透明度" property="opacity" value={selected.props.opacity} onCommit={patchNode} resetKey={selected.id} />
-              <InspectorColorField label="背景颜色" property="backgroundColor" value={selected.props.backgroundColor ?? [0, 0, 0, 0]} onCommit={patchNode} />
+              <InspectorColorField label="背景颜色" property="backgroundColor" value={selected.props.backgroundColor ?? [0, 0, 0, 0]} onCommit={patchNode} resetKey={selected.id} />
               <InspectorField label="圆角" property="borderRadius" value={selected.props.borderRadius} onCommit={patchNode} resetKey={selected.id} />
             </section>
             <Tip label="打开当前选中节点对应的 Lua 源码，并定位到构造行。">
@@ -5235,31 +5348,39 @@ export function App() {
         <nav className="terminal-tabs">
           <span className="terminal-title"><PanelBottom size={14} />终端</span>
           {channels.map((channel) => <button key={channel.id} aria-pressed={activeTerminal === channel.id} className={activeTerminal === channel.id ? "active" : ""} onClick={() => setActiveTerminal(channel.id)}>{channel.label}</button>)}
-          <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: layout.terminal <= 42 ? DEFAULT_LAYOUT.terminal : 40 })}>{layout.terminal <= 42 ? "展开" : "收起"}</button>
-          <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: terminalMaxHeight() })}>最大化</button>
-          <button
-            className="terminal-size"
-            title="复制当前终端全部输出"
-            onClick={() => {
-              const text = logs[activeTerminal].join("\n");
-              if (!text.trim()) {
-                toast("当前终端没有可复制的内容", "warn");
-                return;
-              }
-              void copyText(text);
-            }}
-          >复制</button>
-          <button
-            className="terminal-size"
-            title="清空当前终端频道"
-            onClick={() => {
-              setLogs((current) => ({ ...current, [activeTerminal]: [] }));
-              toast("已清空终端", "success");
-            }}
-          >清空</button>
-          <button className="terminal-reset" onClick={resetLayout} title="一键还原 IDE 布局">还原布局</button>
+          <div className="terminal-panel-actions">
+            <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: layout.terminal <= 42 ? DEFAULT_LAYOUT.terminal : 40 })}>{layout.terminal <= 42 ? "展开" : "收起"}</button>
+            <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: terminalMaxHeight() })}>最大化</button>
+            <button className="terminal-reset" onClick={resetLayout} title="一键还原 IDE 布局">还原布局</button>
+          </div>
         </nav>
-        <pre className={`terminal-output ${activeTerminal === "shell" ? "locked" : ""}`}>{logs[activeTerminal].join("\n")}</pre>
+        <div className="terminal-channel">
+          <div className="terminal-channel-actions">
+            <button
+              type="button"
+              className="terminal-channel-action"
+              title={`复制「${channels.find((c) => c.id === activeTerminal)?.label ?? "当前"}」全部输出`}
+              onClick={() => {
+                const text = logs[activeTerminal].join("\n");
+                if (!text.trim()) {
+                  toast("当前终端没有可复制的内容", "warn");
+                  return;
+                }
+                void copyText(text);
+              }}
+            >复制</button>
+            <button
+              type="button"
+              className="terminal-channel-action"
+              title={`清空「${channels.find((c) => c.id === activeTerminal)?.label ?? "当前"}」输出`}
+              onClick={() => {
+                setLogs((current) => ({ ...current, [activeTerminal]: [] }));
+                toast("已清空终端", "success");
+              }}
+            >清空</button>
+          </div>
+          <pre className={`terminal-output ${activeTerminal === "shell" ? "locked" : ""}`}>{logs[activeTerminal].join("\n")}</pre>
+        </div>
         {activeTerminal === "shell" && <div className="sandbox-warning"><ShieldAlert size={14} />项目外访问将由 OS 沙箱拒绝；当前实现未通过验证，因此命令入口保持关闭。</div>}
       </section>
 

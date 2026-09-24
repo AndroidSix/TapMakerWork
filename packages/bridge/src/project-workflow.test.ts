@@ -75,4 +75,34 @@ describe("project workflow", () => {
     expect(overview.evidence.map((item) => item.kind)).toEqual(expect.arrayContaining(["ui-sidecar", "runtime-snapshot", "qrcode"]));
     expect(overview.assets.referenced).toBe(1);
   });
+
+  it("offers one-click Maker CLI repair when runtime is missing", () => {
+    const root = project();
+    const overview = buildProjectWorkflowOverview({
+      projectRoot: root,
+      projectName: "demo",
+      makerBound: false,
+      makerCli: false,
+      uiScreenCount: 0,
+      previewPanel: {
+        url: "",
+        urlSource: "none",
+        orientation: "portrait",
+        autoRefreshIframe: true,
+        autoRefreshMaker: false,
+        transport: "auto",
+        reloadToken: 1
+      },
+      assets: []
+    });
+    const makerCheck = overview.stages.find((stage) => stage.id === "environment")?.checks.find((check) => check.id === "maker-cli");
+    expect(makerCheck?.status).toBe("blocked");
+    expect(makerCheck?.action).toBe("install-maker");
+    expect(makerCheck?.actionLabel).toBe("一键修复");
+    expect(overview.nextAction).toEqual({
+      action: "install-maker",
+      label: "一键修复",
+      reason: "未发现 @taptap/maker runtime"
+    });
+  });
 });

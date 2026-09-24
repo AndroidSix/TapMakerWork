@@ -1,12 +1,15 @@
 {
-  "latest": "0.1.2",
-  "title": "TapMakerWork 0.1.2",
+  "latest": "0.1.3",
+  "title": "TapMakerWork 0.1.3",
   "notes": [
-    "【macOS】未签名安装包会被系统 Gatekeeper 拦截；若「隐私与安全性」里没有「仍要打开」，请自行拉取源码打包，不要反复清隔离属性。",
-    "修复 NanoVG 项目live-edit 编辑无效：停止每帧 HTTP 快照抢占命令通道",
-    "接入 bootstrap 写入 project.json 标题作 projectName，文件通道按 Maker preview session 匹配项目",
-    "终端面板增加复制 / 清空按钮",
-    "版本号同步至 0.1.2"
+    "【macOS】请下载 .pkg（不要用 .dmg）。未签名时双击被拦截后，到「隐私与安全性」点「仍要打开」。",
+    "实时编辑：预览里改成功并保存的属性，重启后与正式运行一致；写不进源码的改动记入 UiOverrides 并自动重放。",
+    "Yoga 属性回写 Lua：工厂按钮/卡片改色改字落到调用处，防串写邻近控件；无法落盘的修改会还原并提示原因。",
+    "画布拖拽保留层级树已选节点，不再被内部 Label 抢走；布局表达式按差值改写，避免黑屏/飞位。",
+    "新游雷达：TapTap 制造 / 商店热门 / Steam 对照，支持赛道象限与每日上线汇总。",
+    "工作台：Maker CLI 检查失败时可一键修复；终端复制/清空归入当前频道。",
+    "NanoVG live-edit 修复（命令通道不再被每帧快照抢占）；Windows 预览 Supervisor 自动恢复。",
+    "版本号同步至 0.1.3"
   ],
   "links": [
     {
@@ -14,18 +17,22 @@
       "url": "https://github.com/AndroidSix/TapMakerWork/blob/main/README.md#macos-install"
     },
     {
+      "label": "完整更新日志",
+      "url": "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.3"
+    },
+    {
       "label": "源码打包详细步骤",
       "url": "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/DESKTOP_RELEASE.md#macos-build-from-source"
     }
   ],
-  "publishedAt": "2026-09-23",
+  "publishedAt": "2026-09-24",
   "force": false,
   "downloads": {
-    "macArm64": "https://gitee.com/AndroidSUP/tap-maker-work/releases/download/v0.1.2/TapMakerWork-0.1.2-mac-arm64.dmg",
-    "macX64": "https://gitee.com/AndroidSUP/tap-maker-work/releases/download/v0.1.2/TapMakerWork-0.1.2-mac-x64.dmg",
-    "windowsX64": "https://gitee.com/AndroidSUP/tap-maker-work/releases/download/v0.1.2/TapMakerWork-0.1.2-windows-x64.exe",
-    "page": "https://gitee.com/AndroidSUP/tap-maker-work/releases/tag/v0.1.2",
+    "macArm64": "https://gitee.com/AndroidSUP/tap-maker-work/releases/download/v0.1.3/TapMakerWork-0.1.3-mac-arm64.pkg",
+    "macX64": "https://gitee.com/AndroidSUP/tap-maker-work/releases/download/v0.1.3/TapMakerWork-0.1.3-mac-x64.pkg",
+    "windowsX64": "https://gitee.com/AndroidSUP/tap-maker-work/releases/download/v0.1.3/TapMakerWork-0.1.3-windows-x64.exe",
+    "page": "https://gitee.com/AndroidSUP/tap-maker-work/releases/tag/v0.1.3",
     "site": "https://androidsix.github.io/tapmakerwork-site/",
-    "githubPage": "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.2"
+    "githubPage": "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.3"
   }
 }

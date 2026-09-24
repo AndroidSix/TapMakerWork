@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { BoxSelect, CirclePlay, Crosshair, Magnet, MonitorUp, MousePointer2, Move, RefreshCw, RotateCw, Scaling, Unplug, WandSparkles } from "lucide-react";
-import type { UiNode, UiSnapshot, UiValue, WorkspaceMode } from "@tapmakerwork/protocol";
+import { type UiNode, type UiSnapshot, type UiValue, type WorkspaceMode } from "@tapmakerwork/protocol";
 import { angleBetween, groupCenter, rectCenter, resizeRect, rotatePoint, scaleRatio, snapValue, toolForShortcut, type Point, type Rect, type TransformTool } from "./runtime-transform";
 import { clipRectToSpace, runtimeCoordinateSpace, runtimeHitCandidates, stagePoint } from "./runtime-hit-test";
 import { CoachMark } from "./NewbieGuide";
@@ -29,10 +29,22 @@ interface RuntimeMirrorProps {
   onToast: (message: string, kind?: "info" | "success" | "error" | "warn") => void;
   /** Project UI backend: NanoVG draw proxies vs Yoga declarative widgets. */
   uiBackend?: "yoga" | "nanovg" | undefined;
+  /** When false, live UI edits stay in the preview and are not written back to Lua. */
+  syncCode: boolean;
+  onSyncCodeChange: (enabled: boolean) => void;
 }
 
 type Candidate = { id: string; name: string };
-type RuntimeBox = Rect & { id: string; name: string; type: string; depth: number; layer: number; order: number; parentId?: string | undefined; props: Record<string, UiValue> };
+type RuntimeBox = Rect & {
+  id: string;
+  name: string;
+  type: string;
+  depth: number;
+  layer: number;
+  order: number;
+  parentId?: string | undefined;
+  props: Record<string, UiValue>;
+};
 type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 type TransformDraft = { rect: Rect; rotate: number; scale: number };
 type StageSize = { width: number; height: number };
@@ -156,7 +168,9 @@ export function RuntimeMirror({
   onContextMenu,
   onPatch,
   onToast,
-  uiBackend
+  uiBackend,
+  syncCode,
+  onSyncCodeChange
 }: RuntimeMirrorProps) {
   const [frame, setFrame] = useState("");
   const [liveFrame, setLiveFrame] = useState("");
@@ -411,20 +425,28 @@ export function RuntimeMirror({
     };
   }, [logicalScale.x, logicalScale.y, onPatch, onToast, snapEnabled, viewport.height, viewport.width]);
 
-  const beginDrag = (box: RuntimeBox, event: ReactPointerEvent, requestedKind?: DragState["kind"], handle?: Handle) => {
+  const beginDrag = (pressed: RuntimeBox, event: ReactPointerEvent, requestedKind?: DragState["kind"], handle?: Handle) => {
     event.preventDefault();
     event.stopPropagation();
     if (event.shiftKey) {
-      onSelect(box.id, true);
+      onSelect(pressed.id, true);
       return;
     }
-    if (!selectedSet.has(box.id)) onSelect(box.id);
-    if (mode !== "live-edit") return;
+    if (mode !== "live-edit") {
+      if (!selectedSet.has(pressed.id)) onSelect(pressed.id);
+      return;
+    }
     const kind = requestedKind || (tool === "rotate" ? "rotate" : tool === "scale" ? "scale" : tool === "rect" ? "move" : tool === "move" ? "move" : undefined);
-    if (!kind) return;
-    const activeIds = selectedSet.has(box.id) ? selectedIds : [box.id];
-    const activeBoxes = activeIds.map((id) => boxMap.get(id)).filter((item): item is RuntimeBox => Boolean(item));
-    if (!activeBoxes.length) activeBoxes.push(box);
+    if (!kind) {
+      if (!selectedSet.has(pressed.id)) onSelect(pressed.id);
+      return;
+    }
+    if (!selectedSet.has(pressed.id)) onSelect(pressed.id);
+    const activeIds = selectedSet.has(pressed.id) ? selectedIds : [pressed.id];
+    const activeBoxes = activeIds
+      .map((id) => boxMap.get(id))
+      .filter((item): item is RuntimeBox => Boolean(item));
+    if (!activeBoxes.length) activeBoxes.push(pressed);
     const stage = stageRef.current;
     if (!stage) return;
     const bounds = stage.getBoundingClientRect();
@@ -455,16 +477,23 @@ export function RuntimeMirror({
     (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
   };
 
-  const hitCandidatesForEvent = (event: { clientX: number; clientY: number }): RuntimeBox[] => {
+  const stagePointForEvent = (event: { clientX: number; clientY: number }): Point | undefined => {
     const stage = stageRef.current;
-    if (!stage) return [];
+    if (!stage) return undefined;
     const bounds = stage.getBoundingClientRect();
-    const point = stagePoint(event.clientX, event.clientY, {
+    return stagePoint(event.clientX, event.clientY, {
       x: bounds.left,
       y: bounds.top,
       w: bounds.width,
       h: bounds.height
     }, coordinateSpace);
+  };
+
+  const hitCandidatesForEvent = (event: { clientX: number; clientY: number }): RuntimeBox[] => {
+    const stage = stageRef.current;
+    const point = stagePointForEvent(event);
+    if (!stage || !point) return [];
+    const bounds = stage.getBoundingClientRect();
     const tolerance = Math.max(
       coordinateSpace.width / Math.max(1, bounds.width) * 7,
       coordinateSpace.height / Math.max(1, bounds.height) * 7
@@ -472,7 +501,20 @@ export function RuntimeMirror({
     return runtimeHitCandidates(boxes, point, coordinateSpace, tolerance) as RuntimeBox[];
   };
 
-  const chooseHitForEvent = (event: { clientX: number; clientY: number }): RuntimeBox | undefined => {
+  /** Selected box under the pointer — large containers are filtered out of hit candidates, so test bounds directly. */
+  const selectedBoxAtEvent = (event: { clientX: number; clientY: number }, candidates: RuntimeBox[]): RuntimeBox | undefined => {
+    const fromCandidates = candidates.find((candidate) => selectedSet.has(candidate.id));
+    if (fromCandidates) return fromCandidates;
+    const point = stagePointForEvent(event);
+    if (!point) return undefined;
+    return selectedIds
+      .map((id) => boxMap.get(id))
+      .find((box): box is RuntimeBox => Boolean(
+        box && point.x >= box.x && point.x <= box.x + box.w && point.y >= box.y && point.y <= box.y + box.h
+      ));
+  };
+
+  const chooseHitForEvent = (event: { clientX: number; clientY: number; shiftKey?: boolean }): RuntimeBox | undefined => {
     const candidates = hitCandidatesForEvent(event);
     setHitCount(candidates.length);
     if (!candidates.length) return undefined;
@@ -483,6 +525,14 @@ export function RuntimeMirror({
       && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= 5
       && previous.ids.length === ids.length
       && previous.ids.every((id, index) => id === ids[index]);
+    // A press on a node the user already selected (canvas or hierarchy) keeps that
+    // selection so the drag moves it — overlapping children must not steal the gesture.
+    // A quick second click at the same spot still cycles through the stacked nodes.
+    const held = !event.shiftKey && !samePoint ? selectedBoxAtEvent(event, candidates) : undefined;
+    if (held) {
+      hitCycleRef.current = { x: event.clientX, y: event.clientY, ids, index: ids.indexOf(held.id), at: performance.now() };
+      return held;
+    }
     const index = samePoint ? (previous.index + 1) % candidates.length : 0;
     hitCycleRef.current = { x: event.clientX, y: event.clientY, ids, index, at: performance.now() };
     return candidates[index];
@@ -507,9 +557,11 @@ export function RuntimeMirror({
       if (!delta || mode !== "live-edit" || !editable) return;
       event.preventDefault();
       void (async () => {
-        for (const id of selectedIds) {
-          const item = boxMap.get(id);
-          if (!item) continue;
+        const targets = selectedIds
+          .map((id) => boxMap.get(id))
+          .filter((item): item is RuntimeBox => Boolean(item));
+        for (const item of targets) {
+          const id = item.id;
           const parent = item.parentId ? boxMap.get(item.parentId) : undefined;
           await onPatch(id, {
             position: "absolute",
@@ -565,6 +617,20 @@ export function RuntimeMirror({
             onClick={() => editable ? onModeChange("live-edit") : onInstallAdapter()}
           ><Move size={13} />编辑</button>
         </div>
+        <label
+          className={`runtime-sync-switch ${syncCode ? "on" : ""}`}
+          title={syncCode ? "界面改动会写回游戏代码。关掉后只改预览，不改 Lua。" : "代码同步已关闭，界面改动只留在预览。"}
+        >
+          <input
+            type="checkbox"
+            role="switch"
+            checked={syncCode}
+            aria-checked={syncCode}
+            aria-label="同步代码"
+            onChange={(event) => onSyncCodeChange(event.target.checked)}
+          />
+          <span>同步代码</span>
+        </label>
         {mode === "live-edit" && <div className="runtime-transform-tools" role="toolbar" aria-label="变换工具">
           <button type="button" className={tool === "select" ? "active" : ""} aria-pressed={tool === "select"} aria-label="选择工具，快捷键 Q" title="选择 (Q)" onClick={() => setTool("select")}><MousePointer2 size={14} aria-hidden="true" /><kbd>Q</kbd></button>
           <button type="button" className={tool === "move" ? "active" : ""} aria-pressed={tool === "move"} aria-label="移动工具，快捷键 W" title="移动 (W)" onClick={() => setTool("move")}><Move size={14} aria-hidden="true" /><kbd>W</kbd></button>

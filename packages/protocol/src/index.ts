@@ -78,6 +78,8 @@ export interface UiPatch {
   source?: UiSourceLocation | undefined;
   /** Consecutive patches with the same group collapse into one undo step. */
   historyGroup?: string | undefined;
+  /** When false, the live widget updates but the change is not queued for Lua writeback. */
+  persist?: boolean | undefined;
 }
 
 export interface BridgeCapabilities {
@@ -106,6 +108,7 @@ export type ProjectWorkflowStatus = "pass" | "warning" | "blocked" | "pending";
 
 export type ProjectWorkflowAction =
   | "doctor"
+  | "install-maker"
   | "open-design"
   | "open-code"
   | "start-preview"
@@ -196,6 +199,27 @@ export function findUiNode(root: UiNode, id: string): UiNode | undefined {
     if (match) return match;
   }
   return undefined;
+}
+
+/**
+ * Shared UI kit factories (`UiStyle.lua`) build widgets for many screens.
+ * Runtime `AddChild` stamps kit-internal parts with this file, so a node whose
+ * source is a kit file (and has no explicit `id`) cannot be moved on its own —
+ * only the kit call site in the screen Lua is persistable.
+ */
+export function isUiKitSourceFile(file: string | undefined | null): boolean {
+  if (!file) return false;
+  const base = file.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
+  return base === "uistyle.lua" || /^ui[-_]?style\.lua$/.test(base);
+}
+
+export function isKitInternalUiNode(
+  node: { props: Record<string, UiValue>; source?: UiSourceLocation | undefined } | undefined
+): boolean {
+  if (!node) return false;
+  const explicitId = node.props?.id;
+  if (typeof explicitId === "string" && explicitId !== "") return false;
+  return isUiKitSourceFile(node.source?.file);
 }
 
 export function findParentInfo(root: UiNode, nodeId: string): { parentId: string; index: number } | null {

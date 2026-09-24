@@ -29,6 +29,8 @@ local state = {
     nextWidgetId = 0,
     revision = 0,
     projectName = nil,
+    uiOverrides = {},
+    overrideHooksInstalled = false,
 }
 
 local METHOD = {
@@ -227,6 +229,197 @@ local function normalizeSourceFile(source)
     return source .. ".lua"
 end
 
+local overrideApplying = false
+
+local function structuralChildren(widget)
+    local list = {}
+    local seen = {}
+    local function append(items)
+        if type(items) ~= "table" then return end
+        for _, child in ipairs(items) do
+            if type(child) == "table" and not seen[child] then
+                seen[child] = true
+                list[#list + 1] = child
+            end
+        end
+    end
+    append(widget.children)
+    append(widget.bodyChildren_)
+    return list
+end
+
+local function segmentFor(widget)
+    local explicit = widget.props and widget.props.id
+    if type(explicit) == "string" and explicit ~= "" then return "id:" .. explicit, true end
+    local file = normalizeSourceFile(widget._sourceFile or "runtime")
+    local className = tostring(widget._className or widget.__tapmakerworkType or "Widget")
+    return file .. "|" .. className, false
+end
+
+-- Stable across restarts: explicit id, otherwise parent path + file|class#ordinal.
+-- Ordinals follow parent.children (then bodyChildren_), not the z-sorted render list.
+local function widgetPath(widget)
+    local explicit = widget.props and widget.props.id
+    if type(explicit) == "string" and explicit ~= "" then return "id:" .. explicit end
+    local segments = {}
+    local current = widget
+    local guard = 0
+    while current and guard < 48 do
+        guard = guard + 1
+        if not current.parent then
+            segments[#segments + 1] = "root"
+            break
+        end
+        local segment, isId = segmentFor(current)
+        if isId then
+            segments[#segments + 1] = segment
+        else
+            local ordinal = 1
+            local index = 0
+            for _, child in ipairs(structuralChildren(current.parent)) do
+                if segmentFor(child) == segment then
+                    index = index + 1
+                    if child == current then
+                        ordinal = index
+                        break
+                    end
+                end
+            end
+            segments[#segments + 1] = segment .. "#" .. tostring(ordinal)
+        end
+        current = current.parent
+    end
+    local ordered = {}
+    for index = #segments, 1, -1 do ordered[#ordered + 1] = segments[index] end
+    return table.concat(ordered, "/")
+end
+
+local function assignPins(widget, props)
+    if type(widget) ~= "table" or type(props) ~= "table" then return end
+    local pins = widget.__tapmakerworkPins
+    if not pins then
+        pins = {}
+        widget.__tapmakerworkPins = pins
+    end
+    for key, value in pairs(props) do
+        if type(key) == "string" and key:sub(1, 1) ~= "$" and key ~= "children" and type(value) ~= "function" then
+            pins[key] = value
+        end
+    end
+end
+
+local function applyPinnedText(widget, props)
+    if type(widget) ~= "table" or type(widget.SetText) ~= "function" or type(props) ~= "table" then return end
+    local text = props.text or props.title
+    if type(text) ~= "string" then return end
+    pcall(function() widget:SetText(text) end)
+end
+
+local function reapplyPins(widget)
+    if overrideApplying or type(widget) ~= "table" or type(widget.__tapmakerworkPins) ~= "table" then return end
+    overrideApplying = true
+    pcall(function() widget:SetStyle(widget.__tapmakerworkPins) end)
+    applyPinnedText(widget, widget.__tapmakerworkPins)
+    overrideApplying = false
+end
+
+local function applyStylePinned(widget, style)
+    assignPins(widget, style)
+    overrideApplying = true
+    local ok, err = pcall(function() widget:SetStyle(style) end)
+    if ok then applyPinnedText(widget, style) end
+    overrideApplying = false
+    if not ok then return false, tostring(err) end
+    return true
+end
+
+local function attachedToRoot(widget)
+    local root = state.rootProvider and state.rootProvider() or nil
+    if not root or type(widget) ~= "table" then return false end
+    local current = widget
+    local guard = 0
+    while current and guard < 48 do
+        if current == root then return true end
+        current = current.parent
+        guard = guard + 1
+    end
+    return false
+end
+
+local function applyOverrideToWidget(widget)
+    if type(widget) ~= "table" or not attachedToRoot(widget) then return end
+    if type(widget.__tapmakerworkPins) == "table" then
+        reapplyPins(widget)
+        return
+    end
+    local overrides = state.uiOverrides
+    if type(overrides) ~= "table" then return end
+    local instancePath = widgetPath(widget)
+    widget.__tapmakerworkPath = instancePath
+    local props = overrides[instancePath]
+    if type(props) ~= "table" then return end
+    applyStylePinned(widget, props)
+end
+
+local function applyOverrideTree(widget, seen)
+    if type(widget) ~= "table" then return end
+    seen = seen or {}
+    if seen[widget] then return end
+    seen[widget] = true
+    applyOverrideToWidget(widget)
+    for _, child in ipairs(structuralChildren(widget)) do
+        applyOverrideTree(child, seen)
+    end
+end
+
+local function loadUiOverrides()
+    package.loaded["tapmakerwork/UiOverrides"] = nil
+    package.loaded["tapmakerwork.UiOverrides"] = nil
+    local ok, mod = pcall(require, "tapmakerwork/UiOverrides")
+    if not ok or type(mod) ~= "table" or type(mod.overrides) ~= "table" then
+        ok, mod = pcall(require, "tapmakerwork.UiOverrides")
+    end
+    if ok and type(mod) == "table" and type(mod.overrides) == "table" then
+        state.uiOverrides = mod.overrides
+    else
+        state.uiOverrides = {}
+    end
+end
+
+local function installOverrideHooks()
+    if state.overrideHooksInstalled then return end
+    local function wrapMethod(class, name, invoke)
+        local raw = rawget(class, name)
+        if type(raw) ~= "function" or rawget(class, "__tapmakerworkHook_" .. name) then return end
+        class["__tapmakerworkHook_" .. name] = true
+        class[name] = function(self, ...)
+            local result = raw(self, ...)
+            if not overrideApplying then invoke(self, ...) end
+            return result
+        end
+    end
+    local seen = {}
+    local function consider(class)
+        if type(class) ~= "table" or seen[class] or class.__index ~= class then return end
+        seen[class] = true
+        wrapMethod(class, "SetStyle", function(self) reapplyPins(self) end)
+        wrapMethod(class, "SetText", function(self) reapplyPins(self) end)
+        wrapMethod(class, "AddChild", function(_, child) applyOverrideTree(child) end)
+        wrapMethod(class, "InsertChild", function(_, child) applyOverrideTree(child) end)
+    end
+    local okWidget, Widget = pcall(require, "urhox-libs/UI/Core/Widget")
+    if not okWidget then return end
+    consider(Widget)
+    local okUI, UI = pcall(require, "urhox-libs/UI")
+    if okUI and type(UI) == "table" then
+        for _, value in pairs(UI) do consider(value) end
+    end
+    for _, loaded in pairs(package.loaded) do
+        if type(loaded) == "table" then consider(loaded) end
+    end
+    state.overrideHooksInstalled = true
+end
+
 local function widgetId(widget)
     if widget.__tapmakerworkId then return widget.__tapmakerworkId end
     state.nextWidgetId = state.nextWidgetId + 1
@@ -274,6 +467,7 @@ local function snapshotWidget(widget)
         return nil
     end)
     if okScreen and screen then props["$screen"] = safeValue(screen, 0, {}) end
+    props["$path"] = widgetPath(widget)
     local explicitId = widget.props and widget.props.id
     local title = widget.props and widget.props.title
     if type(title) ~= "string" or title == "" then title = widget.title_ end
@@ -322,9 +516,7 @@ local function applyPatch(patch)
     for key, value in pairs(patch.props or {}) do
         if type(key) == "string" and key:sub(1, 1) ~= "$" then style[key] = value end
     end
-    local ok, err = pcall(function() widget:SetStyle(style) end)
-    if not ok then return false, tostring(err) end
-    return true
+    return applyStylePinned(widget, style)
 end
 
 local function applySnapshotNode(node)
@@ -480,6 +672,10 @@ function Bridge.Start(options)
     if type(options.projectName) == "string" and options.projectName ~= "" then
         state.projectName = options.projectName
     end
+    loadUiOverrides()
+    installOverrideHooks()
+    local root = state.rootProvider and state.rootProvider() or nil
+    if root then applyOverrideTree(root) end
     writeStatus()
     Bridge.PushSnapshot()
     request("POST", "/api/runtime/hello", { sessionId = state.sessionId, frames = false, projectName = state.projectName })
@@ -510,11 +706,16 @@ function Bridge.Update(dt)
 end
 
 function Bridge.Diagnostics()
+    local overrideCount = 0
+    if type(state.uiOverrides) == "table" then
+        for _ in pairs(state.uiOverrides) do overrideCount = overrideCount + 1 end
+    end
     return {
         sessionId = state.sessionId,
         cursor = state.cursor,
         revision = state.revision,
         requestPending = state.requestPending,
+        uiOverrideCount = overrideCount,
     }
 end
 

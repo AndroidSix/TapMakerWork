@@ -4,8 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 const TAP_HOST = "www.taptap.cn";
+const STEAM_HOST = "store.steampowered.com";
 const X_UA = "V=1&PN=WebApp&LANG=zh_CN&VN_CODE=100000000&LOC=CN&PLT=PC&DS=Android&UID=0&OS=MacOS&OSV=10.15.7&DT=PC";
 const USER_AGENT = "TapMakerWork/0.1 (new-game-radar; +https://github.com/androidsix/TapMakerWork)";
+
+export type RadarChannelId = "maker" | "store" | "steam";
 
 export interface RadarGameEntry {
   id: number;
@@ -25,6 +28,7 @@ export interface RadarGameEntry {
   releasedAt?: number;
   url?: string;
   labels: string[];
+  channel?: RadarChannelId;
 }
 
 export interface RadarBoard {
@@ -105,9 +109,22 @@ export interface RadarScoreBucket {
   count: number;
 }
 
+export interface RadarChannel {
+  id: RadarChannelId;
+  label: string;
+  description: string;
+  entries: RadarGameEntry[];
+  boards: RadarBoard[];
+  tracks: RadarTrackRow[];
+  scoreBuckets: RadarScoreBucket[];
+  error?: string;
+}
+
 export interface RadarSnapshot {
   fetchedAt: string;
   source: "live" | "offline";
+  channels: RadarChannel[];
+  /** @deprecated 兼容旧面板：等于当前主渠道（制造） */
   boardCount: number;
   entryCount: number;
   boards: RadarBoard[];
@@ -115,6 +132,51 @@ export interface RadarSnapshot {
   tracks: RadarTrackRow[];
   scoreBuckets: RadarScoreBucket[];
   error?: string;
+}
+
+export interface RadarDailyTrackStat {
+  track: string;
+  count: number;
+  totalHits: number;
+  avgScore: number | null;
+}
+
+export interface RadarDailyDayStat {
+  date: string;
+  count: number;
+  totalHits: number;
+  topTitle?: string;
+  topHits?: number;
+  topScore?: number | null;
+}
+
+export interface RadarDailyReport {
+  fetchedAt: string;
+  source: "live" | "offline";
+  from: string;
+  to: string;
+  total: number;
+  scoredCount: number;
+  avgScore: number | null;
+  totalHits: number;
+  highlights: {
+    hottest?: RadarGameEntry;
+    bestScore?: RadarGameEntry;
+    mostReviewed?: RadarGameEntry;
+  };
+  topByHits: RadarGameEntry[];
+  topByScore: RadarGameEntry[];
+  topTracks: RadarDailyTrackStat[];
+  byDay: RadarDailyDayStat[];
+  entries: RadarGameEntry[];
+  truncated?: boolean;
+  error?: string;
+}
+
+interface DailyLaunchCache {
+  fetchedAt: string;
+  sinceSec: number;
+  entries: RadarGameEntry[];
 }
 
 interface BoardSpec {
@@ -155,17 +217,17 @@ function snapshotPath(): string {
   return path.join(configDir(), "new-game-radar-snapshot.json");
 }
 
-function httpsGetJson(pathnameWithQuery: string): Promise<unknown> {
+function httpsGetJson(hostname: string, pathnameWithQuery: string, extraHeaders?: Record<string, string>): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const req = https.request(
       {
-        hostname: TAP_HOST,
+        hostname,
         path: pathnameWithQuery,
         method: "GET",
         headers: {
           Accept: "application/json",
           "User-Agent": USER_AGENT,
-          "X-UA": X_UA
+          ...extraHeaders
         },
         timeout: 20_000
       },
@@ -193,6 +255,10 @@ function httpsGetJson(pathnameWithQuery: string): Promise<unknown> {
     });
     req.end();
   });
+}
+
+function tapGetJson(pathnameWithQuery: string): Promise<unknown> {
+  return httpsGetJson(TAP_HOST, pathnameWithQuery, { "X-UA": X_UA });
 }
 
 function pickDeveloper(developers: unknown): { name: string; id?: number; url?: string } {
@@ -262,13 +328,51 @@ export function normalizeMakerApp(raw: Record<string, unknown>, board: string, r
     fans: Number(stat.fans_count) || 0,
     board,
     rank,
-    labels
+    labels,
+    channel: "maker"
   };
   if (developer.id != null) entry.authorId = developer.id;
   if (developer.url) entry.authorUrl = developer.url;
   if (iconUrl) entry.iconUrl = iconUrl;
   if (released != null) entry.releasedAt = released;
   if (id > 0) entry.url = `https://www.taptap.cn/app/${id}`;
+  return entry;
+}
+
+/** TapTap 商店榜条目：list[].app */
+export function normalizeStoreApp(raw: Record<string, unknown>, board: string, rank: number): RadarGameEntry {
+  const app = (raw.app && typeof raw.app === "object" ? raw.app : raw) as Record<string, unknown>;
+  const entry = normalizeMakerApp(app, board, rank);
+  entry.channel = "store";
+  if (!entry.author || entry.author === "未知作者") entry.author = "—";
+  return entry;
+}
+
+/** Steam featuredcategories 条目 */
+export function normalizeSteamItem(raw: Record<string, unknown>, board: string, rank: number): RadarGameEntry {
+  const id = Number(raw.id) || 0;
+  const icon =
+    (typeof raw.small_capsule_image === "string" && raw.small_capsule_image) ||
+    (typeof raw.header_image === "string" && raw.header_image) ||
+    undefined;
+  // ponytail: Steam 公开精选无评分/热度，用名次倒序当伪热度，仅够本地排序
+  const hits = Math.max(0, 1000 - rank * 10);
+  const entry: RadarGameEntry = {
+    id,
+    title: String(raw.name || "Untitled"),
+    author: "Steam",
+    tags: [],
+    score: null,
+    hits,
+    reviewCount: 0,
+    fans: 0,
+    board,
+    rank,
+    labels: typeof raw.discount_percent === "number" && raw.discount_percent > 0 ? [`-${raw.discount_percent}%`] : [],
+    channel: "steam"
+  };
+  if (icon) entry.iconUrl = icon;
+  if (id > 0) entry.url = `https://store.steampowered.com/app/${id}`;
   return entry;
 }
 
@@ -389,7 +493,7 @@ export function buildHeatBoard(entries: RadarGameEntry[], limit = HEAT_BOARD_LIM
     sort: 1,
     from: 0,
     limit,
-    description: "按 TapTap 制造曝光热度（hits）降序，反映当前最热的作品。",
+    description: "按曝光热度（hits）降序，反映当前最热的作品。",
     entries: sorted.map((entry, index) => ({
       ...entry,
       board: "热度榜",
@@ -424,55 +528,171 @@ export function buildDerivedBoards(entries: RadarGameEntry[]): RadarBoard[] {
   return [buildHeatBoard(entries), buildRisingBoard(entries)];
 }
 
-function decorateSnapshot(partial: Omit<RadarSnapshot, "tracks" | "scoreBuckets" | "boardCount" | "entryCount" | "boards"> & {
-  boards?: RadarBoard[];
-}): RadarSnapshot {
-  const entries = partial.entries;
-  const boards = buildDerivedBoards(entries);
-  return {
-    ...partial,
-    boards,
-    boardCount: boards.length,
-    entryCount: entries.length,
+function buildSteamBoards(topSellers: RadarGameEntry[], newReleases: RadarGameEntry[]): RadarBoard[] {
+  return [
+    {
+      id: "heat",
+      label: "畅销榜",
+      sort: 1,
+      from: 0,
+      limit: topSellers.length,
+      description: "Steam 商店公开「畅销」精选（featuredcategories.top_sellers），全球对照用。",
+      entries: topSellers.map((entry, index) => ({ ...entry, board: "畅销榜", rank: index + 1 }))
+    },
+    {
+      id: "rising",
+      label: "新品榜",
+      sort: 2,
+      from: 0,
+      limit: newReleases.length,
+      description: "Steam 商店公开「新品」精选（featuredcategories.new_releases），无评分字段，不作新锐分。",
+      entries: newReleases.map((entry, index) => ({ ...entry, board: "新品榜", rank: index + 1 }))
+    }
+  ];
+}
+
+function buildChannel(
+  id: RadarChannelId,
+  label: string,
+  description: string,
+  entries: RadarGameEntry[],
+  boards?: RadarBoard[],
+  error?: string
+): RadarChannel {
+  const resolvedBoards = boards || buildDerivedBoards(entries);
+  const channel: RadarChannel = {
+    id,
+    label,
+    description,
+    entries,
+    boards: resolvedBoards,
     tracks: analyzeTracks(entries),
     scoreBuckets: buildScoreBuckets(entries)
   };
+  if (error) channel.error = error;
+  return channel;
 }
 
-async function fetchPoolEntries(): Promise<RadarGameEntry[]> {
+function flattenSnapshot(fetchedAt: string, source: "live" | "offline", channels: RadarChannel[], error?: string): RadarSnapshot {
+  const primary = channels.find((item) => item.id === "maker") || channels[0];
+  const snapshot: RadarSnapshot = {
+    fetchedAt,
+    source,
+    channels,
+    boardCount: primary?.boards.length || 0,
+    entryCount: primary?.entries.length || 0,
+    boards: primary?.boards || [],
+    entries: primary?.entries || [],
+    tracks: primary?.tracks || [],
+    scoreBuckets: primary?.scoreBuckets || []
+  };
+  if (error) snapshot.error = error;
+  return snapshot;
+}
+
+/** 兼容旧快照：无 channels 时把顶层 entries 当作制造渠道 */
+function coerceChannels(raw: Partial<RadarSnapshot>): RadarChannel[] {
+  if (Array.isArray(raw.channels) && raw.channels.length > 0) {
+    return raw.channels.map((channel) =>
+      buildChannel(channel.id, channel.label, channel.description, channel.entries || [], channel.boards, channel.error)
+    );
+  }
+  return [
+    buildChannel(
+      "maker",
+      "TapTap 制造",
+      "制造综合池 + 新上池，本地推导热度榜 / 新锐榜。",
+      Array.isArray(raw.entries) ? raw.entries : []
+    )
+  ];
+}
+
+async function fetchMakerEntries(): Promise<RadarGameEntry[]> {
   const seen = new Set<number>();
   const entries: RadarGameEntry[] = [];
   for (const spec of POOL_SPECS) {
     const query = `/webapiv2/maker/v1/app-list?sort=${spec.sort}&from=${spec.from}&limit=${spec.limit}&platform=android`;
-    const payload = (await httpsGetJson(query)) as {
+    const payload = (await tapGetJson(query)) as {
       success?: boolean;
       data?: { list?: Record<string, unknown>[]; msg?: string };
     };
     if (!payload.success) {
-      const msg = payload.data?.msg || "maker_list_failed";
-      throw new Error(msg);
+      throw new Error(payload.data?.msg || "maker_list_failed");
     }
-    const list = payload.data?.list || [];
-    list.forEach((item, index) => {
+    for (const [index, item] of (payload.data?.list || []).entries()) {
       const entry = normalizeMakerApp(item, spec.label, index + 1);
-      if (!entry.id || seen.has(entry.id)) return;
+      if (!entry.id || seen.has(entry.id)) continue;
       seen.add(entry.id);
       entries.push(entry);
-    });
+    }
   }
   return entries;
+}
+
+async function fetchStoreEntries(): Promise<RadarGameEntry[]> {
+  // ponytail: 官方 type=hot/new/played 目前都落「热门榜」，只拉一页热门即可
+  const query = `/webapiv2/app-top/v2/hits?type=hot&from=0&limit=40`;
+  const payload = (await tapGetJson(query)) as {
+    success?: boolean;
+    data?: { list?: Record<string, unknown>[]; title?: string; msg?: string };
+  };
+  if (!payload.success) throw new Error(payload.data?.msg || "store_list_failed");
+  const boardLabel = String(payload.data?.title || "商店热门");
+  const seen = new Set<number>();
+  const entries: RadarGameEntry[] = [];
+  for (const [index, item] of (payload.data?.list || []).entries()) {
+    const entry = normalizeStoreApp(item, boardLabel, index + 1);
+    if (!entry.id || seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    entries.push(entry);
+  }
+  return entries;
+}
+
+async function fetchSteamChannel(): Promise<RadarChannel> {
+  const payload = (await httpsGetJson(STEAM_HOST, "/api/featuredcategories/?l=schinese&cc=cn")) as Record<string, unknown>;
+  const topRaw = ((payload.top_sellers as { items?: Record<string, unknown>[] } | undefined)?.items) || [];
+  const newRaw = ((payload.new_releases as { items?: Record<string, unknown>[] } | undefined)?.items) || [];
+  const topSellers = topRaw.map((item, index) => normalizeSteamItem(item, "Steam 畅销", index + 1));
+  const newReleases = newRaw.map((item, index) => normalizeSteamItem(item, "Steam 新品", index + 1));
+  const seen = new Set<number>();
+  const entries: RadarGameEntry[] = [];
+  for (const entry of [...topSellers, ...newReleases]) {
+    if (!entry.id || seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    entries.push(entry);
+  }
+  return buildChannel(
+    "steam",
+    "Steam 对照",
+    "Valve 公开精选接口（畅销 / 新品），作全球独立与商业趋势对照；非国内小游戏榜。",
+    entries,
+    buildSteamBoards(topSellers, newReleases)
+  );
+}
+
+async function fetchChannelSafe(
+  id: RadarChannelId,
+  label: string,
+  description: string,
+  runner: () => Promise<{ entries: RadarGameEntry[]; boards?: RadarBoard[] }>
+): Promise<RadarChannel> {
+  try {
+    const result = await runner();
+    return buildChannel(id, label, description, result.entries, result.boards);
+  } catch (error) {
+    return buildChannel(id, label, description, [], undefined, error instanceof Error ? error.message : String(error));
+  }
 }
 
 export function readOfflineSnapshot(): RadarSnapshot | null {
   try {
     if (!fs.existsSync(snapshotPath())) return null;
-    const raw = JSON.parse(fs.readFileSync(snapshotPath(), "utf8")) as RadarSnapshot;
-    if (!raw || !Array.isArray(raw.entries)) return null;
-    return decorateSnapshot({
-      fetchedAt: raw.fetchedAt || new Date().toISOString(),
-      source: "offline",
-      entries: raw.entries
-    });
+    const raw = JSON.parse(fs.readFileSync(snapshotPath(), "utf8")) as Partial<RadarSnapshot>;
+    if (!raw) return null;
+    const channels = coerceChannels(raw);
+    if (channels.every((channel) => channel.entries.length === 0) && !Array.isArray(raw.entries)) return null;
+    return flattenSnapshot(raw.fetchedAt || new Date().toISOString(), "offline", channels, raw.error);
   } catch {
     return null;
   }
@@ -488,12 +708,29 @@ export function writeOfflineSnapshot(snapshot: RadarSnapshot): void {
 }
 
 export async function fetchLatestRadarSnapshot(): Promise<RadarSnapshot> {
-  const entries = await fetchPoolEntries();
-  const snapshot = decorateSnapshot({
-    fetchedAt: new Date().toISOString(),
-    source: "live",
-    entries
-  });
+  const [maker, store, steam] = await Promise.all([
+    fetchChannelSafe("maker", "TapTap 制造", "制造综合池 + 新上池，本地推导热度榜 / 新锐榜。", async () => ({
+      entries: await fetchMakerEntries()
+    })),
+    fetchChannelSafe("store", "TapTap 商店", "商店公开热门榜（app-top/v2/hits）。官方 type 目前均落热门，作全站对照。", async () => ({
+      entries: await fetchStoreEntries()
+    })),
+    fetchChannelSafe("steam", "Steam 对照", "Valve 公开精选接口（畅销 / 新品）。", async () => {
+      const channel = await fetchSteamChannel();
+      return { entries: channel.entries, boards: channel.boards };
+    })
+  ]);
+  const channels = [maker, store, steam];
+  const errors = channels.filter((channel) => channel.error).map((channel) => `${channel.label}: ${channel.error}`);
+  const snapshot = flattenSnapshot(
+    new Date().toISOString(),
+    "live",
+    channels,
+    errors.length ? errors.join("；") : undefined
+  );
+  if (channels.every((channel) => channel.entries.length === 0)) {
+    throw new Error(snapshot.error || "all_channels_failed");
+  }
   writeOfflineSnapshot(snapshot);
   return snapshot;
 }
@@ -517,21 +754,288 @@ export function loadRadarSnapshot(preferLive: boolean): Promise<RadarSnapshot> {
 }
 
 export function emptyRadarSnapshot(message?: string): RadarSnapshot {
-  return decorateSnapshot({
+  return flattenSnapshot(
+    new Date().toISOString(),
+    "offline",
+    [
+      buildChannel("maker", "TapTap 制造", "制造综合池 + 新上池。", []),
+      buildChannel("store", "TapTap 商店", "商店公开热门榜。", []),
+      buildChannel("steam", "Steam 对照", "Steam 公开精选。", [])
+    ],
+    message
+  );
+}
+
+const DAILY_PAGE_SIZE = 40;
+const DAILY_MAX_PAGES = 60;
+const DAILY_MAX_RANGE_DAYS = 30;
+const DAILY_CACHE_BUFFER_DAYS = 30;
+
+function dailyCachePath(): string {
+  return path.join(configDir(), "new-game-radar-daily.json");
+}
+
+function pad2(value: number): string {
+  return value < 10 ? `0${value}` : String(value);
+}
+
+/** 本地日历日 YYYY-MM-DD */
+export function dayKeyFromTs(tsSec: number): string {
+  const date = new Date(tsSec * 1000);
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+export function startOfLocalDay(dateStr: string): number {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim());
+  if (!match) throw new Error("invalid_date");
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0);
+  return Math.floor(date.getTime() / 1000);
+}
+
+export function endOfLocalDay(dateStr: string): number {
+  return startOfLocalDay(dateStr) + 86400 - 1;
+}
+
+export function defaultDailyRange(days = 7): { from: string; to: string } {
+  const span = Math.max(1, Math.min(DAILY_MAX_RANGE_DAYS, Math.floor(days)));
+  const toDate = new Date();
+  const fromDate = new Date(toDate.getFullYear(), toDate.getMonth(), toDate.getDate() - (span - 1));
+  return {
+    from: `${fromDate.getFullYear()}-${pad2(fromDate.getMonth() + 1)}-${pad2(fromDate.getDate())}`,
+    to: `${toDate.getFullYear()}-${pad2(toDate.getMonth() + 1)}-${pad2(toDate.getDate())}`
+  };
+}
+
+function clampDailyRange(from: string, to: string): { from: string; to: string } {
+  let fromSec = startOfLocalDay(from);
+  let toSec = endOfLocalDay(to);
+  if (fromSec > toSec) {
+    const tmp = from;
+    from = to;
+    to = tmp;
+    fromSec = startOfLocalDay(from);
+    toSec = endOfLocalDay(to);
+  }
+  const maxSpan = DAILY_MAX_RANGE_DAYS * 86400 - 1;
+  if (toSec - fromSec > maxSpan) {
+    fromSec = toSec - maxSpan;
+    from = dayKeyFromTs(fromSec);
+  }
+  return { from, to };
+}
+
+function readDailyCache(): DailyLaunchCache | null {
+  try {
+    if (!fs.existsSync(dailyCachePath())) return null;
+    const raw = JSON.parse(fs.readFileSync(dailyCachePath(), "utf8")) as DailyLaunchCache;
+    if (!raw || !Array.isArray(raw.entries)) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+function writeDailyCache(cache: DailyLaunchCache): void {
+  fs.mkdirSync(configDir(), { recursive: true });
+  fs.writeFileSync(dailyCachePath(), `${JSON.stringify(cache, null, 2)}\n`, "utf8");
+}
+
+/** 分页拉制造新上池，直到最旧 releasedAt < sinceSec 或触顶 */
+export async function fetchMakerLaunchesSince(sinceSec: number): Promise<{ entries: RadarGameEntry[]; truncated: boolean }> {
+  const seen = new Set<number>();
+  const entries: RadarGameEntry[] = [];
+  let truncated = false;
+  for (let page = 0; page < DAILY_MAX_PAGES; page += 1) {
+    const from = page * DAILY_PAGE_SIZE;
+    const query = `/webapiv2/maker/v1/app-list?sort=2&from=${from}&limit=${DAILY_PAGE_SIZE}&platform=android`;
+    const payload = (await tapGetJson(query)) as {
+      success?: boolean;
+      data?: { list?: Record<string, unknown>[]; next_page?: string; msg?: string };
+    };
+    if (!payload.success) throw new Error(payload.data?.msg || "maker_daily_failed");
+    const list = payload.data?.list || [];
+    if (list.length === 0) break;
+    let oldest: number | undefined;
+    for (const [index, item] of list.entries()) {
+      const entry = normalizeMakerApp(item, "每日上线", from + index + 1);
+      if (!entry.id || seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      entries.push(entry);
+      if (entry.releasedAt != null) {
+        oldest = oldest == null ? entry.releasedAt : Math.min(oldest, entry.releasedAt);
+      }
+    }
+    if (oldest != null && oldest < sinceSec) break;
+    if (!payload.data?.next_page) break;
+    if (page === DAILY_MAX_PAGES - 1) truncated = true;
+  }
+  return { entries, truncated };
+}
+
+export function buildDailyReport(
+  pool: RadarGameEntry[],
+  from: string,
+  to: string,
+  meta: { fetchedAt: string; source: "live" | "offline"; truncated?: boolean; error?: string }
+): RadarDailyReport {
+  const range = clampDailyRange(from, to);
+  const fromSec = startOfLocalDay(range.from);
+  const toSec = endOfLocalDay(range.to);
+  const entries = pool
+    .filter((entry) => entry.releasedAt != null && entry.releasedAt >= fromSec && entry.releasedAt <= toSec)
+    .sort((a, b) => (b.releasedAt || 0) - (a.releasedAt || 0) || b.hits - a.hits);
+
+  const scored = entries.filter((entry) => entry.score != null);
+  const totalHits = entries.reduce((sum, entry) => sum + Math.max(0, entry.hits), 0);
+  const avgScore = scored.length
+    ? round2(scored.reduce((sum, entry) => sum + (entry.score || 0), 0) / scored.length)
+    : null;
+
+  const topByHits = [...entries].sort((a, b) => b.hits - a.hits || (b.score ?? 0) - (a.score ?? 0)).slice(0, 10);
+  const topByScore = [...entries]
+    .filter((entry) => entry.score != null)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || b.reviewCount - a.reviewCount || b.hits - a.hits)
+    .slice(0, 10);
+  const mostReviewed = [...entries].sort((a, b) => b.reviewCount - a.reviewCount || b.hits - a.hits)[0];
+
+  const trackMap = new Map<string, RadarGameEntry[]>();
+  for (const entry of entries) {
+    const track = mapTrack(entry.tags, entry.title);
+    const list = trackMap.get(track) || [];
+    list.push(entry);
+    trackMap.set(track, list);
+  }
+  const topTracks: RadarDailyTrackStat[] = [...trackMap.entries()]
+    .map(([track, list]) => {
+      const scoredList = list.filter((item) => item.score != null);
+      return {
+        track,
+        count: list.length,
+        totalHits: list.reduce((sum, item) => sum + Math.max(0, item.hits), 0),
+        avgScore: scoredList.length
+          ? round2(scoredList.reduce((sum, item) => sum + (item.score || 0), 0) / scoredList.length)
+          : null
+      };
+    })
+    .sort((a, b) => b.count - a.count || b.totalHits - a.totalHits)
+    .slice(0, 10);
+
+  const dayMap = new Map<string, RadarGameEntry[]>();
+  for (const entry of entries) {
+    const key = dayKeyFromTs(entry.releasedAt!);
+    const list = dayMap.get(key) || [];
+    list.push(entry);
+    dayMap.set(key, list);
+  }
+  const byDay: RadarDailyDayStat[] = [];
+  for (let ts = fromSec; ts <= toSec; ts += 86400) {
+    const date = dayKeyFromTs(ts);
+    const list = dayMap.get(date) || [];
+    const top = [...list].sort((a, b) => b.hits - a.hits || (b.score ?? 0) - (a.score ?? 0))[0];
+    const day: RadarDailyDayStat = {
+      date,
+      count: list.length,
+      totalHits: list.reduce((sum, item) => sum + Math.max(0, item.hits), 0)
+    };
+    if (top) {
+      day.topTitle = top.title;
+      day.topHits = top.hits;
+      day.topScore = top.score;
+    }
+    byDay.push(day);
+  }
+
+  const report: RadarDailyReport = {
+    fetchedAt: meta.fetchedAt,
+    source: meta.source,
+    from: range.from,
+    to: range.to,
+    total: entries.length,
+    scoredCount: scored.length,
+    avgScore,
+    totalHits,
+    highlights: {
+      ...(topByHits[0] ? { hottest: topByHits[0] } : {}),
+      ...(topByScore[0] ? { bestScore: topByScore[0] } : {}),
+      ...(mostReviewed && mostReviewed.reviewCount > 0 ? { mostReviewed } : {})
+    },
+    topByHits,
+    topByScore,
+    topTracks,
+    byDay,
+    entries
+  };
+  if (meta.truncated) report.truncated = true;
+  if (meta.error) report.error = meta.error;
+  return report;
+}
+
+export async function getDailyLaunchReport(options: {
+  from?: string;
+  to?: string;
+  refresh?: boolean;
+}): Promise<RadarDailyReport> {
+  const fallback = defaultDailyRange(7);
+  const range = clampDailyRange(options.from || fallback.from, options.to || fallback.to);
+  const needSince = startOfLocalDay(range.from);
+  const cacheSinceTarget = Math.min(needSince, startOfLocalDay(defaultDailyRange(DAILY_CACHE_BUFFER_DAYS).from));
+  const cache = readDailyCache();
+  const cacheCovers = Boolean(cache && cache.sinceSec <= needSince && cache.entries.length > 0);
+
+  if (!options.refresh && cacheCovers && cache) {
+    return buildDailyReport(cache.entries, range.from, range.to, {
+      fetchedAt: cache.fetchedAt,
+      source: "offline"
+    });
+  }
+
+  try {
+    const { entries, truncated } = await fetchMakerLaunchesSince(cacheSinceTarget);
+    const fetchedAt = new Date().toISOString();
+    writeDailyCache({ fetchedAt, sinceSec: cacheSinceTarget, entries });
+    return buildDailyReport(entries, range.from, range.to, {
+      fetchedAt,
+      source: "live",
+      truncated
+    });
+  } catch (error) {
+    if (cache && cache.entries.length > 0) {
+      return buildDailyReport(cache.entries, range.from, range.to, {
+        fetchedAt: cache.fetchedAt,
+        source: "offline",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    throw error;
+  }
+}
+
+export function emptyDailyReport(message?: string, from?: string, to?: string): RadarDailyReport {
+  const range = clampDailyRange(from || defaultDailyRange(7).from, to || defaultDailyRange(7).to);
+  return buildDailyReport([], range.from, range.to, {
     fetchedAt: new Date().toISOString(),
     source: "offline",
-    entries: [],
     ...(message ? { error: message } : {})
   });
 }
 
+const ALLOWED_ICON_HOST_SUFFIXES = [".tapimg.com", ".steamstatic.com", ".steamcdn-a.akamaihd.net"];
 const ALLOWED_ICON_HOSTS = new Set([
   "img-tc.tapimg.com",
   "img.tapimg.com",
   "img2.tapimg.com",
   "img3.tapimg.com",
-  "assets.tapimg.com"
+  "assets.tapimg.com",
+  "shared.akamai.steamstatic.com",
+  "cdn.cloudflare.steamstatic.com",
+  "cdn.akamai.steamstatic.com",
+  "steamcdn-a.akamaihd.net"
 ]);
+
+function isAllowedIconHost(hostname: string): boolean {
+  if (ALLOWED_ICON_HOSTS.has(hostname)) return true;
+  return ALLOWED_ICON_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
+}
 
 export async function proxyTapIcon(rawUrl: string): Promise<{ contentType: string; body: Buffer }> {
   let parsed: URL;
@@ -541,9 +1045,7 @@ export async function proxyTapIcon(rawUrl: string): Promise<{ contentType: strin
     throw new Error("invalid_icon_url");
   }
   if (parsed.protocol !== "https:") throw new Error("icon_https_required");
-  if (!ALLOWED_ICON_HOSTS.has(parsed.hostname) && !parsed.hostname.endsWith(".tapimg.com")) {
-    throw new Error("icon_host_not_allowed");
-  }
+  if (!isAllowedIconHost(parsed.hostname)) throw new Error("icon_host_not_allowed");
   return new Promise((resolve, reject) => {
     const req = https.request(
       {
@@ -553,7 +1055,7 @@ export async function proxyTapIcon(rawUrl: string): Promise<{ contentType: strin
         headers: {
           "User-Agent": USER_AGENT,
           Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-          Referer: "https://www.taptap.cn/"
+          Referer: parsed.hostname.includes("steam") ? "https://store.steampowered.com/" : "https://www.taptap.cn/"
         },
         timeout: 15_000
       },

@@ -88,6 +88,10 @@ async function main() {
       : ["--win"];
   console.log(`[2/3] 生成 ${targetLabel} 安装包…`);
   await run(builder, builderArgs);
+  if (requestedTarget !== "win") {
+    console.log("[2/3] 生成 macOS .pkg…");
+    await run(process.execPath, [path.join(sourceRoot, "scripts", "build-mac-pkg.mjs")]);
+  }
 
   const artifacts = recentArtifacts(startedAt);
   const packageJson = JSON.parse(fs.readFileSync(path.join(sourceRoot, "package.json"), "utf8"));
@@ -101,7 +105,7 @@ async function main() {
     console.log(`产物目录：${outputDirectory}`);
   }
   console.log("注意：一键打包只生成安装包，不会自动覆盖本机已安装的 App。");
-  console.log("macOS 请打开新 DMG 覆盖 /Applications/TapMakerWork.app；Windows 请重新运行新的 NSIS 安装程序。");
+  console.log("macOS 请双击新的 .pkg。若提示无法验证开发者，到「系统设置 → 隐私与安全性」点「仍要打开」，安装器会写入 /Applications。Windows 请重新运行新的 NSIS 安装程序。");
   console.log(`目录里若仍有旧版文件（如 *-0.1.0-*），请勿误开；请选 *-${version}-* 文件。`);
 }
 

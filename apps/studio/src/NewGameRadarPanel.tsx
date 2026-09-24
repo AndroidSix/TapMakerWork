@@ -35,7 +35,9 @@ interface RadarGameEntry {
   board: string;
   rank: number;
   risingScore?: number;
+  releasedAt?: number;
   labels: string[];
+  channel?: "maker" | "store" | "steam";
 }
 
 interface RadarBoard {
@@ -63,9 +65,21 @@ interface RadarScoreBucket {
   count: number;
 }
 
+interface RadarChannel {
+  id: "maker" | "store" | "steam";
+  label: string;
+  description: string;
+  entries: RadarGameEntry[];
+  boards: RadarBoard[];
+  tracks: RadarTrackRow[];
+  scoreBuckets: RadarScoreBucket[];
+  error?: string;
+}
+
 interface RadarSnapshot {
   fetchedAt: string;
   source: "live" | "offline";
+  channels?: RadarChannel[];
   boardCount: number;
   entryCount: number;
   boards: RadarBoard[];
@@ -81,11 +95,85 @@ interface NewGameRadarPanelProps {
   onOpenExternal: (url: string) => void;
 }
 
-type MainTab = "list" | "insight" | "analysis" | "viz";
+type MainTab = "list" | "insight" | "analysis" | "viz" | "daily";
 type AnalysisSub = "opportunity" | "tracks";
 type VizSub = "distribution" | "supply";
 type BoardFilter = "all" | "heat" | "rising";
 type ChartStyle = "hbar" | "vbar" | "donut";
+type ChannelId = "maker" | "store" | "steam";
+
+interface RadarDailyTrackStat {
+  track: string;
+  count: number;
+  totalHits: number;
+  avgScore: number | null;
+}
+
+interface RadarDailyDayStat {
+  date: string;
+  count: number;
+  totalHits: number;
+  topTitle?: string;
+  topHits?: number;
+  topScore?: number | null;
+}
+
+interface RadarDailyReport {
+  fetchedAt: string;
+  source: "live" | "offline";
+  from: string;
+  to: string;
+  total: number;
+  scoredCount: number;
+  avgScore: number | null;
+  totalHits: number;
+  highlights: {
+    hottest?: RadarGameEntry;
+    bestScore?: RadarGameEntry;
+    mostReviewed?: RadarGameEntry;
+  };
+  topByHits: RadarGameEntry[];
+  topByScore: RadarGameEntry[];
+  topTracks: RadarDailyTrackStat[];
+  byDay: RadarDailyDayStat[];
+  entries: RadarGameEntry[];
+  truncated?: boolean;
+  error?: string;
+}
+
+function pad2(value: number): string {
+  return value < 10 ? `0${value}` : String(value);
+}
+
+function defaultDailyRange(days = 7): { from: string; to: string } {
+  const toDate = new Date();
+  const fromDate = new Date(toDate.getFullYear(), toDate.getMonth(), toDate.getDate() - (days - 1));
+  return {
+    from: `${fromDate.getFullYear()}-${pad2(fromDate.getMonth() + 1)}-${pad2(fromDate.getDate())}`,
+    to: `${toDate.getFullYear()}-${pad2(toDate.getMonth() + 1)}-${pad2(toDate.getDate())}`
+  };
+}
+
+function dayKeyFromTsClient(tsSec: number): string {
+  const date = new Date(tsSec * 1000);
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function resolveChannels(snapshot: RadarSnapshot | null): RadarChannel[] {
+  if (!snapshot) return [];
+  if (Array.isArray(snapshot.channels) && snapshot.channels.length > 0) return snapshot.channels;
+  return [
+    {
+      id: "maker",
+      label: "TapTap 制造",
+      description: "制造综合池 + 新上池。",
+      entries: snapshot.entries,
+      boards: snapshot.boards,
+      tracks: snapshot.tracks,
+      scoreBuckets: snapshot.scoreBuckets
+    }
+  ];
+}
 
 const CHART_COLORS = ["#49c2ff", "#7ddea4", "#f0d59a", "#ff8f8f", "#9db7ff", "#d4a5ff", "#7bdff2", "#ffb86b", "#c3e88d", "#ff79c6"];
 
@@ -303,8 +391,9 @@ function RadarDonutChart({ title, data, onShowTip, onHideTip }: { title: string;
 
 export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameRadarPanelProps) {
   const [snapshot, setSnapshot] = useState<RadarSnapshot | null>(null);
-  const [busy, setBusy] = useState<"load" | "refresh" | "offline" | null>("load");
+  const [busy, setBusy] = useState<"load" | "refresh" | "offline" | "daily" | null>("load");
   const [message, setMessage] = useState<string | null>(null);
+  const [channelId, setChannelId] = useState<ChannelId>("maker");
   const [mainTab, setMainTab] = useState<MainTab>("list");
   const [analysisSub, setAnalysisSub] = useState<AnalysisSub>("tracks");
   const [vizSub, setVizSub] = useState<VizSub>("distribution");
@@ -312,10 +401,15 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
   const [chartStyle, setChartStyle] = useState<ChartStyle>("hbar");
   const [query, setQuery] = useState("");
   const [hoverTip, setHoverTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const initialRange = useMemo(() => defaultDailyRange(7), []);
+  const [dailyFrom, setDailyFrom] = useState(initialRange.from);
+  const [dailyTo, setDailyTo] = useState(initialRange.to);
+  const [dailyReport, setDailyReport] = useState<RadarDailyReport | null>(null);
+  const [dailyMessage, setDailyMessage] = useState<string | null>(null);
 
   const applySnapshot = useCallback((next: RadarSnapshot) => {
     setSnapshot(next);
-    if (next.error) setMessage(`已回退离线快照：${next.error}`);
+    if (next.error) setMessage(`部分渠道异常或已回退：${next.error}`);
     else setMessage(null);
   }, []);
 
@@ -339,27 +433,73 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
     }
   }, [apiBase, applySnapshot]);
 
+  const loadDaily = useCallback(async (opts?: { refresh?: boolean; from?: string; to?: string }) => {
+    const from = opts?.from || dailyFrom;
+    const to = opts?.to || dailyTo;
+    setBusy("daily");
+    setDailyMessage(null);
+    try {
+      const response = await fetch(`${apiBase}/api/tools/new-game-radar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "daily", from, to, refresh: opts?.refresh === true })
+      });
+      const data = await response.json() as { report?: RadarDailyReport; error?: string };
+      if (!data.report) throw new Error(data.error || `HTTP ${response.status}`);
+      setDailyReport(data.report);
+      setDailyFrom(data.report.from);
+      setDailyTo(data.report.to);
+      if (data.report.error) setDailyMessage(`已回退缓存：${data.report.error}`);
+      else if (data.report.truncated) setDailyMessage("样本可能未覆盖完整区间（分页触顶），请缩小日期范围后重试。");
+      else if (!response.ok && data.error) setDailyMessage(data.error);
+    } catch (error) {
+      setDailyMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
+  }, [apiBase, dailyFrom, dailyTo]);
+
   useEffect(() => {
     markNewGameRadarSeen();
     void load("auto");
   }, [load]);
 
+  useEffect(() => {
+    if (mainTab !== "daily" || dailyReport) return;
+    void loadDaily();
+    // 仅在首次切入「每日上线」且尚无报告时拉取，避免失败重试死循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mainTab]);
+
+  const channels = useMemo(() => resolveChannels(snapshot), [snapshot]);
+  const channel = useMemo(
+    () => channels.find((item) => item.id === channelId) || channels[0] || null,
+    [channels, channelId]
+  );
+
   const activeBoard = useMemo(() => {
-    if (!snapshot) return null;
-    if (boardFilter === "heat") return snapshot.boards.find((board) => board.id === "heat") || null;
-    if (boardFilter === "rising") return snapshot.boards.find((board) => board.id === "rising") || null;
+    if (!channel) return null;
+    if (boardFilter === "heat") return channel.boards.find((board) => board.id === "heat") || null;
+    if (boardFilter === "rising") return channel.boards.find((board) => board.id === "rising") || null;
     return null;
-  }, [snapshot, boardFilter]);
+  }, [channel, boardFilter]);
 
   const filteredEntries = useMemo(() => {
-    if (!snapshot) return [];
-    const source = activeBoard?.entries || snapshot.entries;
+    if (!channel) return [];
+    const source = activeBoard?.entries || channel.entries;
     return source.filter((entry) => matchesQuery(entry, query));
-  }, [snapshot, activeBoard, query]);
+  }, [channel, activeBoard, query]);
+
+  const dailyFiltered = useMemo(() => {
+    if (!dailyReport) return [];
+    return dailyReport.entries.filter((entry) => matchesQuery(entry, query));
+  }, [dailyReport, query]);
+
+  const isDaily = mainTab === "daily";
 
   const scoreChartData = useMemo<ChartDatum[]>(() => {
-    if (!snapshot) return [];
-    const buckets = (snapshot.scoreBuckets || []).map((bucket) => {
+    if (!channel) return [];
+    const buckets = (channel.scoreBuckets || []).map((bucket) => {
       const meta = SCORE_BUCKET_META[bucket.label];
       const item: ChartDatum = {
         label: meta?.title || bucket.label,
@@ -368,7 +508,7 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
       };
       return item;
     });
-    const unrated = snapshot.entries.filter((entry) => entry.score == null).length;
+    const unrated = channel.entries.filter((entry) => entry.score == null).length;
     if (unrated > 0) {
       const meta = SCORE_BUCKET_META["未开分"]!;
       buckets.push({
@@ -378,9 +518,9 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
       });
     }
     return buckets;
-  }, [snapshot]);
+  }, [channel]);
   const supplyChartData = useMemo<ChartDatum[]>(
-    () => [...(snapshot?.tracks || [])]
+    () => [...(channel?.tracks || [])]
       .sort((a, b) => b.count - a.count)
       .slice(0, 10)
       .map((row) => {
@@ -392,7 +532,7 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
         if (row.avgScore != null) item.note = `均分 ${row.avgScore}`;
         return item;
       }),
-    [snapshot]
+    [channel]
   );
 
   const showChartTip = useCallback((event: MouseEvent<HTMLElement>, item: ChartDatum, total: number) => {
@@ -405,17 +545,26 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
   const hideChartTip = useCallback(() => setHoverTip(null), []);
 
   const openGame = (entry: RadarGameEntry) => {
-    const url = entry.url || (entry.id > 0 ? `https://www.taptap.cn/app/${entry.id}` : "");
+    const url = entry.url
+      || (entry.channel === "steam" && entry.id > 0 ? `https://store.steampowered.com/app/${entry.id}` : "")
+      || (entry.id > 0 ? `https://www.taptap.cn/app/${entry.id}` : "");
     if (url) onOpenExternal(url);
   };
 
   const openAuthor = (entry: RadarGameEntry) => {
+    if (entry.channel === "steam") {
+      if (entry.url) onOpenExternal(entry.url);
+      return;
+    }
     const url = entry.authorUrl
       || (entry.authorId != null ? `https://www.taptap.cn/developer/${entry.authorId}` : "");
     if (url) onOpenExternal(url);
   };
 
-  const showRisingScore = boardFilter === "rising";
+  const isSteam = channel?.id === "steam";
+  const showRisingScore = boardFilter === "rising" && !isSteam;
+  const heatLabel = isSteam ? "畅销榜" : "热度榜";
+  const risingLabel = isSteam ? "新品榜" : "新锐榜";
 
   return (
     <section className="overlay-panel panel tools-panel radar-panel" aria-label="新游雷达">
@@ -427,43 +576,39 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
       <div className="radar-shell">
         <header className="radar-header">
           <div>
-            <h3>TapTap 制造新游雷达</h3>
+            <h3>新游雷达</h3>
             <p>
-              TapTap 制造榜 · {snapshot ? formatDate(snapshot.fetchedAt) : "—"} ·{" "}
-              {snapshot ? `${snapshot.boardCount} 榜 / ${snapshot.entryCount} 条` : "加载中"} ·{" "}
-              {snapshot?.source === "live" ? "在线" : "离线快照"}
-              {query.trim() || boardFilter !== "all" ? ` · 当前 ${filteredEntries.length} 条` : ""}
+              {isDaily
+                ? `每日上线 · ${dailyReport ? `${dailyReport.from} ~ ${dailyReport.to}` : "—"} · ${dailyReport ? `${dailyReport.total} 款` : "加载中"} · ${dailyReport?.source === "live" ? "在线" : dailyReport ? "缓存" : "—"}`
+                : `${channel?.label || "—"} · ${snapshot ? formatDate(snapshot.fetchedAt) : "—"} · ${channel ? `${channel.boards.length} 榜 / ${channel.entries.length} 条` : "加载中"} · ${snapshot?.source === "live" ? "在线" : "离线快照"}${query.trim() || boardFilter !== "all" ? ` · 当前 ${filteredEntries.length} 条` : ""}`}
             </p>
           </div>
           <div className="radar-actions">
-            <button type="button" disabled={busy != null} onClick={() => void load("offline")}>离线快照</button>
-            <button type="button" className="primary" disabled={busy != null} onClick={() => void load("refresh")}>
-              <RefreshCw size={13} />{busy === "refresh" ? "获取中…" : "获取最新排行"}
-            </button>
+            {!isDaily && (
+              <>
+                <button type="button" disabled={busy != null} onClick={() => void load("offline")}>离线快照</button>
+                <button type="button" className="primary" disabled={busy != null} onClick={() => void load("refresh")}>
+                  <RefreshCw size={13} />{busy === "refresh" ? "获取中…" : "获取最新排行"}
+                </button>
+              </>
+            )}
+            {isDaily && (
+              <button
+                type="button"
+                className="primary"
+                disabled={busy != null}
+                onClick={() => void loadDaily({ refresh: true, from: dailyFrom, to: dailyTo })}
+              >
+                <RefreshCw size={13} />{busy === "daily" ? "拉取中…" : "刷新上线数据"}
+              </button>
+            )}
           </div>
         </header>
-
-        <label className="radar-search">
-          <Search size={14} aria-hidden="true" />
-          <input
-            type="search"
-            value={query}
-            placeholder="搜索游戏名 / 开发者 / 标签"
-            onChange={(event) => {
-              setQuery(event.target.value);
-              if (event.target.value.trim()) setMainTab("list");
-            }}
-          />
-          {query && (
-            <button type="button" className="radar-search-clear" aria-label="清空搜索" onClick={() => setQuery("")}>
-              <X size={12} />
-            </button>
-          )}
-        </label>
 
         <nav className="radar-tabs" aria-label="主视图">
           {([
             ["list", "榜单明细"],
+            ["daily", "每日上线"],
             ["insight", "雷达洞察"],
             ["analysis", "分析台"],
             ["viz", "可视化"]
@@ -474,19 +619,255 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
           ))}
         </nav>
 
-        {message && <p className="radar-message">{message}</p>}
+        {!isDaily && (
+          <>
+            <nav className="radar-subtabs" aria-label="数据渠道">
+              {channels.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={channel?.id === item.id ? "active" : ""}
+                  title={item.error ? `异常：${item.error}` : item.description}
+                  onClick={() => {
+                    setChannelId(item.id);
+                    setBoardFilter("heat");
+                  }}
+                >
+                  {item.label}{item.error ? " !" : ""}
+                </button>
+              ))}
+            </nav>
+            {channel?.description && <p className="radar-footnote">{channel.description}</p>}
+          </>
+        )}
 
+        <label className="radar-search">
+          <Search size={14} aria-hidden="true" />
+          <input
+            type="search"
+            value={query}
+            placeholder="搜索游戏名 / 开发者 / 标签"
+            onChange={(event) => {
+              setQuery(event.target.value);
+              if (event.target.value.trim() && mainTab !== "daily" && mainTab !== "list") setMainTab("list");
+            }}
+          />
+          {query && (
+            <button type="button" className="radar-search-clear" aria-label="清空搜索" onClick={() => setQuery("")}>
+              <X size={12} />
+            </button>
+          )}
+        </label>
+
+        {message && !isDaily && <p className="radar-message">{message}</p>}
+        {channel?.error && !isDaily && <p className="radar-message">本渠道拉取失败：{channel.error}</p>}
         {busy === "load" && !snapshot ? <p className="radar-message">正在加载榜单…</p> : null}
 
-        {snapshot && mainTab === "list" && (
+        {isDaily && (
+          <>
+            <div className="radar-daily-range">
+              <label>
+                起
+                <input type="date" value={dailyFrom} onChange={(event) => setDailyFrom(event.target.value)} />
+              </label>
+              <label>
+                止
+                <input type="date" value={dailyTo} onChange={(event) => setDailyTo(event.target.value)} />
+              </label>
+              <nav className="radar-subtabs" aria-label="快捷范围">
+                {[7, 14, 30].map((days) => (
+                  <button
+                    key={days}
+                    type="button"
+                    onClick={() => {
+                      const range = defaultDailyRange(days);
+                      setDailyFrom(range.from);
+                      setDailyTo(range.to);
+                      void loadDaily({ from: range.from, to: range.to });
+                    }}
+                  >
+                    近{days}天
+                  </button>
+                ))}
+              </nav>
+              <button type="button" disabled={busy != null} onClick={() => void loadDaily({ from: dailyFrom, to: dailyTo })}>
+                应用范围
+              </button>
+            </div>
+            <p className="radar-footnote">基于 TapTap 制造「新上」榜的上线时间，默认近 7 天，最长 30 天。汇总最热 / 高分 / 赛道与逐日上线。</p>
+            {dailyMessage && <p className="radar-message">{dailyMessage}</p>}
+            {busy === "daily" && !dailyReport ? <p className="radar-message">正在拉取每日上线（可能需数秒）…</p> : null}
+
+            {dailyReport && (
+              <>
+                <div className="radar-daily-cards">
+                  <article>
+                    <em>上线数</em>
+                    <strong>{dailyReport.total}</strong>
+                    <span>已开分 {dailyReport.scoredCount}</span>
+                  </article>
+                  <article>
+                    <em>均分</em>
+                    <strong>{dailyReport.avgScore ?? "—"}</strong>
+                    <span>总热度 {dailyReport.totalHits}</span>
+                  </article>
+                  <article>
+                    <em>最热</em>
+                    <strong>
+                      {dailyReport.highlights.hottest ? (
+                        <button type="button" className="radar-link" onClick={() => openGame(dailyReport.highlights.hottest!)}>
+                          {dailyReport.highlights.hottest.title}
+                        </button>
+                      ) : "—"}
+                    </strong>
+                    <span>热度 {dailyReport.highlights.hottest?.hits ?? "—"} · 评分 {dailyReport.highlights.hottest?.score ?? "—"}</span>
+                  </article>
+                  <article>
+                    <em>最高分</em>
+                    <strong>
+                      {dailyReport.highlights.bestScore ? (
+                        <button type="button" className="radar-link" onClick={() => openGame(dailyReport.highlights.bestScore!)}>
+                          {dailyReport.highlights.bestScore.title}
+                        </button>
+                      ) : "—"}
+                    </strong>
+                    <span>评分 {dailyReport.highlights.bestScore?.score ?? "—"} · 评论 {dailyReport.highlights.bestScore?.reviewCount ?? "—"}</span>
+                  </article>
+                </div>
+
+                <div className="radar-insight">
+                  <section>
+                    <h4>热度 Top5</h4>
+                    <ol>
+                      {dailyReport.topByHits.slice(0, 5).map((entry) => (
+                        <li key={`hits-${entry.id}`}>
+                          <button type="button" className="radar-link" onClick={() => openGame(entry)}>
+                            <strong>{entry.title}</strong>
+                          </button>
+                          <span>热度 {entry.hits} · 评分 {entry.score ?? "—"} · {entry.tags.join(" / ") || "未分类"}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                  <section>
+                    <h4>赛道 Top5</h4>
+                    <ol>
+                      {dailyReport.topTracks.slice(0, 5).map((row) => (
+                        <li key={row.track}>
+                          <strong>{row.track}</strong>
+                          <span>{row.count} 款 · 热度 {row.totalHits} · 均分 {row.avgScore ?? "—"}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                </div>
+
+                <div className="radar-table-wrap">
+                  <table className="radar-table">
+                    <thead>
+                      <tr>
+                        <th>日期</th>
+                        <th>上线</th>
+                        <th>日热度</th>
+                        <th>当日最热</th>
+                        <th>评分</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...dailyReport.byDay].reverse().map((day) => (
+                        <tr key={day.date}>
+                          <td>{day.date}</td>
+                          <td>{day.count}</td>
+                          <td>{day.totalHits}</td>
+                          <td>{day.topTitle || "—"}</td>
+                          <td>{day.topScore ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="radar-table-wrap">
+                  <table className="radar-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>游戏</th>
+                        <th>作者</th>
+                        <th>上线日</th>
+                        <th>标签</th>
+                        <th>热度</th>
+                        <th>评分</th>
+                        <th>评论</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dailyFiltered.length === 0 ? (
+                        <tr><td colSpan={8}>该范围内没有匹配「{query || "全部"}」的上线游戏</td></tr>
+                      ) : dailyFiltered.map((entry, index) => (
+                        <tr key={`daily-${entry.id}-${entry.releasedAt}`}>
+                          <td>{index + 1}</td>
+                          <td>
+                            <div className="radar-game-cell">
+                              {radarIconSrc(apiBase, entry.iconUrl) ? (
+                                <button type="button" className="radar-icon-btn" title="打开游戏页" onClick={() => openGame(entry)}>
+                                  <img
+                                    src={radarIconSrc(apiBase, entry.iconUrl)}
+                                    alt=""
+                                    className="radar-icon"
+                                    loading="lazy"
+                                    referrerPolicy="no-referrer"
+                                    onError={(event) => {
+                                      const target = event.currentTarget;
+                                      target.style.display = "none";
+                                      const fallback = target.parentElement?.querySelector(".radar-icon-fallback");
+                                      if (fallback instanceof HTMLElement) fallback.hidden = false;
+                                    }}
+                                  />
+                                  <span className="radar-icon radar-icon-fallback" hidden aria-hidden="true" />
+                                </button>
+                              ) : (
+                                <span className="radar-icon radar-icon-fallback" aria-hidden="true" />
+                              )}
+                              <button type="button" className="radar-link" onClick={() => openGame(entry)}>
+                                <strong>{entry.title}</strong>
+                              </button>
+                            </div>
+                          </td>
+                          <td>
+                            {entry.authorUrl || entry.authorId != null ? (
+                              <button type="button" className="radar-link" onClick={() => openAuthor(entry)}>{entry.author}</button>
+                            ) : entry.author}
+                          </td>
+                          <td>{entry.releasedAt != null ? dayKeyFromTsClient(entry.releasedAt) : "—"}</td>
+                          <td>{entry.tags.join(" / ") || "—"}</td>
+                          <td>{entry.hits}</td>
+                          <td>{entry.score ?? "—"}</td>
+                          <td>{entry.reviewCount}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {!isDaily && channel && mainTab === "list" && (
           <>
             <nav className="radar-subtabs" aria-label="榜单类型">
-              <button type="button" className={boardFilter === "heat" ? "active" : ""} onClick={() => setBoardFilter("heat")}>热度榜</button>
-              <button type="button" className={boardFilter === "rising" ? "active" : ""} onClick={() => setBoardFilter("rising")}>新锐榜</button>
+              <button type="button" className={boardFilter === "heat" ? "active" : ""} onClick={() => setBoardFilter("heat")}>{heatLabel}</button>
+              <button type="button" className={boardFilter === "rising" ? "active" : ""} onClick={() => setBoardFilter("rising")}>{risingLabel}</button>
               <button type="button" className={boardFilter === "all" ? "active" : ""} onClick={() => setBoardFilter("all")}>全部样本</button>
             </nav>
             {activeBoard?.description && <p className="radar-footnote">{activeBoard.description}</p>}
-            {boardFilter === "all" && <p className="radar-footnote">全部样本用于赛道分析；热度榜按曝光排序；新锐榜按「口碑² × 热度对数 × 评论可信度」，并对超高热度做抑制。</p>}
+            {boardFilter === "all" && !isSteam && (
+              <p className="radar-footnote">全部样本用于赛道分析；热度榜按曝光排序；新锐榜按「口碑² × 热度对数 × 评论可信度」，并对超高热度做抑制。</p>
+            )}
+            {boardFilter === "all" && isSteam && (
+              <p className="radar-footnote">Steam 样本来自公开畅销 / 新品精选；无评分字段，分析仅作题材对照。</p>
+            )}
             <div className="radar-table-wrap">
               <table className="radar-table">
                 <thead>
@@ -495,7 +876,7 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
                     <th>游戏</th>
                     <th>作者</th>
                     <th>标签</th>
-                    <th>热度</th>
+                    <th>{isSteam ? "伪热度" : "热度"}</th>
                     <th>评分</th>
                     {showRisingScore && <th>新锐分</th>}
                     <th>评论</th>
@@ -506,7 +887,7 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
                   {filteredEntries.length === 0 ? (
                     <tr><td colSpan={showRisingScore ? 9 : 8}>没有匹配「{query || "当前榜单"}」的游戏或开发者</td></tr>
                   ) : filteredEntries.map((entry) => (
-                    <tr key={`${entry.board}-${entry.id}-${entry.rank}`}>
+                    <tr key={`${channel.id}-${entry.board}-${entry.id}-${entry.rank}`}>
                       <td>{entry.rank}</td>
                       <td>
                         <div className="radar-game-cell">
@@ -557,12 +938,12 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
           </>
         )}
 
-        {snapshot && mainTab === "insight" && (
+        {channel && mainTab === "insight" && (
           <div className="radar-insight">
             <section>
               <h4>机会 Top3</h4>
               <ol>
-                {snapshot.tracks.slice(0, 3).map((row) => (
+                {channel.tracks.slice(0, 3).map((row) => (
                   <li key={row.track}>
                     <strong className={quadrantClass(row.quadrant)}>{row.track}</strong>
                     <span>机会 {row.opportunity} · {row.quadrant} · {row.suggestion}</span>
@@ -573,7 +954,7 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
             <section>
               <h4>拥挤赛道</h4>
               <ol>
-                {[...snapshot.tracks].sort((a, b) => b.supplySaturation - a.supplySaturation).slice(0, 3).map((row) => (
+                {[...channel.tracks].sort((a, b) => b.supplySaturation - a.supplySaturation).slice(0, 3).map((row) => (
                   <li key={row.track}>
                     <strong className={quadrantClass(row.quadrant)}>{row.track}</strong>
                     <span>供给 {row.supplySaturation.toFixed(2)} · 头部 {row.headOccupancy.toFixed(2)} · {row.suggestion}</span>
@@ -584,7 +965,7 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
           </div>
         )}
 
-        {snapshot && mainTab === "analysis" && (
+        {channel && mainTab === "analysis" && (
           <>
             <nav className="radar-subtabs" aria-label="分析子视图">
               <button type="button" className={analysisSub === "opportunity" ? "active" : ""} onClick={() => setAnalysisSub("opportunity")}>机会分排行</button>
@@ -627,8 +1008,8 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
                 </thead>
                 <tbody>
                   {(analysisSub === "opportunity"
-                    ? [...snapshot.tracks].sort((a, b) => b.opportunity - a.opportunity)
-                    : [...snapshot.tracks].sort((a, b) => b.count - a.count)
+                    ? [...channel.tracks].sort((a, b) => b.opportunity - a.opportunity)
+                    : [...channel.tracks].sort((a, b) => b.count - a.count)
                   ).map((row) => (
                     <tr key={row.track}>
                       <td>{row.track}</td>
@@ -650,7 +1031,7 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
           </>
         )}
 
-        {snapshot && mainTab === "viz" && (
+        {channel && mainTab === "viz" && (
           <>
             <nav className="radar-subtabs" aria-label="可视化子视图">
               <button type="button" className={vizSub === "distribution" ? "active" : ""} onClick={() => setVizSub("distribution")}>分布结构</button>

@@ -23,7 +23,7 @@
 | **GitHub Releases（主）** | [github.com/AndroidSix/TapMakerWork/releases](https://github.com/AndroidSix/TapMakerWork/releases) |
 | **Gitee 发行版（镜像）** | [gitee.com/AndroidSUP/tap-maker-work/releases](https://gitee.com/AndroidSUP/tap-maker-work/releases) |
 
-- macOS：下载 `TapMakerWork-*-mac-*.dmg`
+- macOS：下载 `TapMakerWork-*-mac-*.pkg`
 - Windows：下载 `TapMakerWork-*-windows-*.exe`
 
 版本号与根目录 [`package.json`](./package.json) 一致。
@@ -36,16 +36,17 @@
 
 | 情况 | 建议 |
 |------|------|
-| 下载到的是**已签名 + 公证**的正式 Release | 正常双击 `.dmg` 安装即可 |
-| 未签名包 / 系统提示「无法验证开发者」「已损坏」 | 先按下面「仍可尝试」操作；若设置里**没有「仍要打开」**，请改用「自行拉取源码打包」 |
+| 下载到的是**已签名 + 公证**的正式 Release | 正常双击 `.pkg` 安装即可 |
+| 未签名 `.pkg`，提示「无法验证开发者」 | 按下面步骤点 **「仍要打开」** |
+| 手里是旧的 `.dmg`，设置里没有「仍要打开」 | 不要拖进「应用程序」。改下 `.pkg`，或自行拉取源码打包 |
 
-#### 仍可尝试（有「仍要打开」时）
+#### 未签名 `.pkg`：点「仍要打开」
 
-1. 打开 **系统设置 → 隐私与安全性**（或部分系统为「安全性与隐私」）。
-2. 在刚被拦截的提示附近，找 **「仍要打开」** / **「Open Anyway」**，点确认后再打开一次安装包。
-3. 或在 Finder 中对 `.app` / 安装包 **右键 → 打开**，按提示确认。
+1. 双击 `TapMakerWork-*-mac-*.pkg`。系统会拦截。
+2. 打开 **系统设置 → 隐私与安全性**，在刚被拦截的提示附近点 **「仍要打开」** / **「Open Anyway」**，再确认一次。
+3. 安装器把应用写入「应用程序」。装完直接启动，不要再从旧 DMG 里拖一份出来。
 
-部分较新的 macOS 版本或策略下，**隐私与安全性里可能根本不出现「仍要打开」**，右键打开也无效——这时不要反复清隔离属性硬闯，直接走下一节自行打包。
+请下 `.pkg`，不要下 `.dmg`。macOS 15 及更新系统对网上下载后拖出的未公证 App 不再提供「仍要打开」，安装包则仍然提供。
 
 <a id="macos-build-from-source"></a>
 
@@ -73,8 +74,8 @@
 4. **只打本机可用的 macOS 安装包**（任选其一）：  
    - 命令行：`npm run package:ide:mac` 或 `npm run dist:mac`  
    - 或双击：`outputs/launchers/Package-TapMakerWork-All.command`（会打双端；只要 mac 可只用上面的 mac 命令）
-5. 等待构建结束，在 **`outputs/installers/`** 中找到 `TapMakerWork-*-mac-*.dmg`（或同目录下的 `.app` / ZIP）。
-6. 双击本机刚生成的 `.dmg`，将应用拖到「应用程序」后启动。
+5. 等待构建结束，在 **`outputs/installers/`** 中找到 `TapMakerWork-*-mac-*.pkg`（同目录 ZIP 只给应用内更新用）。
+6. 双击本机刚生成的 `.pkg` 安装。本机产物通常没有下载隔离属性，安装器会直接打开。
 
 **说明**
 
@@ -308,7 +309,7 @@ npm run dist:all    # 双平台（视构建链而定）
 
 产物目录：`outputs/installers`。
 
-**重要：** 未配置代码签名证书时，打出来的 `.dmg` / `.exe` 只适合内部 QA。普通用户直接安装会遇到 macOS「无法验证开发者」或 Windows SmartScreen 拦截；这不等于侵权，但**不要当作正式下载源对外分发**。正式对外请使用已签名（Mac 还需公证）的包。完整说明、自检方式与环境变量见 [`docs/DESKTOP_RELEASE.md`](./docs/DESKTOP_RELEASE.md)。
+**重要：** 未配置代码签名证书时，打出来的 `.pkg` / `.exe` 只适合内部 QA。普通用户安装会遇到 macOS「无法验证开发者」或 Windows SmartScreen 拦截；这不等于侵权，但**不要当作正式下载源对外分发**。未签名 macOS 包请发 `.pkg`（设置里可以「仍要打开」），不要发 `.dmg`。正式对外请使用已签名（Mac 还需公证）的包。完整说明、自检方式与环境变量见 [`docs/DESKTOP_RELEASE.md`](./docs/DESKTOP_RELEASE.md)。
 
 发布时：本地/CI 打出**已签名**安装包 → 上传到 **GitHub Releases（主）**；Gitee 镜像通过「镜像同步」自动拿到同一批安装包。
 
