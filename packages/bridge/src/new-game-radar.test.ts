@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { analyzeTracks, buildHeatBoard, buildRisingBoard, buildScoreBuckets, computeRisingScore, mapTrack, normalizeMakerApp } from "./new-game-radar.js";
+import {
+  analyzeTracks,
+  buildDailyReport,
+  buildHeatBoard,
+  buildRisingBoard,
+  buildScoreBuckets,
+  computeRisingScore,
+  defaultDailyRange,
+  mapTrack,
+  normalizeMakerApp,
+  normalizeSteamItem,
+  normalizeStoreApp
+} from "./new-game-radar.js";
 
 describe("new-game-radar", () => {
   it("maps tags into tracks", () => {
@@ -34,10 +46,46 @@ describe("new-game-radar", () => {
     expect(entry.authorUrl).toBe("https://www.taptap.cn/developer/99");
     expect(entry.iconUrl).toBe("https://img.example/icon.png");
     expect(entry.url).toBe("https://www.taptap.cn/app/1");
+    expect(entry.channel).toBe("maker");
     expect(entry.tags).toEqual(["策略"]);
     expect(entry.score).toBe(8.6);
     expect(entry.hits).toBe(120);
     expect(entry.rank).toBe(1);
+  });
+
+  it("normalizes store and steam payloads", () => {
+    const store = normalizeStoreApp(
+      {
+        app: {
+          id: 42,
+          title: "商店热门",
+          tags: [{ value: "开放世界" }],
+          icon: { small_url: "https://img.tapimg.com/a.png" },
+          stat: { hits_total: 500, review_count: 9, fans_count: 1, rating: { score: "7.5" } }
+        }
+      },
+      "热门榜",
+      2
+    );
+    expect(store.channel).toBe("store");
+    expect(store.title).toBe("商店热门");
+    expect(store.rank).toBe(2);
+    expect(store.tags).toEqual(["开放世界"]);
+
+    const steam = normalizeSteamItem(
+      {
+        id: 570,
+        name: "Dota 2",
+        small_capsule_image: "https://shared.akamai.steamstatic.com/x.jpg",
+        discount_percent: 20
+      },
+      "Steam 畅销",
+      1
+    );
+    expect(steam.channel).toBe("steam");
+    expect(steam.url).toBe("https://store.steampowered.com/app/570");
+    expect(steam.labels).toEqual(["-20%"]);
+    expect(steam.score).toBeNull();
   });
 
   it("computes opportunity higher for sparse low-head tracks", () => {
@@ -79,5 +127,63 @@ describe("new-game-radar", () => {
     ]);
     expect(buckets.find((item) => item.label === "9.0+")?.count).toBe(1);
     expect(buckets.find((item) => item.label === "8.0-8.9")?.count).toBe(1);
+  });
+
+  it("builds daily launch summary for a date range", () => {
+    const range = defaultDailyRange(7);
+    const now = Math.floor(Date.now() / 1000);
+    const pool = [
+      {
+        id: 1,
+        title: "热游",
+        author: "a",
+        tags: ["模拟"],
+        score: 8.2,
+        hits: 900,
+        reviewCount: 5,
+        fans: 1,
+        board: "d",
+        rank: 1,
+        labels: [],
+        releasedAt: now - 3600
+      },
+      {
+        id: 2,
+        title: "高分",
+        author: "b",
+        tags: ["动作"],
+        score: 9.4,
+        hits: 120,
+        reviewCount: 8,
+        fans: 1,
+        board: "d",
+        rank: 2,
+        labels: [],
+        releasedAt: now - 2 * 86400
+      },
+      {
+        id: 3,
+        title: "太旧",
+        author: "c",
+        tags: ["休闲"],
+        score: 8.0,
+        hits: 50,
+        reviewCount: 1,
+        fans: 1,
+        board: "d",
+        rank: 3,
+        labels: [],
+        releasedAt: now - 40 * 86400
+      }
+    ];
+    const report = buildDailyReport(pool, range.from, range.to, {
+      fetchedAt: new Date().toISOString(),
+      source: "offline"
+    });
+    expect(report.total).toBe(2);
+    expect(report.highlights.hottest?.title).toBe("热游");
+    expect(report.highlights.bestScore?.title).toBe("高分");
+    expect(report.topTracks[0]?.track).toBeTruthy();
+    expect(report.byDay.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyUiPatch, applyUiTreeOp, findUiNode, type UiSnapshot } from "./index.js";
+import { applyUiPatch, applyUiTreeOp, findUiNode, isKitInternalUiNode, isUiKitSourceFile, type UiSnapshot } from "./index.js";
 
 const snapshot: UiSnapshot = {
   revision: 2,
@@ -114,5 +114,22 @@ describe("ui tree ops", () => {
   it("renames node", () => {
     const next = applyUiTreeOp(sampleTree(), { type: "rename", nodeId: "a", name: "PanelA" });
     expect(findUiNode(next.root, "a")?.name).toBe("PanelA");
+  });
+});
+
+describe("ui kit source detection", () => {
+  it("recognises UiStyle factories regardless of path separators", () => {
+    expect(isUiKitSourceFile("scripts/ui/UiStyle.lua")).toBe(true);
+    expect(isUiKitSourceFile("scripts\\ui\\ui-style.lua")).toBe(true);
+    expect(isUiKitSourceFile("scripts/ui/MainHUD.lua")).toBe(false);
+    expect(isUiKitSourceFile("scripts/ui/QCuteTheme.lua")).toBe(false);
+    expect(isUiKitSourceFile(undefined)).toBe(false);
+  });
+
+  it("treats kit-internal parts as non-movable unless they carry an explicit id", () => {
+    expect(isKitInternalUiNode({ props: {}, source: { file: "scripts/ui/UiStyle.lua", line: 259 } })).toBe(true);
+    expect(isKitInternalUiNode({ props: { id: "produceLev" }, source: { file: "scripts/ui/UiStyle.lua", line: 259 } })).toBe(false);
+    expect(isKitInternalUiNode({ props: {}, source: { file: "scripts/ui/MainHUD.lua", line: 333 } })).toBe(false);
+    expect(isKitInternalUiNode(undefined)).toBe(false);
   });
 });

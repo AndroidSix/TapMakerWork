@@ -162,8 +162,14 @@ body.resizing-col, body.resizing-col * { cursor: col-resize !important; user-sel
 .center-main { min-width: 0; min-height: 0; display: grid; }
 .preview-side { border-left: 0; min-width: 0; min-height: 0; background: #0b0e14; }
 .terminal-panel { position: relative; }
-.terminal-reset {
+.terminal-panel-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+}
+.terminal-reset {
   height: 24px;
   padding: 0 8px;
   border: 1px solid var(--border);
@@ -184,6 +190,33 @@ body.resizing-col, body.resizing-col * { cursor: col-resize !important; user-sel
   font-size: 10px;
 }
 .terminal-size:hover { color: var(--text); background: var(--raised); }
+.terminal-channel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+  background: #0b0e14;
+}
+.terminal-channel-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+  background: #0f1319;
+}
+.terminal-channel-action {
+  height: 22px;
+  padding: 0 8px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--control);
+  cursor: pointer;
+  font-size: 10px;
+}
+.terminal-channel-action:hover { color: var(--text); background: var(--raised); }
 .runtime-live-banner {
   width: min(100%, 260px);
   margin-bottom: 8px;
@@ -420,6 +453,46 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .runtime-edit-modes { display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 5px; background: #090d14; }
 .runtime-edit-modes button { height: 23px; padding: 0 7px; border-color: transparent; background: transparent; white-space: nowrap; }
 .runtime-edit-modes button.active { color: #eaf3ff; border-color: #3279c7; background: #174f86; }
+.runtime-sync-switch {
+  height: 23px;
+  min-width: 0;
+  max-width: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 1px;
+  padding: 0 6px;
+  color: #8ea0b5;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  white-space: nowrap;
+  user-select: none;
+}
+.runtime-sync-switch.on { color: #d7e8ff; }
+.runtime-sync-switch input {
+  width: 26px;
+  height: 14px;
+  flex: none;
+  appearance: none;
+  margin: 0;
+  padding: 1px;
+  background: #343e4e;
+  border: 1px solid #4a5669;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.runtime-sync-switch input::after {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 10px;
+  background: #d7deea;
+  border-radius: 50%;
+  transition: transform 140ms ease;
+}
+.runtime-sync-switch input:checked { background: #276dac; border-color: #4e9ce5; }
+.runtime-sync-switch input:checked::after { transform: translateX(12px); background: #fff; }
 .runtime-transform-tools { display: flex; align-items: center; gap: 1px; padding: 2px; border: 1px solid var(--border); border-radius: 5px; background: #090d14; }
 .runtime-transform-tools button { position: relative; width: 29px; height: 25px; padding: 0; gap: 0; border-color: transparent; background: transparent; }
 .runtime-transform-tools button.active { color: #fff; border-color: #398ee8; background: #1767a9; box-shadow: inset 0 0 0 1px #7bc0ff33; }
@@ -1900,6 +1973,59 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
   margin: 0;
   color: var(--muted);
   font-size: 11px;
+}
+.radar-daily-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.radar-daily-range label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.radar-daily-range input[type="date"] {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0b1018;
+  color: #e8eef8;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.radar-daily-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.radar-daily-cards article {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #10151f;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+.radar-daily-cards em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 11px;
+}
+.radar-daily-cards strong {
+  font-size: 15px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.radar-daily-cards span {
+  color: var(--muted);
+  font-size: 11px;
+}
+@media (max-width: 960px) {
+  .radar-daily-cards { grid-template-columns: 1fr 1fr; }
 }
 .radar-insight {
   display: grid;

@@ -26,11 +26,12 @@ export interface AppUpdateManifest {
 }
 
 export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
-  latest: "0.1.2",
-  title: "TapMakerWork 0.1.2",
+  latest: "0.1.3",
+  title: "TapMakerWork 0.1.3",
   notes: [
-    "【macOS】未签名安装包会被系统 Gatekeeper 拦截；若「隐私与安全性」里没有「仍要打开」，请自行拉取源码打包。",
-    "请从官网或 Gitee / GitHub Releases 下载对应平台安装包。",
+    "【macOS】请下载 .pkg（不要用 .dmg）。未签名时双击被拦截后，到「隐私与安全性」点「仍要打开」。",
+    "实时编辑：预览改成功并保存后，重启与正式运行一致；写不进源码的改动记入 UiOverrides 并重放。",
+    "Yoga 回写 Lua + 新游雷达 + Maker CLI 一键修复；详见完整更新日志。",
     "未配置远程 version.json 时使用内置清单。"
   ],
   links: [
@@ -39,11 +40,15 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
       url: "https://github.com/AndroidSix/TapMakerWork/blob/main/README.md#macos-install"
     },
     {
+      label: "完整更新日志",
+      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.3"
+    },
+    {
       label: "源码打包详细步骤",
       url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/DESKTOP_RELEASE.md#macos-build-from-source"
     }
   ],
-  publishedAt: "2026-09-23",
+  publishedAt: "2026-09-24",
   force: false,
   downloads: {
     page: "https://gitee.com/AndroidSUP/tap-maker-work/releases",

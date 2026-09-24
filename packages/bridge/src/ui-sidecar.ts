@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { UiNode, UiSnapshot, UiValue } from "@tapmakerwork/protocol";
 import { readProjectText, resolveInsideProject, writeProjectText } from "./project.js";
+import { parseInstanceOverrides, type UiInstanceOverride } from "./ui-overrides.js";
 
 export const UI_SIDECAR_FORMAT_VERSION = 2 as const;
 
@@ -28,6 +29,8 @@ export interface UiSidecarDocument {
   confidence: "static" | "hybrid" | "runtime" | "module" | "sidecar";
   root: UiNode;
   overrides: UiSidecarOverride[];
+  /** Per-widget props replayed by scripts/tapmakerwork/UiOverrides.lua on every run. */
+  instances: UiInstanceOverride[];
   selectedId?: string | undefined;
 }
 
@@ -146,6 +149,7 @@ export function readUiSidecar(projectRoot: string, sourceFile: string): UiSideca
       confidence: parsed.confidence || "sidecar",
       root: parsed.root,
       overrides: Array.isArray(parsed.overrides) ? parsed.overrides : [],
+      instances: parseInstanceOverrides(parsed.instances),
       ...(parsed.selectedId ? { selectedId: parsed.selectedId } : {})
     } as UiSidecarDocument;
   } catch {
@@ -167,7 +171,8 @@ export function writeUiSidecar(
   sourceFile: string,
   snapshot: UiSnapshot,
   confidence: UiSidecarDocument["confidence"] = "sidecar",
-  overrides: UiSidecarOverride[] = []
+  overrides: UiSidecarOverride[] = [],
+  instances: UiInstanceOverride[] = []
 ): { path: string; document: UiSidecarDocument } {
   const relative = sidecarRelativePath(sourceFile);
   let sourceHash = "";
@@ -185,6 +190,7 @@ export function writeUiSidecar(
     confidence,
     root: snapshot.root,
     overrides,
+    instances,
     ...(snapshot.selectedId ? { selectedId: snapshot.selectedId } : {})
   };
   writeProjectText(projectRoot, relative, `${JSON.stringify(document, null, 2)}\n`);

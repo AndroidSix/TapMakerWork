@@ -11,8 +11,8 @@
 **推荐路径：**
 
 1. 优先使用已配置证书并公证的**正式 Release** 安装包（安装体验接近普通软件）。
-2. 若当前拿到的是未签名包，先到 **系统设置 → 隐私与安全性** 看是否有 **「仍要打开」**；有则点一次再打开安装包，或对文件 **右键 → 打开**。
-3. **若设置里没有「仍要打开」、右键打开也无效**：不要反复清隔离属性硬闯，请**自行拉取源码在本机打包**（本机构建产物通常比网上下载的未签名包更容易打开）。
+2. 未签名包请下 **`.pkg`**，不要下 `.dmg`。双击被拦截后，到 **系统设置 → 隐私与安全性** 点 **「仍要打开」**，安装器会把应用写入「应用程序」。
+3. 若手里只有旧 `.dmg`，设置里不会出现「仍要打开」。不要清隔离属性硬闯，请改下 `.pkg`，或**自行拉取源码在本机打包**。
 
 <a id="macos-build-from-source"></a>
 
@@ -47,8 +47,8 @@ npm run package:ide:mac
 
 **产物与启动**
 
-1. 打开 `outputs/installers/`，找到 `TapMakerWork-*-mac-*.dmg`（或同目录 ZIP / `.app`）。
-2. 双击本机刚生成的 `.dmg`，把应用拖到「应用程序」后启动。
+1. 打开 `outputs/installers/`，找到 `TapMakerWork-*-mac-*.pkg`（同目录 ZIP 只给应用内更新用）。
+2. 双击本机刚生成的 `.pkg` 安装到「应用程序」后启动。本机产物没有下载隔离属性，安装器通常直接打开。
 3. 首次使用 Runtime 采集时，仍需在系统设置中授权**屏幕录制**与**辅助功能**（见下文 first-run）。
 
 **不想打安装包、只想立刻跑起来**
@@ -67,19 +67,18 @@ npm run package:ide:mac
 | 包类型 | 能不能对外给普通用户 | 说明 |
 |--------|----------------------|------|
 | **已正式签名**（Mac：Developer ID + 公证；Win：Authenticode） | 可以 | 安装体验接近正常软件 |
-| **本机一键打包、未配置证书** | **不要对外发** | 仅限自己 / 团队内部 QA；Mac 上用户若无「仍要打开」只能自行源码打包 |
+| **本机一键打包、未配置证书** | **不要当正式版发** | 仅限自己 / 团队内部 QA。若仍要给别人试，只发 `.pkg`：对方可以在设置里点「仍要打开」。不要发 `.dmg` |
 | 开发态 `electron .` / `npm run dev` | 不要当安装包发 | 权限与更新行为都不等于正式版 |
 
 自有代码 + 正规依赖打出来的安装包**不涉及侵权**。「没签名」只表示系统还不信任发布者身份，**不是违法、也不是盗用证书**。对外分发时请只用你们自己申请/购买的证书签名，不要使用他人证书或伪造签名。
 
 ### 未签名包时，普通用户会遇到什么
 
-- **macOS（`.dmg` / `.zip`）**
-  - 常见提示：「无法验证开发者」「已损坏，无法打开」。
-  - 部分系统可在 **隐私与安全性** 点 **「仍要打开」**，或右键 → 打开；**较新系统可能根本没有该选项**。
-  - 没有「仍要打开」时，应引导用户按上文「自行拉取源码打包」，而不是指望清隔离属性人人都会做。
+- **macOS（`.pkg`）**
+  - 未签名安装包的常见提示是「无法验证开发者」。双击一次后，**隐私与安全性** 会出现 **「仍要打开」**。点过之后安装器把 App 写到「应用程序」，这份 App 不带下载隔离属性，可以启动。
+  - **不要改发 `.dmg` / 从 ZIP 里拖出 `.app`。** 包内 App 只是 ad-hoc 签名。Finder 复制时会带上隔离属性，macOS 15 及更新系统会把它当成「已损坏」，并且不提供「仍要打开」。
   - 屏幕录制 / 辅助功能授权不稳定（身份是 adhoc，不是正式 Developer ID），换机器或升级后可能要重新授权。
-  - 自动更新不可靠。
+  - 自动更新走 ZIP，同样未公证，不可靠。
 - **Windows（`.exe` NSIS）**
   - SmartScreen：「Windows 已保护你的电脑」，需「更多信息 → 仍要运行」。
   - 部分杀软可能对未签名安装包误报。
@@ -115,7 +114,7 @@ The first-run guide is skippable, remains available under Settings → System au
 
 ```bash
 npm ci
-npm run dist:mac   # DMG + ZIP, arm64 and x64
+npm run dist:mac   # PKG + ZIP, arm64 and x64
 npm run dist:win   # NSIS installer, x64
 npm run dist:all   # both targets from one command when cross-build prerequisites exist
 ```
@@ -157,11 +156,11 @@ CI mapping in `.github/workflows/desktop-release.yml`:
 发版时同步修改该文件：
 
 - `latest`：最新版本号（可写 `0.1.1` 或 `v0.1.1`）
-- `title` / `notes`：更新弹窗标题与条目（建议首条写清 **macOS Gatekeeper / 无「仍要打开」→ 源码打包**）
+- `title` / `notes`：更新弹窗标题与条目（建议首条写清 **未签名请下 `.pkg`，双击后到隐私与安全性点「仍要打开」**）
 - `links`：可选，更新弹窗内「一键打开文档」按钮；推荐指向带锚点的说明  
   - [`README.md#macos-install`](../README.md#macos-install)  
   - [`DESKTOP_RELEASE.md#macos-build-from-source`](./DESKTOP_RELEASE.md#macos-build-from-source)
-- `downloads.macArm64` / `macX64` / `windowsX64`：对应平台安装包直链
+- `downloads.macArm64` / `macX64` / `windowsX64`：对应平台安装包直链。macOS 指向 `TapMakerWork-*-mac-*.pkg`，不要指向 `.dmg`
 - `downloads.page` / `site`：发行页与官网
 - `force: true`：强制提醒（忽略「暂不更新 / 不再提醒」）
 
@@ -181,7 +180,7 @@ When a newer tag is found, the packaged app configures electron-updater against 
 
 Upload the complete electron-builder output for each release, not only the installer:
 
-- macOS ZIP/DMG plus `latest-mac.yml` and block maps;
+- macOS ZIP and PKG plus `latest-mac.yml` and block maps;
 - Windows NSIS executable plus `latest.yml` and block maps.
 
 Increase the root `package.json` version before building. Installed clients check Gitee shortly after startup and every 30 minutes. The Settings panel also supports a manual check, explicit download with progress, repository shortcuts, and restart-to-install.

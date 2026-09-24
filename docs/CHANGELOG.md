@@ -1,5 +1,99 @@
 # Change log
 
+<a id="release-0.1.3"></a>
+
+## 2026-09-24 — TapMakerWork 0.1.3
+
+近两日（9/23–9/24）汇总，应用内更新提醒同步本条要点：
+
+- **macOS 安装**：对外改为未签名 `.pkg`（保留 ZIP 给应用内更新）。请下 `.pkg` 不要下 `.dmg`；被拦截后到「隐私与安全性」点「仍要打开」。详见 [README macOS 安装说明](../README.md#macos-install)。
+- **实时编辑 = 重启 = 正式运行**：能写进 Lua 的回写源码；写不进的按 `$path` 记入 `UiOverrides.lua` 并重放；无法落盘会还原并提示原因。
+- **Yoga 回写加固**：工厂控件改动落到调用处、防串写；布局表达式按差值改写；拖拽保留已选节点。
+- **新游雷达**：TapTap 制造 / 商店热门 / Steam 对照，赛道象限与每日上线汇总。
+- **工作台**：Maker CLI 一键修复；终端复制/清空归入当前频道。
+- **其它**：NanoVG live-edit 命令通道修复、Windows 预览 Supervisor 恢复、版本清单可一键跳文档。
+
+详细条目见下方同日与 9/23 各小节。版本号同步至 **0.1.3**。
+
+## 2026-09-24 — 工作台环境检查支持一键修复 Maker CLI
+
+- 官方 Maker CLI 检查不通过时，环境卡片右侧显示「一键修复」。
+- 点击后自动拉取稳定版并安装，完成后刷新工作台与健康状态。
+- 右侧「下一步」在该项 blocked 时也会优先指向同一修复动作。
+
+## 2026-09-24 — macOS 安装包改为未签名 PKG，恢复「仍要打开」
+
+- 网上下载的 DMG 拖出 ad-hoc 签名 App 后，macOS 15 及更新系统不会在「隐私与安全性」显示「仍要打开」。
+- 对外 macOS 安装包改为 `.pkg`（仍保留 ZIP 给应用内更新）。未签名安装包被拦截后可以点「仍要打开」，安装器把 App 写到「应用程序」且不带隔离属性。
+- arm64 与 x64 的 `.pkg` 由 `scripts/build-mac-pkg.mjs` 依次生成。electron-builder 并行打两种架构时会共用同一个临时包，后完成的一边会把临时文件删掉并让整次打包失败。
+
+## 2026-09-24 — 实时修改成功 = 重启 = 正式运行
+
+- 标准：预览里改成功并保存的属性，重启后和正式包里必须是同一个效果。这条规则不依赖某个项目的写法。
+- 能写进游戏 Lua 的，仍然回写源码。
+- 写不进源码的（共用组件内部节点、布局表达式、找不到控件等），按控件的稳定身份 `$path` 记入 `scripts/tapmakerwork/UiOverrides.lua`。适配器在游戏启动和控件挂上界面时用 `SetStyle` 重放，并钉住被改过的字段，避免游戏自己的 `Refresh` 把修改盖掉。
+- 没有 `$path` 的修改仍然当场还原，避免预览和重启各看各的。
+- 画布拖拽移动当前选中的节点本身。层级树里选中后再拖，不会被点到的子节点抢走。
+- 重新打开项目会更新适配器。需要再开始一次本地预览，运行中的游戏才会带上 `$path` 和重放。
+- 回写布局别名时不再整词替换变量名。原先会把 `local topPad = safe.safeTop` 改成 `local topPad + 18 = safe.safeTop`，脚本无法加载，预览启动就是黑屏。写坏的结果现在会整段丢弃，不落盘。
+- 已经带偏移的布局表达式（`attrTop - 7`、`(expr) - 26`）再次拖动时改的是这个偏移量，不会再套一层括号。
+- 多子节点的布局行（三张卡那一行）不接受把宽度缩到六成以下，也不接受从 0 写成很大的 left。单卡的盒子不会再写到整行容器上。
+- `text` / `title` 即使已经写进 Lua，仍留在实例覆盖里。游戏自己的 `SetText`（例如刷新兵力）之后会把改过的文字钉回去。
+
+## 2026-09-24 — 预览 = 重启：无法落盘的实时修改自动还原；拖拽不再抢走已选节点
+
+- 根因一：Runtime `AddChild` 记录的 `_sourceLine` 是**父控件构造行**（`Label@259` 实为 UiStyle.lua:267 的卡片标题、`Label@105` 是 113 行的按钮文字）。UiStyle 工厂内部节点没有属于自己的实例 Lua，拖动它们只会活在预览里，重启必然对不上。
+- 根因二：画布 `pointerdown` 总是重新命中最顶层节点，在层级树里选中按钮后一拖，实际移动的是按钮里的文字。
+- 现在 UiStyle 内部且无 `id` 的节点，拖动/缩放会**自动改为变换所属的调用处控件**（PrimaryButton / UpgradeCard 根），并 toast 说明；`text`/颜色等仍按原路由回写调用处。
+- 按下点落在已选节点（含层级树选中的祖先）范围内时保持选中直接拖动；1.2 秒内原地再点一次才循环切换到下层节点。结构画布同样按已选祖先处理。
+- Bridge 保存时对所有未写入 Lua 的属性（`kit_internal_geometry` / `opts_passthrough` / `layout_expression` / `widget_not_found` …）**下发还原补丁**：编辑树与 Runtime 一起回到编辑前的值（未设置的几何回到 `relative` / 0 / 原测量尺寸），toast 改为「N 项修改无法写入游戏 Lua，预览已还原」并给出原因说明。
+- 新增跳过原因 `kit_internal_geometry`；带 `id` 的实例 Label（如 `produceLev`）仍可按 id 落盘几何。
+
+## 2026-09-24 — 阻断 sidecar 回放工厂几何 / 禁止给 Label 硬塞 absolute
+
+- 根因：未落盘的 `Panel@259`/`Label@259` 几何进了 `UiStyle.ui.json`，刷新时 SetStyle 再叠一层；同时对无 `position` 的 Label（如 produceLev）插入 absolute，导致「123123」飞字、卡片文字重叠。
+- 未落盘几何与 opts_passthrough 等失败项**不再**写入 sidecar，刷新也不再回放几何。
+- 禁止向原本没有几何字段的控件插入 `left/top/width/height/position`。
+- 预览会话若仍跑脏副本，需 stop→start 从干净工程 Lua 重建。
+
+## 2026-09-24 — 终端：复制/清空归入当前频道
+
+- Tab 栏只保留频道切换与面板级操作（收起 / 最大化 / 还原布局）。
+- 「复制」「清空」移到各频道内容区工具条，作用于当前选中频道的输出。
+
+## 2026-09-24 — 回写成功但写错目标：容器/字号保护
+
+- 根因：提示「已回写」却把 `backgroundImage` 写进 `lobbyBlock`，把 `fontSize` 从 34 拉到 50，重启后卡片文字重叠、全屏被图污染，差距越改越大。
+- 禁止对多 `children` 且无套件脸（bg/rim/title/text）的布局容器写入 `backgroundImage`/`color`/`fontSize` 等。
+- 禁止 `fontSize` 明显撑爆 Label 高度（UpgradeCard 大数字压住等级行）。
+- 已还原乱世夺城 `MainHUD.lua` 被污染内容。
+
+## 2026-09-24 — Yoga 回写举一反三加固
+
+- `CARD_LEFT` / 复杂布局式：按拖动差值改写为 `CARD_LEFT + Δ` 或 `(expr) ± Δ`。
+- `rotate` / `transform` / `opacity`：调用处落盘时自动给 UiStyle 工厂补 `opts.*` 透传，避免「提示已同步、重启丢失」。
+- 工厂改文案不再广播改 Lobby/Home/Faction 的 SetText；无唯一目标时拒绝。
+- `previousProps` 补采 `bg`/`rim`/`title`，冻结首次几何与颜色锚点。
+
+## 2026-09-24 — Yoga 回写：contentTop+N 按拖动差值改写并同步 Layout
+
+- 拖动后重启仍偏差：live SetStyle 生效，但 `top = contentTop + 546` 被拒写（layout_expression），且 `Layout()` 每帧用硬编码偏移覆盖。
+- 现按「编辑前求值 top」与「新 top」的差值改写 `contentTop + N`，并整文件同步同款表达式（Build 调用处 + `local pvpTop = …`）。
+- 拒绝把父相对测量值（left 80→3、width 560→554）写进设计字面量；冻结首次 previousProps 几何基准。
+
+## 2026-09-24 — Yoga 回写：禁止把 live 相对坐标冻进布局表达式
+
+- 根因：拖动工厂内 Label 时 Yoga 上报父相对坐标（`left=0, top=-4`），回写把 `top = contentTop + 470` 盖掉，重启后按钮飞位。
+- 禁止用字面量覆盖 `contentTop + N` / `CARD_LEFT + …` 等布局数学；`left/top/width/height/position` **不再**经 UiStyle 工厂路由到调用处。
+- Label 几何仍可按 `id` 落盘；`style.x`/`theme.x` 仍可按需冻结。
+
+## 2026-09-24 — Yoga 回写：消歧 / UpgradeCard.title / Label.position
+
+- `Panel@….text:nearby_no_insert`：走调用处路由，`text`→`UpgradeCard.title`，并按 `preferredFile` 避免串改其它页面。
+- `Label@….fontColor:call_site_ambiguous`：用**编辑前**文案 + `top`/`bg` 消歧同尺寸兄弟按钮；`UiStyle.lua` 不作实例 preferredFile。
+- `Label@….position:widget_not_found`：按 `id`/文案写回真实 `UI.Label` 表的 `left`/`top`/`position`。
+- 硬约束不变：实时改成功 = Lua 落盘；未落盘仍 `persistence.complete=false`。
+
 ## 2026-09-23 — Yoga 工厂 UI 回写防串写（发布加固）
 
 - **不再**把实例颜色/字段插进邻近无关 Panel（曾误改 `staminaRow`）。
@@ -9,6 +103,11 @@
 - **禁止**控件编辑回写 `Assets.X = "…"`（标题用 `Title .. Subtitle` 拼接时，改按钮会误改整条标题）。
 - `UpgradeCard` 颜色写入 `bg`（不再插入无效的 `backgroundColor`）。
 - 同尺寸兄弟 `PrimaryButton` 的 `fontColor`/`bg` 按文案锚点写，不串到相邻按钮。
+- **按钮填色落盘**：`Panel` 选择器可匹配 `PrimaryButton`（Button），并容忍行号漂移；`backgroundColor`→`bg` 成功后清掉旁路残留，避免 IDE 石灰绿、重启仍金色。
+- **标题 Label@父行**：`children = { levelLabel }` 导致 `Label@316.widget_not_found` 时，按 `id`/`Title · Subtitle` 定位，并改写 `SetText(Assets.Title .. …)`，避免只活在预览、重启被 Refresh 冲掉。
+- **`backgroundImage` 可持久化**：Inspector 能改图就应写回 Lua（不再 `key_not_writable`）；UpgradeCard 等工厂自动补上 `backgroundImage = opts.backgroundImage`，避免预览有图、重启丢失。
+- **举一反三**：补齐 Inspector/画布可编辑但未写回的 `rotate`、`transform`，以及常用的 `textAlign`/`verticalAlign`/`whiteSpace`/`pointerEvents`/`boxShadow`/`flexWrap`；用 `INSPECTOR_EDITABLE_KEYS` 测例锁住「能改必能落盘」。
+- **硬约束**：实时改成功必须等于游戏 Lua 落盘。保存时若仍有未写入项，返回 `persistence.complete=false` 并 toast 警告「重启会丢失」，不再把仅旁路覆盖当成已同步。
 - 游戏工程内容不代改；用新 IDE 在 Studio 里再编辑一次即可正确落到 Lua。
 
 ## 2026-09-23 — 为什么改动只在 .ui.json / 重启丢失
@@ -41,6 +140,17 @@
 - 原为 `style.*` / `options.theme.*` 等表达式的字段，若用户给出了具体值，会替换为字面量以真正生效到项目；`onClick` 等行为回调不改。
 - 缺少的视觉字段可插入；无法序列化的残留仍留在 `.ui.json`。
 - Studio 保存提示与 agent 日志会显示回写条数与文件。
+
+## 2026-09-24 — 新游雷达：每日上线汇总
+
+- 新增「每日上线」页：分页拉取制造新上榜，按 `released_time` 汇总区间内上线数、均分、最热/高分、赛道与逐日明细。
+- 默认近 7 天，可选手动日期或近 14 / 30 天；独立缓存，不拖慢其它渠道刷新。
+
+## 2026-09-24 — 新游雷达：商店榜 + Steam 对照
+
+- 数据渠道扩展：**TapTap 制造** / **TapTap 商店热门**（`app-top/v2/hits`）/ **Steam 公开精选**（畅销 + 新品）。
+- 面板顶部可切换渠道；单渠道失败不影响其它渠道；Steam 图标走本地代理。
+- itch.io / SteamSpy 因 Cloudflare 或接口不可用未接入。
 
 ## 2026-09-23 — 工具集：新游雷达
 

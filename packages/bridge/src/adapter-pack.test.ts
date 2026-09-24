@@ -57,6 +57,18 @@ describe("runtime adapter installer", () => {
     const second = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
     expect(second.changed).toBe(false);
     expect(second.backupPath).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts/tapmakerwork/UiOverrides.lua"))).toBe(true);
+  });
+
+  it("keeps a generated replay module when the adapter is installed again", () => {
+    const root = makerProject();
+    installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    const overrides = path.join(root, "scripts/tapmakerwork/UiOverrides.lua");
+    const saved = "return { version = 1, overrides = { kept = true } }\n";
+    fs.writeFileSync(overrides, saved, "utf8");
+    const second = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    expect(second.changed).toBe(false);
+    expect(fs.readFileSync(overrides, "utf8")).toBe(saved);
   });
 
   it("refuses an unsupported entry instead of partially editing it", () => {
