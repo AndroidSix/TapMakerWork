@@ -1,11 +1,12 @@
 # Change log
 
-<a id="release-0.1.3"></a>
+<a id="release-0.1.2"></a>
 
-## 2026-09-24 — TapMakerWork 0.1.3
+## 2026-09-24 — TapMakerWork 0.1.2
 
 近两日（9/23–9/24）汇总，应用内更新提醒同步本条要点：
 
+- **发行页**：[github.com/AndroidSix/TapMakerWork/releases/tag/0.1.2](https://github.com/AndroidSix/TapMakerWork/releases/tag/0.1.2)（标签为 `0.1.2`，无 `v` 前缀；macOS 请下 `.pkg`）
 - **macOS 安装**：对外改为未签名 `.pkg`（保留 ZIP 给应用内更新）。请下 `.pkg` 不要下 `.dmg`；被拦截后到「隐私与安全性」点「仍要打开」。详见 [README macOS 安装说明](../README.md#macos-install)。
 - **实时编辑 = 重启 = 正式运行**：能写进 Lua 的回写源码；写不进的按 `$path` 记入 `UiOverrides.lua` 并重放；无法落盘会还原并提示原因。
 - **Yoga 回写加固**：工厂控件改动落到调用处、防串写；布局表达式按差值改写；拖拽保留已选节点。
@@ -13,7 +14,7 @@
 - **工作台**：Maker CLI 一键修复；终端复制/清空归入当前频道。
 - **其它**：NanoVG live-edit 命令通道修复、Windows 预览 Supervisor 恢复、版本清单可一键跳文档。
 
-详细条目见下方同日与 9/23 各小节。版本号同步至 **0.1.3**。
+详细条目见下方同日与 9/23 各小节。版本号同步至 **0.1.2**。
 
 ## 2026-09-24 — 工作台环境检查支持一键修复 Maker CLI
 
