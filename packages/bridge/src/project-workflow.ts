@@ -38,7 +38,6 @@ export interface ProjectWorkflowInput {
   git?: GitStatus | undefined;
   gitError?: string | undefined;
   assets: AssetEntry[];
-  /** Newer release on the same channel as the active Maker MCP, when one exists. */
   makerChannelLatest?: string | undefined;
 }
 
@@ -184,7 +183,7 @@ export function buildProjectWorkflowOverview(input: ProjectWorkflowInput): Proje
         detail: !input.makerCli
           ? "未发现 @taptap/maker runtime"
           : !versionOk
-            ? `当前 ${input.makerVersion || "未知版本"}，需要 ${REQUIRED_MAKER_MCP_VERSION} 才能使用`
+            ? `当前 ${input.makerVersion || "未知版本"}，需要 ${REQUIRED_MAKER_MCP_VERSION} 或更高版本才能使用`
             : newerChannel
               ? `当前 ${input.makerVersion}，对应通道有新版本 ${newerChannel}`
               : `已发现 ${input.makerVersion || "Maker runtime"}`,

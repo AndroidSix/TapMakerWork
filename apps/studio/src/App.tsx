@@ -3967,7 +3967,7 @@ export function App() {
             </div>
           </header>
           <div className="maker-version-gate-body">
-            <p>当前版本是 {health.makerVersion || "未安装"}。TapMakerWork 只支持 Maker MCP {REQUIRED_MAKER_MCP_VERSION}，升级到这个版本之后才能继续编辑和预览。</p>
+            <p>当前版本是 {health.makerVersion || "未安装"}。Maker MCP 低于 {REQUIRED_MAKER_MCP_VERSION} 时需要先升级，升级完成才能继续编辑和预览。</p>
           </div>
           <footer>
             <button className="primary" disabled={Boolean(makerVersionBusy)} onClick={() => void installRequiredMakerMcp()}>

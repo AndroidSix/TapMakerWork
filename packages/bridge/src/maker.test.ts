@@ -10,6 +10,7 @@ import {
   listInstalledNodeRuntimes,
   listInstalledMakerRuntimes,
   readMakerRuntimePreference,
+  resolveNpxExecutable,
   resolveSystemNodeRuntime,
   selectMakerRuntime,
   writeMakerRuntimePreference
@@ -28,6 +29,16 @@ afterEach(() => {
 });
 
 describe("Maker runtime selection", () => {
+  it("finds npx beside node when the process PATH does not include it", () => {
+    const bin = path.join(temporaryDirectory(), "bin");
+    fs.mkdirSync(bin);
+    const node = path.join(bin, process.platform === "win32" ? "node.exe" : "node");
+    const npx = path.join(bin, process.platform === "win32" ? "npx.cmd" : "npx");
+    fs.writeFileSync(node, "");
+    fs.writeFileSync(npx, "");
+    expect(resolveNpxExecutable(node)).toBe(npx);
+  });
+
   it("sorts stable and prerelease versions using semver precedence", () => {
     expect(compareMakerVersions("0.0.34-beta.7", "0.0.34-beta.4")).toBeGreaterThan(0);
     expect(compareMakerVersions("0.0.34", "0.0.34-beta.7")).toBeGreaterThan(0);

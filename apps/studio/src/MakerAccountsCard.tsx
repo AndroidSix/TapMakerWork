@@ -25,10 +25,16 @@ interface AccountsPayload {
 }
 
 const sourceText: Record<AccountSource, string> = {
-  manual: "手动指定",
-  auto: "自动核对",
-  global: "全局账号"
+  manual: "已指定",
+  auto: "已核对",
+  global: "沿用全局"
 };
+
+function projectAccountReason(source: AccountSource, label: string): string {
+  if (source === "manual") return `这个项目已指定使用「${label}」`;
+  if (source === "auto") return `已按这个项目核对到「${label}」`;
+  return `没有唯一对上的账号，这个项目沿用全局账号「${label}」`;
+}
 
 type AccountListener = (payload: AccountsPayload) => void;
 
@@ -171,8 +177,13 @@ export function MakerAccountsCard(props: {
       </label>
       {props.projectRoot && (
         <>
+          <div className="maker-account-project">
+            <span>本项目使用</span>
+            <strong>{project?.resolved?.label || "正在确认"}</strong>
+            <small>{project?.resolved ? projectAccountReason(project.resolved.source, project.resolved.label) : "打开项目后，这里显示预览、测试码和提交实际使用的账号。"}</small>
+          </div>
           <label className="maker-account-row">
-            <span>当前项目</span>
+            <span>选择方式</span>
             <select
               value={project?.mode || "auto"}
               disabled={Boolean(busy) || !data}
@@ -200,7 +211,6 @@ export function MakerAccountsCard(props: {
               </select>
             </label>
           )}
-          {project?.resolved && <p className="maker-account-resolved">当前生效：{project.resolved.label}（{sourceText[project.resolved.source]}）</p>}
         </>
       )}
       <ul className="maker-account-list">
@@ -215,7 +225,7 @@ export function MakerAccountsCard(props: {
             ) : (
               <>
                 <strong>{account.label}</strong>
-                <small>{account.loggedIn ? "已登录" : "未登录"}{account.global ? " · 全局" : ""}</small>
+                <small>{account.loggedIn ? "已登录" : "未登录"}{account.global ? " · 全局" : ""}{project?.resolved?.accountId === account.id ? " · 本项目" : ""}</small>
                 <span>
                   <button type="button" disabled={Boolean(busy)} onClick={() => {
                     props.notify(`正在用无痕窗口打开登录页，请登录「${account.label}」并创建 token`, "info");
@@ -278,34 +288,27 @@ export function MakerAccountSwitcher(props: {
   }
 
   const globalAccount = data?.accounts.find((account) => account.global);
-  const resolved = data?.project?.resolved;
-  const caption = resolved?.label || globalAccount?.label || "未登录";
+  const resolved = props.projectRoot ? data?.project?.resolved : undefined;
+  const caption = resolved?.label || (props.projectRoot ? "确认中" : globalAccount?.label || "未登录");
+  const reason = resolved ? projectAccountReason(resolved.source, resolved.label) : "";
 
   return (
     <div className="account-switcher" ref={rootRef}>
-      <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={`切换账号，当前 ${caption}`} onClick={() => setOpen((value) => !value)}>
-        <span>账号</span>
+      <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={resolved ? `本项目使用 ${resolved.label}。${reason}` : `切换账号，当前 ${caption}`} title={reason || undefined} onClick={() => setOpen((value) => !value)}>
+        <span>{props.projectRoot ? "本项目" : "账号"}</span>
         <strong>{caption}</strong>
+        {resolved && <em>{sourceText[resolved.source]}</em>}
       </button>
       {open && (
         <div className="account-switcher-menu" role="menu" aria-label="切换 Maker 账号">
-          <h3>全局账号</h3>
-          {(data?.accounts ?? []).map((account) => (
-            <button
-              key={account.id}
-              type="button"
-              role="menuitemradio"
-              aria-checked={account.global}
-              disabled={busy || account.global}
-              onClick={() => void run("/api/maker/accounts/global", { accountId: account.id }, `全局账号已切换为「${account.label}」`)}
-            >
-              <strong>{account.label}</strong>
-              <small>{account.loggedIn ? "已登录" : "未登录"}{account.global ? " · 当前" : ""}</small>
-            </button>
-          ))}
           {props.projectRoot && (
             <>
-              <h3>当前项目</h3>
+              <div className="account-project-now">
+                <span>本项目使用</span>
+                <strong>{resolved?.label || "正在确认"}</strong>
+                <small>{resolved ? reason : "稍等片刻，正在确认这个项目实际使用的账号。"}</small>
+              </div>
+              <h3>改这个项目</h3>
               <button
                 type="button"
                 role="menuitemradio"
@@ -314,7 +317,7 @@ export function MakerAccountSwitcher(props: {
                 onClick={() => void run("/api/maker/accounts/project", { mode: "auto" }, "当前项目改为自动核对")}
               >
                 <strong>自动核对</strong>
-                <small>对不上时用全局账号</small>
+                <small>对上唯一账号才用它</small>
               </button>
               {(data?.accounts ?? []).map((account) => {
                 const pinned = data?.project?.mode === "manual" && data.project.accountId === account.id;
@@ -328,13 +331,26 @@ export function MakerAccountSwitcher(props: {
                     onClick={() => void run("/api/maker/accounts/project", { mode: "manual", accountId: account.id }, `当前项目已指定「${account.label}」`)}
                   >
                     <strong>指定 {account.label}</strong>
-                    <small>{pinned ? "当前" : "手动指定"}</small>
+                    <small>{pinned ? "这个项目固定用它" : "只改当前项目"}</small>
                   </button>
                 );
               })}
-              {resolved && <p>生效：{resolved.label}（{sourceText[resolved.source]}）</p>}
             </>
           )}
+          <h3>全局账号</h3>
+          {(data?.accounts ?? []).map((account) => (
+            <button
+              key={account.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={account.global}
+              disabled={busy || account.global}
+              onClick={() => void run("/api/maker/accounts/global", { accountId: account.id }, `全局账号已切换为「${account.label}」`)}
+            >
+              <strong>{account.label}</strong>
+              <small>{account.loggedIn ? "已登录" : "未登录"}{account.global ? " · 当前全局" : ""}</small>
+            </button>
+          ))}
           <button type="button" onClick={() => { setOpen(false); props.onManage(); }}>管理账号…</button>
         </div>
       )}

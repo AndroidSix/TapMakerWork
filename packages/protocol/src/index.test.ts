@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyUiPatch, applyUiTreeOp, findUiNode, isKitInternalUiNode, isUiKitSourceFile, type UiSnapshot } from "./index.js";
+import { applyUiPatch, applyUiTreeOp, findUiNode, isKitInternalUiNode, isRequiredMakerMcpVersion, isUiKitSourceFile, type UiSnapshot } from "./index.js";
 
 const snapshot: UiSnapshot = {
   revision: 2,
@@ -114,6 +114,17 @@ describe("ui tree ops", () => {
   it("renames node", () => {
     const next = applyUiTreeOp(sampleTree(), { type: "rename", nodeId: "a", name: "PanelA" });
     expect(findUiNode(next.root, "a")?.name).toBe("PanelA");
+  });
+});
+
+describe("maker mcp minimum version", () => {
+  it("prompts only when the installed version is below 0.0.34", () => {
+    expect(isRequiredMakerMcpVersion("0.0.32")).toBe(false);
+    expect(isRequiredMakerMcpVersion("0.0.34-beta.7")).toBe(false);
+    expect(isRequiredMakerMcpVersion(undefined)).toBe(false);
+    expect(isRequiredMakerMcpVersion("0.0.34")).toBe(true);
+    expect(isRequiredMakerMcpVersion("0.0.35")).toBe(true);
+    expect(isRequiredMakerMcpVersion("0.0.35-beta.1")).toBe(true);
   });
 });
 

@@ -296,9 +296,29 @@ export async function checkMakerRuntimeUpdates(fetchImpl: typeof fetch = fetch):
   };
 }
 
+export function resolveNpxExecutable(nodeExecutable: string): string | undefined {
+  const name = process.platform === "win32" ? "npx.cmd" : "npx";
+  const candidates = [path.join(path.dirname(nodeExecutable), name)];
+  if (process.platform === "win32") {
+    candidates.push(...commandOutput("where.exe", ["npx"]).split(/\r?\n/));
+  } else {
+    const shell = process.env.SHELL && fs.existsSync(process.env.SHELL) ? process.env.SHELL : "/bin/zsh";
+    candidates.push(path.join(os.homedir(), ".npm-global", "bin", name), "/opt/homebrew/bin/npx", "/usr/local/bin/npx");
+    candidates.push(...commandOutput(shell, ["-lic", "command -v npx"]).split(/\r?\n/));
+  }
+  for (const candidate of candidates) {
+    const executable = candidate.trim();
+    if (!executable || !path.isAbsolute(executable) || !fs.existsSync(executable)) continue;
+    return executable;
+  }
+  return undefined;
+}
+
 export function installMakerRuntimeVersion(version: string, timeoutMs = 10 * 60_000): Promise<unknown> {
   if (!VERSION_PATTERN.test(version)) return Promise.reject(new Error("invalid_maker_version"));
-  const executable = process.platform === "win32" ? "npx.cmd" : "npx";
+  const node = discoverNodeRuntime();
+  const executable = resolveNpxExecutable(node.executable);
+  if (!executable) return Promise.reject(new Error("未找到 npx。请先安装带 npm 的 Node.js，再重试升级。"));
   const cache = path.join(os.homedir(), ".taptap-maker", "cache", "npm");
   fs.mkdirSync(cache, { recursive: true });
   return new Promise((resolve, reject) => {
@@ -306,7 +326,11 @@ export function installMakerRuntimeVersion(version: string, timeoutMs = 10 * 60_
       cwd: os.homedir(),
       shell: false,
       windowsHide: true,
-      env: { ...process.env, npm_config_cache: cache },
+      env: {
+        ...process.env,
+        npm_config_cache: cache,
+        PATH: [path.dirname(node.executable), path.dirname(executable), process.env.PATH].filter(Boolean).join(path.delimiter)
+      },
       stdio: ["ignore", "pipe", "pipe"]
     });
     let stdout = "";

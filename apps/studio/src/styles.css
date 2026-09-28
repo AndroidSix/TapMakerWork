@@ -54,27 +54,43 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .runtime-status { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--success); font-size: 12px; }
 .title-actions { display: flex; gap: 3px; -webkit-app-region: no-drag; }
 .welcome-title-actions { margin-left: auto; }
-.account-switcher { position: relative; -webkit-app-region: no-drag; }
+.account-switcher { position: relative; flex: 0 0 auto; min-width: max-content; -webkit-app-region: no-drag; }
 .account-switcher > button {
   display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 6px;
-  max-width: 180px;
+  width: max-content;
+  max-width: none;
   height: 28px;
   padding: 0 8px;
   color: var(--text);
+  white-space: nowrap;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
 }
-.account-switcher > button strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.account-switcher > button span,
+.account-switcher > button strong,
+.account-switcher > button em { flex: none; white-space: nowrap; }
+.account-switcher > button strong { overflow: visible; text-overflow: clip; font-weight: 650; }
+.account-switcher > button em {
+  padding: 1px 5px;
+  color: #d5e6f8;
+  font-size: 10px;
+  font-style: normal;
+  background: #183044;
+  border-radius: 999px;
+}
 .account-switcher-menu {
   position: absolute;
   z-index: 50;
   top: calc(100% + 6px);
   right: 0;
-  width: 260px;
+  width: max-content;
+  min-width: 280px;
+  max-width: min(420px, calc(100vw - 24px));
   display: grid;
   gap: 4px;
   padding: 10px;
@@ -87,23 +103,37 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .account-switcher-menu h3:first-child { margin-top: 0; }
 .account-switcher-menu button {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
   width: 100%;
   min-height: 28px;
   padding: 4px 8px;
   color: var(--text);
   text-align: left;
+  white-space: nowrap;
   background: transparent;
   border: 0;
   border-radius: 4px;
   cursor: pointer;
 }
+.account-switcher-menu button strong,
+.account-switcher-menu button small { white-space: nowrap; }
 .account-switcher-menu button[aria-checked="true"] { background: #183044; }
 .account-switcher-menu button:hover:not(:disabled) { background: var(--raised); }
 .account-switcher-menu small, .account-switcher-menu p { color: var(--muted); font-size: 11px; }
 .account-switcher-menu p { margin: 4px 0 0; }
+.account-project-now, .maker-account-project {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  background: #183044;
+  border-radius: 6px;
+}
+.account-project-now span, .maker-account-project span { color: #9eb4cc; font-size: 11px; }
+.account-project-now strong, .maker-account-project strong { color: #f4f7fb; font-size: 14px; }
+.account-project-now small, .maker-account-project small { color: #d5e6f8; font-size: 12px; line-height: 1.45; }
 .commandbar .account-switcher-menu { left: 0; right: auto; }
 .account-dialog-backdrop { z-index: 1800; }
 .account-dialog {
@@ -129,19 +159,23 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .title-actions button:hover, .icon-command:hover { background: var(--raised); }
 .title-actions .account-switcher > button {
   display: inline-flex;
-  width: auto;
-  max-width: 180px;
+  width: max-content;
+  max-width: none;
   padding: 0 8px;
   border: 1px solid var(--border);
+  white-space: nowrap;
 }
 .title-actions .account-switcher-menu button {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   width: 100%;
   height: auto;
   min-height: 28px;
   padding: 4px 8px;
   border: 0;
   place-items: unset;
+  white-space: nowrap;
 }
 
 .commandbar { gap: 6px; padding: 4px 10px; background: var(--panel); border-bottom: 1px solid var(--border); font-size: 12px; position: relative; flex-wrap: nowrap; }
@@ -866,7 +900,7 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .maker-account-row { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 8px; color: var(--text); font-size: 12px; }
 .maker-account-row select, .maker-accounts-card button { color: var(--text); background: var(--control); border: 1px solid var(--border); }
 .maker-accounts-card button.primary { background: #28598d; border-color: #3976b3; }
-.maker-account-resolved { margin: 0; color: var(--muted); font-size: 12px; }
+.maker-account-project small { display: block; }
 .maker-account-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .maker-account-list li { display: grid; grid-template-columns: minmax(80px, 1fr) auto auto; align-items: center; gap: 8px; }
 .maker-account-list small { color: var(--muted); }
