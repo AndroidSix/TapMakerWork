@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createPrivateBrowserOverride } from "./private-browser.js";
 
 const MAKER_PACKAGE = "@taptap/maker";
 const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
@@ -334,14 +334,17 @@ function runMakerArgs(
   project: string,
   args: string[],
   timeoutMs: number,
-  home?: string
+  home?: string,
+  extraEnv?: NodeJS.ProcessEnv
 ): Promise<unknown> {
+  const env = { ...process.env, ...extraEnv };
+  if (home) env.TAPTAP_MAKER_HOME = home;
   return new Promise((resolve, reject) => {
     const child = spawn(runtime.node, [runtime.entry, ...args, "--target-dir", project, "--json"], {
       cwd: project,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
-      env: home ? { ...process.env, TAPTAP_MAKER_HOME: home } : process.env
+      env
     });
     let stdout = "";
     let stderr = "";
@@ -413,8 +416,15 @@ export function runMakerApps(runtime: MakerRuntime, project: string, home: strin
   return runMakerArgs(runtime, project, ["apps"], timeoutMs, home);
 }
 
-export function runMakerLogin(runtime: MakerRuntime, project: string, home: string, timeoutMs = 180_000): Promise<unknown> {
-  return runMakerArgs(runtime, project, ["login"], timeoutMs, home);
+export async function runMakerLogin(runtime: MakerRuntime, project: string, home: string, timeoutMs = 10 * 60_000): Promise<unknown> {
+  const override = createPrivateBrowserOverride();
+  try {
+    return await runMakerArgs(runtime, project, ["login"], timeoutMs, home, {
+      PATH: `${override.pathDir}${path.delimiter}${process.env.PATH ?? ""}`
+    });
+  } finally {
+    override.cleanup();
+  }
 }
 
 export function readMakerProjectMeta(projectRoot: string): {

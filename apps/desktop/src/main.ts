@@ -948,38 +948,26 @@ ipcMain.handle("tapmakerwork:runtime-interact", async (_event, opts?: {
   }
 });
 
-app.whenReady().then(async () => {
-  desktopLog("app ready");
-  installUpdaterEvents();
-  try {
-    configureUpdater();
-  } catch (error) {
-    updateConfigured = false;
-    sendUpdateState({ phase: "error", message: updateErrorMessage(error) });
-  }
-  try {
-    desktopLog("starting packaged bridge");
-    await startPackagedBridge();
-    desktopLog("packaged bridge ready");
-  } catch (error) {
-    desktopLog(`packaged bridge failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
-    dialog.showErrorBox("TapMakerWork Bridge 启动失败", error instanceof Error ? error.message : String(error));
-  }
-  desktopLog("creating main window");
-  createWindow();
-  ensureTelemetry().start();
-  sendPermissionState();
-  if (app.isPackaged && updateConfigured) {
-    setTimeout(() => {
-      void checkForDesktopUpdates(true);
-      mainWindow?.webContents.send("tapmakerwork:telemetry-track", "update.check", { silent: true });
-    }, 8_000);
-    updateCheckTimer = setInterval(() => void checkForDesktopUpdates(true), 30 * 60_000);
-  } else if (updateConfigured) {
-    setTimeout(() => {
-      void checkForDesktopUpdates(true);
-    }, 12_000);
-  }
+interface ReportedMakerAccount {
+  id: string;
+  label: string;
+  global: boolean;
+}
+
+let reportedAccounts: ReportedMakerAccount[] = [];
+
+function installApplicationMenu(): void {
+  const accountItems: Electron.MenuItemConstructorOptions[] = reportedAccounts.length
+    ? reportedAccounts.map((account) => ({
+      label: account.label,
+      type: "radio",
+      checked: account.global,
+      click: () => {
+        if (account.global) return;
+        mainWindow?.webContents.send("tapmakerwork:switch-global-account", account.id);
+      }
+    }))
+    : [{ label: "正在读取账号…", enabled: false }];
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
       label: app.name,
@@ -1034,6 +1022,17 @@ app.whenReady().then(async () => {
         { role: "selectAll" }
       ]
     },
+    {
+      label: "账号",
+      submenu: [
+        ...accountItems,
+        { type: "separator" },
+        {
+          label: "管理账号…",
+          click: () => mainWindow?.webContents.send("tapmakerwork:manage-accounts")
+        }
+      ]
+    },
     { label: "窗口", submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "front" }] },
     {
       label: "帮助",
@@ -1062,6 +1061,52 @@ app.whenReady().then(async () => {
       ]
     }
   ]));
+}
+
+ipcMain.on("tapmakerwork:accounts-report", (_event, value: unknown) => {
+  if (!Array.isArray(value)) return;
+  reportedAccounts = value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Partial<ReportedMakerAccount>;
+    if (typeof row.id !== "string" || row.id === "" || typeof row.label !== "string" || row.label === "") return [];
+    return [{ id: row.id, label: row.label, global: Boolean(row.global) }];
+  });
+  if (app.isReady()) installApplicationMenu();
+});
+
+app.whenReady().then(async () => {
+  desktopLog("app ready");
+  installUpdaterEvents();
+  try {
+    configureUpdater();
+  } catch (error) {
+    updateConfigured = false;
+    sendUpdateState({ phase: "error", message: updateErrorMessage(error) });
+  }
+  try {
+    desktopLog("starting packaged bridge");
+    await startPackagedBridge();
+    desktopLog("packaged bridge ready");
+  } catch (error) {
+    desktopLog(`packaged bridge failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+    dialog.showErrorBox("TapMakerWork Bridge 启动失败", error instanceof Error ? error.message : String(error));
+  }
+  desktopLog("creating main window");
+  createWindow();
+  ensureTelemetry().start();
+  sendPermissionState();
+  if (app.isPackaged && updateConfigured) {
+    setTimeout(() => {
+      void checkForDesktopUpdates(true);
+      mainWindow?.webContents.send("tapmakerwork:telemetry-track", "update.check", { silent: true });
+    }, 8_000);
+    updateCheckTimer = setInterval(() => void checkForDesktopUpdates(true), 30 * 60_000);
+  } else if (updateConfigured) {
+    setTimeout(() => {
+      void checkForDesktopUpdates(true);
+    }, 12_000);
+  }
+  installApplicationMenu();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
     else sendPermissionState();

@@ -101,7 +101,7 @@ import {
   isRequiredMakerMcpVersion,
   type WorkspaceMode
 } from "@tapmakerwork/protocol";
-import { MakerAccountsCard } from "./MakerAccountsCard";
+import { MakerAccountSwitcher, MakerAccountsCard, mutateMakerAccounts } from "./MakerAccountsCard";
 import { PreviewDock } from "./PreviewDock";
 import { ProjectCockpit } from "./ProjectCockpit";
 import { RuntimeMirror } from "./RuntimeMirror";
@@ -1445,6 +1445,7 @@ export function App() {
   const [runtimeEditRevision, setRuntimeEditRevision] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountsOpen, setAccountsOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [tipsOpen, setTipsOpen] = useState(false);
   const [compressOpen, setCompressOpen] = useState(false);
@@ -3400,6 +3401,15 @@ export function App() {
   }, [loadProjectContents, loadAssets, loadGitStatus, refreshRuntimeLogs, loadMakerMeta, loadPreviewPanel, loadWorkflow]);
 
   useEffect(() => window.tapMakerWork?.onOpenProject?.((projectPath) => { void openProjectPath(projectPath); }), [openProjectPath]);
+  useEffect(() => window.tapMakerWork?.accounts?.onSwitchGlobal?.((accountId) => {
+    void mutateMakerAccounts("/api/maker/accounts/global", { accountId })
+      .then((payload) => {
+        const label = payload.accounts.find((account) => account.id === accountId)?.label || accountId;
+        toast(`全局账号已切换为「${label}」`, "success");
+      })
+      .catch((error: unknown) => toast(error instanceof Error ? error.message : String(error), "error"));
+  }), [toast]);
+  useEffect(() => window.tapMakerWork?.accounts?.onManage?.(() => setAccountsOpen(true)), []);
   useEffect(() => window.tapMakerWork?.onCloseProject?.(() => { void closeCurrentProject(); }), [closeCurrentProject]);
 
   useEffect(() => {
@@ -3969,16 +3979,28 @@ export function App() {
     )
     : null;
 
+  const accountsDialog = accountsOpen ? (
+    <div className="legal-backdrop account-dialog-backdrop" onClick={() => setAccountsOpen(false)}>
+      <section className="account-dialog" role="dialog" aria-labelledby="maker-accounts-heading" onClick={(event) => event.stopPropagation()}>
+        <MakerAccountsCard open {...(project?.root ? { projectRoot: project.root } : {})} notify={toast} />
+        <button type="button" onClick={() => setAccountsOpen(false)}>关闭</button>
+      </section>
+    </div>
+  ) : null;
+
   if (!projectLoaded || !project) {
     return (
       <><main className="welcome-window">
         <header className="titlebar welcome-titlebar">
-          <div className="brand"><span className="brand-mark">T</span><strong>TapMakerWork</strong></div>
+          <div className="brand"><span className="brand-mark">T</span><strong>TapMakerWork</strong><span className="phase-badge">v{__APP_VERSION__}</span></div>
           <span className="welcome-window-title">{projectLoaded ? "开始" : "正在连接…"}</span>
+          <div className="title-actions welcome-title-actions">
+            <MakerAccountSwitcher notify={toast} onManage={() => setAccountsOpen(true)} />
+          </div>
         </header>
         <section className="welcome-main">
           <div className="welcome-hero" aria-busy={projectOpening}>
-            <div className="welcome-logo"><span className="brand-mark large">T</span><div><h1>TapMakerWork</h1><p>TapTap Maker 可视化工作台</p></div></div>
+            <div className="welcome-logo"><span className="brand-mark large">T</span><div><h1>TapMakerWork</h1><p>TapTap Maker 可视化工作台</p><p className="welcome-version">当前版本 {__APP_VERSION__}</p></div></div>
             <button className="open-project-card" onClick={() => void chooseProject()} disabled={!projectLoaded || projectOpening}>
               <span className="open-project-icon"><FolderOpen size={24} aria-hidden="true" /></span>
               <span><strong>{projectOpening ? "正在打开…" : "打开项目"}</strong><small>选择一个本地 Maker 项目文件夹</small></span>
@@ -3997,7 +4019,7 @@ export function App() {
           </div>
           <div className="welcome-decoration" aria-hidden="true"><div /><div /><div /></div>
         </section>
-      </main>{legalOverlay}{projectRejectOverlay}{permissionOverlay}{updatePromptOverlay}{makerVersionGate}</>
+      </main>{legalOverlay}{projectRejectOverlay}{permissionOverlay}{updatePromptOverlay}{makerVersionGate}{accountsDialog}</>
     );
   }
 
@@ -4067,6 +4089,7 @@ export function App() {
         <button className="icon-command" aria-label="撤销" onClick={() => void historyAction("undo")}><Undo2 size={14} /></button>
         <button className="icon-command" aria-label="重做" onClick={() => void historyAction("redo")}><Redo2 size={14} /></button>
         <span className="separator" />
+        <MakerAccountSwitcher {...(project.root ? { projectRoot: project.root } : {})} notify={toast} onManage={() => setAccountsOpen(true)} />
         <Tip label="启动官方 Maker Runtime（独立窗口）">
           <CoachMark label="② 再启动 Runtime" active={coachRuntimeStart}>
             <button
@@ -5473,8 +5496,9 @@ export function App() {
         <span>{health?.runtimeAdapter?.installed ? "Runtime 适配器已安装" : "Runtime 适配器未安装"}</span>
         <span>{health?.capabilities.shellSandbox ? "沙箱就绪" : "沙箱锁定"}</span>
         <span>{connected ? "本机连接" : "离线"}</span>
+        <span>TapMakerWork {__APP_VERSION__}</span>
       </footer>
       <ToastStack items={toasts} />
-    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{sponsorOverlay}{roadmapOverlay}{newbieOverlay}{permissionOverlay}{updatePromptOverlay}{makerVersionGate}</>
+    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{sponsorOverlay}{roadmapOverlay}{newbieOverlay}{permissionOverlay}{updatePromptOverlay}{makerVersionGate}{accountsDialog}</>
   );
 }

@@ -1474,7 +1474,7 @@ const server = http.createServer(async (request, response) => {
       const target = getMakerAccount(body.accountId);
       if (!target) throw new Error("maker_account_not_found");
       const cwd = project?.root ?? target.home;
-      broadcast({ type: "log.append", channel: "build", lines: [`正在打开浏览器，登录账号「${target.label}」。`] });
+      broadcast({ type: "log.append", channel: "build", lines: [`正在用无痕窗口打开登录页，请登录账号「${target.label}」并创建 token。`] });
       try {
         await runMakerLogin(makerRuntime, cwd, target.home);
         clearMakerAppsCache();
