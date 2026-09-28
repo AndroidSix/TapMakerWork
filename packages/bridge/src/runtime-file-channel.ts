@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { listAccountHomes } from "./maker-accounts.js";
 
 export interface RuntimeFileStatus {
   kind?: string;
@@ -39,7 +40,7 @@ function previewRoot(): string {
 const SKIP_DIRS = new Set(["assets", "node_modules", "shadercache_runtime", "Cache", "GPUCache", "Code Cache"]);
 
 export function runtimeFileSearchRoots(): string[] {
-  const roots = [previewRoot()];
+  const roots = [previewRoot(), ...listAccountHomes().map((home) => path.join(home, "preview"))];
   try {
     const temp = os.tmpdir();
     for (const name of fs.readdirSync(temp)) {

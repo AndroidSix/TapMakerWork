@@ -30,8 +30,10 @@ import {
   listInstalledMakerRuntimes,
   readMakerProjectMeta,
   readMakerRuntimePreference,
+  runMakerApps,
   runMakerBuild,
   runMakerCommand,
+  runMakerLogin,
   runMakerPreviewStartWithRecovery,
   formatMakerPreviewError,
   isPreviewSupervisorUnreachable,
@@ -67,6 +69,22 @@ import {
   type PreviewPanelFile
 } from "./preview-panel.js";
 import { buildProjectWorkflowOverview, saveProjectWorkflow } from "./project-workflow.js";
+import {
+  accountSourceLabel,
+  addMakerAccount,
+  clearMakerAppsCache,
+  getMakerAccount,
+  makerAccountSnapshot,
+  projectAccountKey,
+  projectIdsFromAppsPayload,
+  removeMakerAccount,
+  renameMakerAccount,
+  resolveProjectAccount,
+  setGlobalMakerAccount,
+  setProjectMakerAccount,
+  type AccountResolution,
+  type MakerAccountMode
+} from "./maker-accounts.js";
 import { loadCommunityConfig } from "./community-config.js";
 import {
   imageCompressPublicSettings,
@@ -468,6 +486,43 @@ function validOrigin(request: IncomingMessage): boolean {
   return !origin || origin === "http://127.0.0.1:4173" || origin.startsWith("file://");
 }
 
+const previewAccountHomes = new Map<string, string>();
+
+async function accountFor(projectRoot: string): Promise<AccountResolution> {
+  return resolveProjectAccount(projectRoot, async (account) => {
+    if (!makerRuntime) return undefined;
+    try {
+      const payload = await runMakerApps(makerRuntime, projectRoot, account.home);
+      return projectIdsFromAppsPayload(payload);
+    } catch {
+      return undefined;
+    }
+  });
+}
+
+function accountNote(resolved: AccountResolution): string {
+  return `本次使用账号「${resolved.label}」（${accountSourceLabel(resolved.source)}）`;
+}
+
+function withAccountHint(message: string, label: string): string {
+  if (/pat|unauthorized|login|401|未登录|凭证/i.test(message)) {
+    return `${message}\n账号「${label}」可能需要重新登录。请到设置 → Maker 账号。`;
+  }
+  return message;
+}
+
+async function freshAccount(projectRoot: string, channel: "runtime" | "build" | "qrcode"): Promise<AccountResolution> {
+  const resolved = await accountFor(projectRoot);
+  broadcast({ type: "log.append", channel, lines: [accountNote(resolved)] });
+  return resolved;
+}
+
+async function previewHome(projectRoot: string): Promise<string> {
+  const remembered = previewAccountHomes.get(projectAccountKey(projectRoot));
+  if (remembered) return remembered;
+  return (await accountFor(projectRoot)).home;
+}
+
 const server = http.createServer(async (request, response) => {
   try {
     if (!validOrigin(request)) {
@@ -601,10 +656,11 @@ const server = http.createServer(async (request, response) => {
         if (!makerRuntime) throw new Error("maker_cli_not_found");
         broadcast({ type: "log.append", channel: "build", lines: ["Git 已推送，开始调用 Maker MCP 远端构建并刷新预览…"] });
         try {
-          const build = await runMakerBuild(makerRuntime, project.root);
+          const account = await freshAccount(project.root, "build");
+          const build = await runMakerBuild(makerRuntime, project.root, undefined, account.home);
           let previewRefresh: { ok: boolean; error?: string } = { ok: true };
           try {
-            await runMakerCommand(makerRuntime, project.root, "refresh", 45_000);
+            await runMakerCommand(makerRuntime, project.root, "refresh", 45_000, await previewHome(project.root));
           } catch (refreshError) {
             previewRefresh = { ok: false, error: refreshError instanceof Error ? refreshError.message : String(refreshError) };
           }
@@ -1051,7 +1107,7 @@ const server = http.createServer(async (request, response) => {
         makerRefresh = { requested: false, skipped: snapshotSource === "runtime" ? "runtime_live" : "no_lua_change" };
       } else if (shouldRefreshMaker) {
         try {
-          await runMakerCommand(makerRuntime!, project.root, "refresh", 45_000);
+          await runMakerCommand(makerRuntime!, project.root, "refresh", 45_000, await previewHome(project.root));
           makerRefresh = { requested: true };
           broadcast({ type: "log.append", channel: "runtime", lines: ["live-edit 已触发 Maker preview refresh"] });
         } catch (error) {
@@ -1380,6 +1436,56 @@ const server = http.createServer(async (request, response) => {
       const node = discoverNodeRuntime();
       broadcast({ type: "log.append", channel: "build", lines: [`已重新同步系统 Node.js：${node.version}（${node.executable}）`] });
       sendJson(response, 200, { ok: true, ...nodeVersionsPayload(), maker: makerVersionsPayload() });
+    } else if (request.method === "GET" && url.pathname === "/api/maker/accounts") {
+      const resolution = project ? await accountFor(project.root) : undefined;
+      sendJson(response, 200, makerAccountSnapshot(project?.root, resolution));
+    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts") {
+      const body = await readJson(request) as { label?: string };
+      const created = addMakerAccount(typeof body.label === "string" ? body.label : "");
+      sendJson(response, 200, { ok: true, account: { id: created.id, label: created.label }, ...makerAccountSnapshot(project?.root) });
+    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/global") {
+      const body = await readJson(request) as { accountId?: string };
+      if (!body.accountId) throw new Error("maker_account_not_found");
+      setGlobalMakerAccount(body.accountId);
+      const resolution = project ? await accountFor(project.root) : undefined;
+      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(project?.root, resolution) });
+    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/rename") {
+      const body = await readJson(request) as { accountId?: string; label?: string };
+      if (!body.accountId) throw new Error("maker_account_not_found");
+      renameMakerAccount(body.accountId, body.label || "");
+      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(project?.root) });
+    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/remove") {
+      const body = await readJson(request) as { accountId?: string };
+      if (!body.accountId) throw new Error("maker_account_not_found");
+      removeMakerAccount(body.accountId);
+      const resolution = project ? await accountFor(project.root) : undefined;
+      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(project?.root, resolution) });
+    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/project") {
+      if (!project) throw new Error("project_not_open");
+      const body = await readJson(request) as { mode?: MakerAccountMode; accountId?: string };
+      if (body.mode !== "auto" && body.mode !== "manual") throw new Error("maker_account_mode_invalid");
+      setProjectMakerAccount(project.root, body.mode, body.accountId);
+      const resolution = await accountFor(project.root);
+      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(project.root, resolution) });
+    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/login") {
+      if (!makerRuntime) throw new Error("maker_cli_not_found");
+      const body = await readJson(request) as { accountId?: string };
+      if (!body.accountId) throw new Error("maker_account_not_found");
+      const target = getMakerAccount(body.accountId);
+      if (!target) throw new Error("maker_account_not_found");
+      const cwd = project?.root ?? target.home;
+      broadcast({ type: "log.append", channel: "build", lines: [`正在用无痕窗口打开登录页，请登录账号「${target.label}」并创建 token。`] });
+      try {
+        await runMakerLogin(makerRuntime, cwd, target.home);
+        clearMakerAppsCache();
+        broadcast({ type: "log.append", channel: "build", lines: [`账号「${target.label}」登录完成。`] });
+        const resolution = project ? await accountFor(project.root) : undefined;
+        sendJson(response, 200, { ok: true, ...makerAccountSnapshot(project?.root, resolution) });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        broadcast({ type: "log.append", channel: "build", lines: [`账号「${target.label}」登录失败：${message}`] });
+        sendJson(response, 400, { error: message });
+      }
     } else if (request.method === "GET" && url.pathname === "/api/maker/project-meta") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, {
@@ -1392,7 +1498,8 @@ const server = http.createServer(async (request, response) => {
       if (!makerRuntime) throw new Error("maker_cli_not_found");
       broadcast({ type: "log.append", channel: "build", lines: ["Maker doctor…"] });
       try {
-        const result = await runMakerDoctor(makerRuntime, project.root);
+        const account = await freshAccount(project.root, "build");
+        const result = await runMakerDoctor(makerRuntime, project.root, undefined, account.home);
         broadcast({ type: "log.append", channel: "build", lines: [JSON.stringify(result).slice(0, 4000)] });
         sendJson(response, 200, result);
       } catch (error) {
@@ -1405,7 +1512,8 @@ const server = http.createServer(async (request, response) => {
       if (!makerRuntime) throw new Error("maker_cli_not_found");
       broadcast({ type: "log.append", channel: "build", lines: [`开始官方 Maker 构建（${makerRuntime.version}）…`, `项目：${project.root}`] });
       try {
-        const result = await runMakerBuild(makerRuntime, project.root);
+        const account = await freshAccount(project.root, "build");
+        const result = await runMakerBuild(makerRuntime, project.root, undefined, account.home);
         // 按约定：构建成功后不自动打开预览网址，结果写入构建终端
         broadcast({ type: "log.append", channel: "build", lines: ["构建完成。可到 TapTap/Maker 后台查看预览。", JSON.stringify(result).slice(0, 4000)] });
         sendJson(response, 200, result);
@@ -1423,7 +1531,8 @@ const server = http.createServer(async (request, response) => {
         || (meta.orientation === "portrait" || meta.orientation === "landscape" ? meta.orientation : undefined);
       broadcast({ type: "log.append", channel: "qrcode", lines: [`生成测试二维码…${orientation ? ` orientation=${orientation}` : ""}`] });
       try {
-        const result = await runMakerQrcode(makerRuntime, project.root, orientation);
+        const account = await freshAccount(project.root, "qrcode");
+        const result = await runMakerQrcode(makerRuntime, project.root, orientation, undefined, account.home);
         broadcast({ type: "log.append", channel: "qrcode", lines: [JSON.stringify(result).slice(0, 4000)] });
         sendJson(response, 200, { result, meta: readMakerProjectMeta(project.root) });
       } catch (error) {
@@ -1434,13 +1543,13 @@ const server = http.createServer(async (request, response) => {
     } else if (request.method === "GET" && url.pathname === "/api/maker/preview/status") {
       if (!project) throw new Error("project_not_open");
       if (!makerRuntime) throw new Error("maker_cli_not_found");
-      sendJson(response, 200, await runMakerReadOnly(makerRuntime, project.root, "status"));
+      sendJson(response, 200, await runMakerReadOnly(makerRuntime, project.root, "status", undefined, await previewHome(project.root)));
     } else if (request.method === "GET" && url.pathname === "/api/maker/preview/logs") {
       if (!project) throw new Error("project_not_open");
       if (!makerRuntime) throw new Error("maker_cli_not_found");
       let supervisorLogPath: string | undefined;
       try {
-        const status = await runMakerReadOnly(makerRuntime, project.root, "status") as { supervisor_log_path?: string };
+        const status = await runMakerReadOnly(makerRuntime, project.root, "status", undefined, await previewHome(project.root)) as { supervisor_log_path?: string };
         supervisorLogPath = status?.supervisor_log_path;
       } catch {
         // status may fail when preview never started
@@ -1451,16 +1560,24 @@ const server = http.createServer(async (request, response) => {
       if (!project) throw new Error("project_not_open");
       if (!makerRuntime) throw new Error("maker_cli_not_found");
       const command = url.pathname.split("/").at(-1) as "start" | "stop" | "refresh";
+      const previewKey = projectAccountKey(project.root);
+      const account = command === "start" ? await accountFor(project.root) : undefined;
+      if (account) {
+        previewAccountHomes.set(previewKey, account.home);
+        broadcast({ type: "log.append", channel: "runtime", lines: [accountNote(account)] });
+      }
+      const home = account?.home ?? await previewHome(project.root);
       broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command}…`] });
       try {
         const result = command === "start"
           ? await runMakerPreviewStartWithRecovery(makerRuntime, project.root, 60_000, (message) => {
             broadcast({ type: "log.append", channel: "runtime", lines: [message] });
-          })
-          : await runMakerCommand(makerRuntime, project.root, command);
+          }, home)
+          : await runMakerCommand(makerRuntime, project.root, command, undefined, home);
+        if (command === "stop") previewAccountHomes.delete(previewKey);
         const failed = result && typeof result === "object" && "ok" in result && (result as { ok?: boolean }).ok === false;
         if (failed) {
-          const message = formatMakerPreviewError(JSON.stringify(result));
+          const message = withAccountHint(formatMakerPreviewError(JSON.stringify(result)), account?.label ?? "当前账号");
           broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command} 失败：${message}`] });
           sendJson(response, 400, { error: message, maker: result });
           return;
@@ -1468,7 +1585,7 @@ const server = http.createServer(async (request, response) => {
         broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command} 完成。`] });
         sendJson(response, 200, result);
       } catch (error) {
-        const message = formatMakerPreviewError(error);
+        const message = withAccountHint(formatMakerPreviewError(error), account?.label ?? "当前账号");
         broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command} 失败：${message}`] });
         sendJson(response, 400, {
           error: message,
@@ -1495,7 +1612,7 @@ const server = http.createServer(async (request, response) => {
       let makerRefresh: { requested: boolean; error?: string } = { requested: false };
       if (body.maker && makerRuntime) {
         try {
-          await runMakerCommand(makerRuntime, project.root, "refresh", 45_000);
+          await runMakerCommand(makerRuntime, project.root, "refresh", 45_000, await previewHome(project.root));
           makerRefresh = { requested: true };
           broadcast({ type: "log.append", channel: "runtime", lines: ["预览面板请求 Maker refresh 完成"] });
         } catch (error) {

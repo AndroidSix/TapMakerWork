@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createPrivateBrowserOverride } from "./private-browser.js";
 
 const MAKER_PACKAGE = "@taptap/maker";
 const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
@@ -333,13 +333,18 @@ function runMakerArgs(
   runtime: MakerRuntime,
   project: string,
   args: string[],
-  timeoutMs: number
+  timeoutMs: number,
+  home?: string,
+  extraEnv?: NodeJS.ProcessEnv
 ): Promise<unknown> {
+  const env = { ...process.env, ...extraEnv };
+  if (home) env.TAPTAP_MAKER_HOME = home;
   return new Promise((resolve, reject) => {
     const child = spawn(runtime.node, [runtime.entry, ...args, "--target-dir", project, "--json"], {
       cwd: project,
       shell: false,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      env
     });
     let stdout = "";
     let stderr = "";
@@ -379,30 +384,47 @@ export function runMakerReadOnly(
   runtime: MakerRuntime,
   project: string,
   command: "status" | "logs",
-  timeoutMs = 20_000
+  timeoutMs = 20_000,
+  home?: string
 ): Promise<unknown> {
-  return runMakerCommand(runtime, project, command, timeoutMs);
+  return runMakerCommand(runtime, project, command, timeoutMs, home);
 }
 
-export function runMakerDoctor(runtime: MakerRuntime, project: string, timeoutMs = 45_000): Promise<unknown> {
-  return runMakerArgs(runtime, project, ["doctor"], timeoutMs);
+export function runMakerDoctor(runtime: MakerRuntime, project: string, timeoutMs = 45_000, home?: string): Promise<unknown> {
+  return runMakerArgs(runtime, project, ["doctor"], timeoutMs, home);
 }
 
-export function runMakerBuild(runtime: MakerRuntime, project: string, timeoutMs = 10 * 60_000): Promise<unknown> {
-  return runMakerArgs(runtime, project, ["build"], timeoutMs);
+export function runMakerBuild(runtime: MakerRuntime, project: string, timeoutMs = 10 * 60_000, home?: string): Promise<unknown> {
+  return runMakerArgs(runtime, project, ["build"], timeoutMs, home);
 }
 
 export function runMakerQrcode(
   runtime: MakerRuntime,
   project: string,
   orientation?: "portrait" | "landscape",
-  timeoutMs = 3 * 60_000
+  timeoutMs = 3 * 60_000,
+  home?: string
 ): Promise<unknown> {
   const args = ["qrcode"];
   if (orientation === "portrait" || orientation === "landscape") {
     args.push("--confirmed-screen-orientation", orientation);
   }
-  return runMakerArgs(runtime, project, args, timeoutMs);
+  return runMakerArgs(runtime, project, args, timeoutMs, home);
+}
+
+export function runMakerApps(runtime: MakerRuntime, project: string, home: string, timeoutMs = 20_000): Promise<unknown> {
+  return runMakerArgs(runtime, project, ["apps"], timeoutMs, home);
+}
+
+export async function runMakerLogin(runtime: MakerRuntime, project: string, home: string, timeoutMs = 10 * 60_000): Promise<unknown> {
+  const override = createPrivateBrowserOverride();
+  try {
+    return await runMakerArgs(runtime, project, ["login"], timeoutMs, home, {
+      PATH: `${override.pathDir}${path.delimiter}${process.env.PATH ?? ""}`
+    });
+  } finally {
+    override.cleanup();
+  }
 }
 
 export function readMakerProjectMeta(projectRoot: string): {
@@ -437,9 +459,10 @@ export function runMakerCommand(
   runtime: MakerRuntime,
   project: string,
   command: "start" | "stop" | "refresh" | "status" | "logs",
-  timeoutMs = 60_000
+  timeoutMs = 60_000,
+  home?: string
 ): Promise<unknown> {
-  return runMakerArgs(runtime, project, ["preview", command], timeoutMs);
+  return runMakerArgs(runtime, project, ["preview", command], timeoutMs, home);
 }
 
 /** Extract Maker CLI JSON error payloads embedded in thrown Error.message / stdout. */
@@ -628,7 +651,8 @@ export async function runMakerPreviewStartWithRecovery(
   runtime: MakerRuntime,
   project: string,
   timeoutMs = 60_000,
-  onRecover?: (message: string) => void
+  onRecover?: (message: string) => void,
+  home?: string
 ): Promise<unknown> {
   const looksFailed = (value: unknown) => {
     if (isPreviewSupervisorUnreachable(value)) return true;
@@ -640,7 +664,7 @@ export async function runMakerPreviewStartWithRecovery(
 
   const attemptStart = async () => {
     try {
-      const result = await runMakerCommand(runtime, project, "start", timeoutMs);
+      const result = await runMakerCommand(runtime, project, "start", timeoutMs, home);
       if (!looksFailed(result)) return { ok: true as const, result };
       return { ok: false as const, result };
     } catch (error) {
@@ -654,7 +678,7 @@ export async function runMakerPreviewStartWithRecovery(
 
   onRecover?.("检测到预览 Supervisor 不可达（常见于 Windows 残留会话），正在 stop 后重试 start…");
   try {
-    await runMakerCommand(runtime, project, "stop", Math.min(timeoutMs, 30_000));
+    await runMakerCommand(runtime, project, "stop", Math.min(timeoutMs, 30_000), home);
   } catch {
     // stop may also fail with the same ownership message; continue recovery
   }
@@ -663,7 +687,7 @@ export async function runMakerPreviewStartWithRecovery(
   if (second.ok) return second.result;
 
   onRecover?.("stop 后仍不可达，正在安全退役已确认死亡的预览会话记录（不杀进程）…");
-  const retired = retireStaleMakerPreviewSession(project);
+  const retired = retireStaleMakerPreviewSession(project, home ? { makerHome: home } : undefined);
   if (retired.retired) {
     onRecover?.(`已退役残留会话：${retired.sessionPath}`);
   } else {

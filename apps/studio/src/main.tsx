@@ -34,6 +34,11 @@ declare global {
       onOpenProject?: (listener: (projectPath: string) => void) => () => void;
       onCloseProject?: (listener: () => void) => () => void;
       onHistoryAction?: (listener: (action: "undo" | "redo") => void) => () => void;
+      accounts?: {
+        report: (accounts: Array<{ id: string; label: string; global: boolean }>) => void;
+        onSwitchGlobal: (listener: (accountId: string) => void) => () => void;
+        onManage: (listener: () => void) => () => void;
+      };
       permissions?: {
         get: () => Promise<DesktopPermissionState>;
         request: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;

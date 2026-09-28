@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { listAccountHomes } from "./maker-accounts.js";
 import { resolveInsideProject } from "./project.js";
 import { detectUiBackend } from "./ui-backend.js";
 
@@ -479,7 +480,11 @@ export async function commitGitProject(projectRoot: string, message: string, pus
 export function readMakerPreviewLogs(projectRoot: string, supervisorLogPath?: string, maxLines = 200): { lines: string[]; source?: string } {
   const candidates: string[] = [];
   if (supervisorLogPath) candidates.push(supervisorLogPath);
-  const previewRoot = path.join(process.env.HOME || "", ".taptap-maker", "preview");
+  const previewRoots = [
+    path.join(process.env.HOME || "", ".taptap-maker", "preview"),
+    ...listAccountHomes().map((home) => path.join(home, "preview"))
+  ];
+  for (const previewRoot of [...new Set(previewRoots)]) {
   if (fs.existsSync(previewRoot)) {
     try {
       const sessions = fs.readdirSync(previewRoot, { withFileTypes: true })
@@ -506,6 +511,7 @@ export function readMakerPreviewLogs(projectRoot: string, supervisorLogPath?: st
     } catch {
       // ignore preview scan errors
     }
+  }
   }
   for (const candidate of candidates) {
     if (!candidate || !fs.existsSync(candidate)) continue;

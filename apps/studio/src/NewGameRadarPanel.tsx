@@ -101,6 +101,28 @@ type VizSub = "distribution" | "supply";
 type BoardFilter = "all" | "heat" | "rising";
 type ChartStyle = "hbar" | "vbar" | "donut";
 type ChannelId = "maker" | "store" | "steam";
+type ListSort = "hits-desc" | "hits-asc" | "score-desc" | "score-asc";
+
+const LIST_SORT_OPTIONS: Array<{ id: ListSort; label: string }> = [
+  { id: "hits-desc", label: "热度↓" },
+  { id: "hits-asc", label: "热度↑" },
+  { id: "score-desc", label: "评分↓" },
+  { id: "score-asc", label: "评分↑" }
+];
+
+function sortRadarEntries(entries: RadarGameEntry[], sort: ListSort): RadarGameEntry[] {
+  const mul = sort.endsWith("-asc") ? 1 : -1;
+  const byScore = sort.startsWith("score");
+  return [...entries].sort((a, b) => {
+    if (byScore) {
+      if (a.score == null && b.score == null) return a.title.localeCompare(b.title, "zh");
+      if (a.score == null) return 1;
+      if (b.score == null) return -1;
+      return (a.score - b.score) * mul || b.hits - a.hits || a.title.localeCompare(b.title, "zh");
+    }
+    return (a.hits - b.hits) * mul || (b.score ?? 0) - (a.score ?? 0) || a.title.localeCompare(b.title, "zh");
+  });
+}
 
 interface RadarDailyTrackStat {
   track: string;
@@ -398,6 +420,7 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
   const [analysisSub, setAnalysisSub] = useState<AnalysisSub>("tracks");
   const [vizSub, setVizSub] = useState<VizSub>("distribution");
   const [boardFilter, setBoardFilter] = useState<BoardFilter>("heat");
+  const [listSort, setListSort] = useState<ListSort>("hits-desc");
   const [chartStyle, setChartStyle] = useState<ChartStyle>("hbar");
   const [query, setQuery] = useState("");
   const [hoverTip, setHoverTip] = useState<{ text: string; x: number; y: number } | null>(null);
@@ -487,13 +510,13 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
   const filteredEntries = useMemo(() => {
     if (!channel) return [];
     const source = activeBoard?.entries || channel.entries;
-    return source.filter((entry) => matchesQuery(entry, query));
-  }, [channel, activeBoard, query]);
+    return sortRadarEntries(source.filter((entry) => matchesQuery(entry, query)), listSort);
+  }, [channel, activeBoard, query, listSort]);
 
   const dailyFiltered = useMemo(() => {
     if (!dailyReport) return [];
-    return dailyReport.entries.filter((entry) => matchesQuery(entry, query));
-  }, [dailyReport, query]);
+    return sortRadarEntries(dailyReport.entries.filter((entry) => matchesQuery(entry, query)), listSort);
+  }, [dailyReport, query, listSort]);
 
   const isDaily = mainTab === "daily";
 
@@ -787,6 +810,18 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
                   </table>
                 </div>
 
+                <nav className="radar-subtabs" aria-label="列表排序">
+                  {LIST_SORT_OPTIONS.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={listSort === item.id ? "active" : ""}
+                      onClick={() => setListSort(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </nav>
                 <div className="radar-table-wrap">
                   <table className="radar-table">
                     <thead>
@@ -860,6 +895,18 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
               <button type="button" className={boardFilter === "heat" ? "active" : ""} onClick={() => setBoardFilter("heat")}>{heatLabel}</button>
               <button type="button" className={boardFilter === "rising" ? "active" : ""} onClick={() => setBoardFilter("rising")}>{risingLabel}</button>
               <button type="button" className={boardFilter === "all" ? "active" : ""} onClick={() => setBoardFilter("all")}>全部样本</button>
+            </nav>
+            <nav className="radar-subtabs" aria-label="列表排序">
+              {LIST_SORT_OPTIONS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={listSort === item.id ? "active" : ""}
+                  onClick={() => setListSort(item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
             </nav>
             {activeBoard?.description && <p className="radar-footnote">{activeBoard.description}</p>}
             {boardFilter === "all" && !isSteam && (

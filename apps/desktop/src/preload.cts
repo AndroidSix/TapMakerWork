@@ -24,6 +24,21 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
     ipcRenderer.on("tapmakerwork:history-action", handler);
     return () => ipcRenderer.removeListener("tapmakerwork:history-action", handler);
   },
+  accounts: {
+    report: (accounts: Array<{ id: string; label: string; global: boolean }>) => {
+      ipcRenderer.send("tapmakerwork:accounts-report", accounts);
+    },
+    onSwitchGlobal: (listener: (accountId: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, accountId: string) => listener(accountId);
+      ipcRenderer.on("tapmakerwork:switch-global-account", handler);
+      return () => ipcRenderer.removeListener("tapmakerwork:switch-global-account", handler);
+    },
+    onManage: (listener: () => void) => {
+      const handler = () => listener();
+      ipcRenderer.on("tapmakerwork:manage-accounts", handler);
+      return () => ipcRenderer.removeListener("tapmakerwork:manage-accounts", handler);
+    }
+  },
   permissions: {
     get: () => ipcRenderer.invoke("tapmakerwork:permissions-get"),
     request: (permission: "screen" | "accessibility") => ipcRenderer.invoke("tapmakerwork:permissions-request", permission),
