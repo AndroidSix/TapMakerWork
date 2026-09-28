@@ -116,6 +116,13 @@ export type ProjectWorkflowAction =
   | "generate-qrcode"
   | "build";
 
+/** TapMakerWork 当前只保证这个 Maker MCP 版本可用。 */
+export const REQUIRED_MAKER_MCP_VERSION = "0.0.34";
+
+export function isRequiredMakerMcpVersion(version: string | undefined): version is typeof REQUIRED_MAKER_MCP_VERSION {
+  return version === REQUIRED_MAKER_MCP_VERSION;
+}
+
 export interface ProjectWorkflowCheck {
   id: string;
   label: string;
