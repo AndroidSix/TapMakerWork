@@ -101,6 +101,7 @@ import {
   isRequiredMakerMcpVersion,
   type WorkspaceMode
 } from "@tapmakerwork/protocol";
+import { MakerAccountsCard } from "./MakerAccountsCard";
 import { PreviewDock } from "./PreviewDock";
 import { ProjectCockpit } from "./ProjectCockpit";
 import { RuntimeMirror } from "./RuntimeMirror";
@@ -4579,6 +4580,7 @@ export function App() {
                 <button onClick={() => openExternalUrl(OFFICIAL_SITE_URL)}><ExternalLink size={13} />官网</button>
               </div>
             </section>
+            <MakerAccountsCard open={settingsOpen} {...(project?.root ? { projectRoot: project.root } : {})} notify={toast} />
             <section className="maker-version-settings" aria-labelledby="maker-version-heading">
               <div className="maker-version-heading">
                 <div>

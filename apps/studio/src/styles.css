@@ -766,6 +766,22 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .ide-package-meta dt { color: var(--muted); font-size: 10px; }
 .ide-package-meta dd { margin: 0; overflow: hidden; color: #dce7f7; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .ide-package-actions { align-items: center; }
+.maker-accounts-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: #111722;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.maker-account-row { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 8px; color: var(--text); font-size: 12px; }
+.maker-account-row select, .maker-accounts-card button { color: var(--text); background: var(--control); border: 1px solid var(--border); }
+.maker-accounts-card button.primary { background: #28598d; border-color: #3976b3; }
+.maker-account-resolved { margin: 0; color: var(--muted); font-size: 12px; }
+.maker-account-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.maker-account-list li { display: grid; grid-template-columns: minmax(80px, 1fr) auto auto; align-items: center; gap: 8px; }
+.maker-account-list small { color: var(--muted); }
+.maker-account-list span { display: flex; gap: 6px; }
 .maker-version-settings {
   display: grid;
   gap: 10px;
