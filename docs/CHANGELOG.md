@@ -21,7 +21,7 @@
 ### 打包与其它
 - Apple Silicon 一键打包缺 Rosetta 时自动安装 Rosetta，再继续打 Windows NSIS。
 - 修复命令栏「工具 / 更多」下拉被 overflow 裁切；窄屏收起的入口可通过右侧「更多」展开。
-- 版本号同步至 **0.1.4**。
+- 版本号同步至 **0.1.4**（GitHub Release 标签为 **`v0.1.4`**：[发行页](https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.4)）。
 
 <a id="release-0.1.3"></a>
 
