@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -47,7 +47,8 @@ function buildPackage(item) {
   const artifact = path.join(outputDirectory, `${productName}-${version}-mac-${item.arch}.pkg`);
 
   fs.mkdirSync(root);
-  run("/bin/cp", ["-cR", item.app, path.join(root, `${productName}.app`)]);
+  // 不用 cp -c（APFS clone）：对 Electron.app 偶发 Permission denied，导致 component.plist 为空。
+  run("/bin/cp", ["-R", item.app, path.join(root, `${productName}.app`)]);
 
   fs.writeFileSync(requirements, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -66,8 +67,20 @@ function buildPackage(item) {
   fs.writeFileSync(distribution, distributionXml);
 
   run("pkgbuild", ["--analyze", "--root", root, componentPlist]);
-  run("/usr/libexec/PlistBuddy", ["-c", "Set :0:BundleIsRelocatable false", componentPlist]);
-  run("/usr/libexec/PlistBuddy", ["-c", "Delete :0:ChildBundles", componentPlist]);
+  if (!fs.existsSync(componentPlist) || fs.statSync(componentPlist).size < 32) {
+    throw new Error(`pkgbuild --analyze 未写出有效 component.plist：${componentPlist}`);
+  }
+  // 新版 pkgbuild 不一定写出 BundleIsRelocatable，需 Add 而非 Set。
+  const relocatable = spawnSync("/usr/libexec/PlistBuddy", ["-c", "Print :0:BundleIsRelocatable", componentPlist], { encoding: "utf8" });
+  if (relocatable.status === 0) {
+    run("/usr/libexec/PlistBuddy", ["-c", "Set :0:BundleIsRelocatable false", componentPlist]);
+  } else {
+    run("/usr/libexec/PlistBuddy", ["-c", "Add :0:BundleIsRelocatable bool false", componentPlist]);
+  }
+  const childBundles = spawnSync("/usr/libexec/PlistBuddy", ["-c", "Print :0:ChildBundles", componentPlist], { encoding: "utf8" });
+  if (childBundles.status === 0) {
+    run("/usr/libexec/PlistBuddy", ["-c", "Delete :0:ChildBundles", componentPlist]);
+  }
   run("pkgbuild", [
     "--root", root,
     "--identifier", bundleId,

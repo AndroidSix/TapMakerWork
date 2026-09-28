@@ -126,6 +126,26 @@ describe("Maker runtime selection", () => {
     expect(formatMakerPreviewError(raw)).toContain("session.json");
   });
 
+  it("detects missing Maker local preview runtime", async () => {
+    const { isPreviewRuntimeMissing, formatMakerPreviewError } = await import("./maker.js");
+    const payload = {
+      ok: false,
+      install_state: "missing",
+      error: "Runtime is missing. With host approval, run taptap-maker preview install --target-dir <PROJECT_ABSOLUTE_PATH>, then retry start."
+    };
+    expect(isPreviewRuntimeMissing(payload)).toBe(true);
+    expect(isPreviewRuntimeMissing(payload.error)).toBe(true);
+    expect(formatMakerPreviewError(payload)).toContain("本地预览 Runtime 尚未安装");
+  });
+
+  it("detects Maker console version conflicts", async () => {
+    const { isConsoleVersionConflict, formatMakerPreviewError } = await import("./maker.js");
+    const message = "Another Maker version is serving the console. Stop that console before opening this version.";
+    expect(isConsoleVersionConflict(message)).toBe(true);
+    expect(isConsoleVersionConflict({ error: message })).toBe(true);
+    expect(formatMakerPreviewError(message)).toContain("自动执行 console stop");
+  });
+
   it("retires dead Maker preview session records without killing processes", async () => {
     const {
       resolveMakerPreviewDirectory,

@@ -112,6 +112,33 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
     unmount: () => ipcRenderer.invoke("tapmakerwork:preview-unmount") as Promise<{ ok: boolean }>,
     capture: () => ipcRenderer.invoke("tapmakerwork:preview-capture") as Promise<{ ok: boolean; dataUrl?: string; error?: string }>
   },
+  makerConsole: {
+    mount: (opts: { accountId?: string; site?: "maker" | "developer"; x: number; y: number; width: number; height: number }) =>
+      ipcRenderer.invoke("tapmakerwork:maker-console-mount", opts) as Promise<{ ok: boolean; mode?: string; accountId?: string; site?: string; partition?: string; error?: string }>,
+    unmount: () => ipcRenderer.invoke("tapmakerwork:maker-console-unmount") as Promise<{ ok: boolean; mode?: string; site?: string }>,
+    reload: () => ipcRenderer.invoke("tapmakerwork:maker-console-reload") as Promise<{ ok: boolean; error?: string }>,
+    setSite: (site: "maker" | "developer") =>
+      ipcRenderer.invoke("tapmakerwork:maker-console-set-site", site) as Promise<{ ok: boolean; site?: string; mode?: string; error?: string }>,
+    setAccount: (accountId: string, site?: "maker" | "developer") =>
+      ipcRenderer.invoke("tapmakerwork:maker-console-set-account", accountId, site) as Promise<{ ok: boolean; accountId?: string; mode?: string; site?: string; partition?: string; error?: string }>,
+    popOut: (opts?: { accountId?: string; site?: "maker" | "developer" }) =>
+      ipcRenderer.invoke("tapmakerwork:maker-console-pop-out", opts) as Promise<{ ok: boolean; mode?: string; site?: string; error?: string }>,
+    popIn: (opts: { accountId?: string; site?: "maker" | "developer"; x: number; y: number; width: number; height: number }) =>
+      ipcRenderer.invoke("tapmakerwork:maker-console-pop-in", opts) as Promise<{ ok: boolean; mode?: string; site?: string; error?: string }>,
+    webLogin: (accountId?: string) =>
+      ipcRenderer.invoke("tapmakerwork:maker-console-web-login", accountId) as Promise<{ loggedIn: boolean }>,
+    openExternal: (site?: "maker" | "developer") => ipcRenderer.invoke("tapmakerwork:maker-console-open-external", site) as Promise<{ ok: boolean; site?: string }>,
+    onMode: (listener: (state: { mode: string; accountId: string; site?: string; partition?: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: { mode: string; accountId: string; site?: string; partition?: string }) => listener(state);
+      ipcRenderer.on("tapmakerwork:maker-console-mode", handler);
+      return () => ipcRenderer.removeListener("tapmakerwork:maker-console-mode", handler);
+    },
+    onPopoutClosed: (listener: () => void) => {
+      const handler = () => listener();
+      ipcRenderer.on("tapmakerwork:maker-console-popout-closed", handler);
+      return () => ipcRenderer.removeListener("tapmakerwork:maker-console-popout-closed", handler);
+    }
+  },
   runtime: {
     capture: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) =>
       ipcRenderer.invoke("tapmakerwork:runtime-capture", opts) as Promise<{

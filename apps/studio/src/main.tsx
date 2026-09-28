@@ -39,6 +39,19 @@ declare global {
         onSwitchGlobal: (listener: (accountId: string) => void) => () => void;
         onManage: (listener: () => void) => () => void;
       };
+      makerConsole?: {
+        mount: (opts: { accountId?: string; site?: "maker" | "developer"; x: number; y: number; width: number; height: number }) => Promise<{ ok: boolean; mode?: string; accountId?: string; site?: string; partition?: string; error?: string }>;
+        unmount: () => Promise<{ ok: boolean; mode?: string; site?: string }>;
+        reload: () => Promise<{ ok: boolean; error?: string }>;
+        setSite?: (site: "maker" | "developer") => Promise<{ ok: boolean; site?: string; mode?: string; error?: string }>;
+        setAccount: (accountId: string, site?: "maker" | "developer") => Promise<{ ok: boolean; accountId?: string; mode?: string; site?: string; partition?: string; error?: string }>;
+        popOut: (opts?: { accountId?: string; site?: "maker" | "developer" }) => Promise<{ ok: boolean; mode?: string; site?: string; error?: string }>;
+        popIn: (opts: { accountId?: string; site?: "maker" | "developer"; x: number; y: number; width: number; height: number }) => Promise<{ ok: boolean; mode?: string; site?: string; error?: string }>;
+        webLogin: (accountId?: string) => Promise<{ loggedIn: boolean }>;
+        openExternal: (site?: "maker" | "developer") => Promise<{ ok: boolean; site?: string }>;
+        onMode?: (listener: (state: { mode: string; accountId: string; site?: string; partition?: string }) => void) => () => void;
+        onPopoutClosed?: (listener: () => void) => () => void;
+      };
       permissions?: {
         get: () => Promise<DesktopPermissionState>;
         request: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;

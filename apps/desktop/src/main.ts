@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, shell, systemPreferences, WebContentsView, type NativeImage } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, session, shell, systemPreferences, WebContentsView, type NativeImage } from "electron";
 import electronUpdater, { type UpdateInfo } from "electron-updater";
 import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -34,8 +34,28 @@ const EULA_VERSION = "2026-09-21";
 const hardwareAccelerationAtLaunch = readDesktopSettings().hardwareAcceleration === true;
 if (!hardwareAccelerationAtLaunch) app.disableHardwareAcceleration();
 
+const MAKER_CONSOLE_URL = "https://maker.taptap.cn/";
+const DEVELOPER_CONSOLE_URL = "https://developer.taptap.cn/";
+
+type TapConsoleSite = "maker" | "developer";
+
+function consoleUrlForSite(site: TapConsoleSite): string {
+  return site === "developer" ? DEVELOPER_CONSOLE_URL : MAKER_CONSOLE_URL;
+}
+
+function normalizeConsoleSite(value: unknown): TapConsoleSite {
+  return value === "developer" ? "developer" : "maker";
+}
+
 let mainWindow: BrowserWindow | null = null;
 let previewView: WebContentsView | null = null;
+let makerConsoleView: WebContentsView | null = null;
+let makerConsoleWindow: BrowserWindow | null = null;
+let makerConsoleAccountId = "default";
+/** 当前 WebContentsView 实际绑定的 session partition；与 accountId 脱钩，避免误复用旧视图。 */
+let makerConsoleViewPartition = "";
+let makerConsoleSite: TapConsoleSite = "maker";
+let makerConsoleMode: "hidden" | "embedded" | "popout" = "hidden";
 let bridgeProcess: ChildProcess | null = null;
 const execFileAsync = promisify(execFile);
 let windowsRuntime: WindowsRuntime | undefined;
@@ -619,6 +639,10 @@ function createWindow(): void {
   window.on("closed", () => {
     mainWindow = null;
     previewView = null;
+    if (makerConsoleMode !== "popout") {
+      destroyMakerConsoleView();
+      makerConsoleMode = "hidden";
+    }
   });
 }
 
@@ -809,6 +833,306 @@ ipcMain.handle("tapmakerwork:preview-reload", async () => {
 ipcMain.handle("tapmakerwork:preview-unmount", async () => {
   if (previewView) previewView.setVisible(false);
   return { ok: true };
+});
+
+function makerConsolePartition(accountId: string): string {
+  const safe = accountId.replace(/[^a-zA-Z0-9_-]/g, "_") || "default";
+  // 制造后台与开发者后台共用分区，同一账号 Cookie 互通；不同账号必须不同 partition。
+  // 使用 console-v2 前缀，避免早期误复用视图时污染过的旧分区。
+  return `persist:tapmakerwork-console-v2-${safe}`;
+}
+
+function detachMakerConsoleView(): void {
+  if (!makerConsoleView || makerConsoleView.webContents.isDestroyed()) return;
+  try {
+    mainWindow?.contentView.removeChildView(makerConsoleView);
+  } catch {
+    // already detached
+  }
+  if (makerConsoleWindow && !makerConsoleWindow.isDestroyed()) {
+    try {
+      makerConsoleWindow.contentView.removeChildView(makerConsoleView);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function destroyMakerConsoleView(): void {
+  detachMakerConsoleView();
+  if (makerConsoleView && !makerConsoleView.webContents.isDestroyed()) {
+    try {
+      makerConsoleView.webContents.close();
+    } catch {
+      // ignore
+    }
+  }
+  makerConsoleView = null;
+  makerConsoleViewPartition = "";
+}
+
+async function navigateConsole(view: WebContentsView, site: TapConsoleSite): Promise<void> {
+  const target = consoleUrlForSite(site);
+  makerConsoleSite = site;
+  try {
+    const current = view.webContents.getURL();
+    if (current.startsWith(target.replace(/\/$/, ""))) return;
+  } catch {
+    // ignore
+  }
+  await view.webContents.loadURL(target);
+  if (makerConsoleWindow && !makerConsoleWindow.isDestroyed()) {
+    makerConsoleWindow.setTitle(site === "developer" ? "开发者后台 · TapMakerWork" : "制造后台 · TapMakerWork");
+  }
+}
+
+async function ensureMakerConsoleView(accountId: string, site: TapConsoleSite = makerConsoleSite, force = false): Promise<{ view: WebContentsView } | { error: string }> {
+  const id = accountId || "default";
+  const partition = makerConsolePartition(id);
+  const reusable = !force
+    && makerConsoleView
+    && !makerConsoleView.webContents.isDestroyed()
+    && makerConsoleViewPartition === partition;
+  if (reusable) {
+    makerConsoleAccountId = id;
+    try {
+      await navigateConsole(makerConsoleView!, site);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+    return { view: makerConsoleView! };
+  }
+
+  destroyMakerConsoleView();
+  const consoleSession = session.fromPartition(partition, { cache: true });
+  makerConsoleView = new WebContentsView({
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      session: consoleSession
+    }
+  });
+  makerConsoleViewPartition = partition;
+  makerConsoleAccountId = id;
+  makerConsoleSite = site;
+  makerConsoleView.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url);
+    return { action: "deny" };
+  });
+  try {
+    await makerConsoleView.webContents.loadURL(consoleUrlForSite(site));
+  } catch (error) {
+    destroyMakerConsoleView();
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+  return { view: makerConsoleView };
+}
+
+async function readMakerWebLogin(accountId: string): Promise<{ loggedIn: boolean }> {
+  try {
+    const ses = session.fromPartition(makerConsolePartition(accountId || "default"), { cache: true });
+    const byMaker = await ses.cookies.get({ url: MAKER_CONSOLE_URL });
+    const byDeveloper = await ses.cookies.get({ url: DEVELOPER_CONSOLE_URL });
+    const byDomain = await ses.cookies.get({ domain: ".taptap.cn" });
+    const cookies = [...byMaker, ...byDeveloper, ...byDomain];
+    const loggedIn = cookies.some((cookie) => cookie.value && /session|token|auth|login|user|ssid|acw|jwt/i.test(cookie.name));
+    return { loggedIn };
+  } catch {
+    return { loggedIn: false };
+  }
+}
+
+function notifyMakerConsoleMode(): void {
+  mainWindow?.webContents.send("tapmakerwork:maker-console-mode", {
+    mode: makerConsoleMode,
+    accountId: makerConsoleAccountId,
+    site: makerConsoleSite,
+    partition: makerConsoleViewPartition
+  });
+}
+
+ipcMain.handle("tapmakerwork:maker-console-mount", async (_event, opts: {
+  accountId?: string;
+  site?: TapConsoleSite;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}) => {
+  const site = normalizeConsoleSite(opts?.site ?? makerConsoleSite);
+  const accountId = opts?.accountId || makerConsoleAccountId || "default";
+  if (makerConsoleMode === "popout" && makerConsoleWindow && !makerConsoleWindow.isDestroyed()) {
+    const ensured = await ensureMakerConsoleView(accountId, site);
+    if ("error" in ensured) return { ok: false, error: ensured.error };
+    return { ok: true, mode: "popout" as const, accountId: makerConsoleAccountId, site: makerConsoleSite, partition: makerConsoleViewPartition };
+  }
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getAllWindows()[0];
+  if (!window) return { ok: false, error: "window_unavailable" };
+  const ensured = await ensureMakerConsoleView(accountId, site);
+  if ("error" in ensured) return { ok: false, error: ensured.error };
+  const { view } = ensured;
+  detachMakerConsoleView();
+  window.contentView.addChildView(view);
+  const width = Math.max(320, Math.round(opts.width));
+  const height = Math.max(240, Math.round(opts.height));
+  view.setBounds({ x: Math.round(opts.x), y: Math.round(opts.y), width, height });
+  view.setVisible(true);
+  makerConsoleMode = "embedded";
+  notifyMakerConsoleMode();
+  return { ok: true, mode: "embedded" as const, accountId: makerConsoleAccountId, site: makerConsoleSite, partition: makerConsoleViewPartition };
+});
+
+ipcMain.handle("tapmakerwork:maker-console-unmount", async () => {
+  if (makerConsoleMode === "popout") return { ok: true, mode: makerConsoleMode, site: makerConsoleSite };
+  // 关闭面板时销毁视图，避免下次误复用旧 partition
+  destroyMakerConsoleView();
+  makerConsoleMode = "hidden";
+  notifyMakerConsoleMode();
+  return { ok: true, mode: "hidden" as const, site: makerConsoleSite };
+});
+
+ipcMain.handle("tapmakerwork:maker-console-reload", async () => {
+  if (!makerConsoleView || makerConsoleView.webContents.isDestroyed()) return { ok: false, error: "console_not_open" };
+  makerConsoleView.webContents.reload();
+  return { ok: true };
+});
+
+ipcMain.handle("tapmakerwork:maker-console-set-site", async (_event, siteRaw: unknown) => {
+  const site = normalizeConsoleSite(siteRaw);
+  if (!makerConsoleView || makerConsoleView.webContents.isDestroyed()) {
+    makerConsoleSite = site;
+    return { ok: true, site, mode: makerConsoleMode };
+  }
+  try {
+    await navigateConsole(makerConsoleView, site);
+    notifyMakerConsoleMode();
+    return { ok: true, site: makerConsoleSite, mode: makerConsoleMode };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle("tapmakerwork:maker-console-set-account", async (_event, accountId: string, siteRaw?: unknown) => {
+  const id = typeof accountId === "string" && accountId ? accountId : "default";
+  const site = siteRaw === undefined ? makerConsoleSite : normalizeConsoleSite(siteRaw);
+  const targetPartition = makerConsolePartition(id);
+
+  // 隐藏态也要丢掉错误 partition 的残留视图，否则下次 mount 会复用旧 Cookie
+  if (makerConsoleMode === "hidden") {
+    if (makerConsoleView && makerConsoleViewPartition !== targetPartition) {
+      destroyMakerConsoleView();
+    }
+    makerConsoleAccountId = id;
+    makerConsoleSite = site;
+    return { ok: true, accountId: id, mode: makerConsoleMode, site, partition: makerConsoleViewPartition || targetPartition };
+  }
+
+  const previousMode = makerConsoleMode;
+  const ensured = await ensureMakerConsoleView(id, site, true);
+  if ("error" in ensured) return { ok: false, error: ensured.error };
+  if (previousMode === "popout" && makerConsoleWindow && !makerConsoleWindow.isDestroyed()) {
+    detachMakerConsoleView();
+    makerConsoleWindow.contentView.addChildView(ensured.view);
+    const bounds = makerConsoleWindow.getContentBounds();
+    ensured.view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
+    ensured.view.setVisible(true);
+    makerConsoleMode = "popout";
+  } else if (mainWindow && !mainWindow.isDestroyed()) {
+    detachMakerConsoleView();
+    mainWindow.contentView.addChildView(ensured.view);
+    ensured.view.setVisible(true);
+    makerConsoleMode = "embedded";
+  }
+  notifyMakerConsoleMode();
+  return { ok: true, accountId: makerConsoleAccountId, mode: makerConsoleMode, site: makerConsoleSite, partition: makerConsoleViewPartition };
+});
+
+ipcMain.handle("tapmakerwork:maker-console-pop-out", async (_event, opts?: { accountId?: string; site?: TapConsoleSite }) => {
+  const site = normalizeConsoleSite(opts?.site ?? makerConsoleSite);
+  const ensured = await ensureMakerConsoleView(opts?.accountId || makerConsoleAccountId || "default", site);
+  if ("error" in ensured) return { ok: false, error: ensured.error };
+  const { view } = ensured;
+  if (makerConsoleWindow && !makerConsoleWindow.isDestroyed()) {
+    makerConsoleWindow.focus();
+    makerConsoleMode = "popout";
+    notifyMakerConsoleMode();
+    return { ok: true, mode: "popout" as const, site: makerConsoleSite };
+  }
+  detachMakerConsoleView();
+  const pop = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    minWidth: 720,
+    minHeight: 480,
+    backgroundColor: "#0d1017",
+    title: site === "developer" ? "开发者后台 · TapMakerWork" : "制造后台 · TapMakerWork",
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  makerConsoleWindow = pop;
+  pop.contentView.addChildView(view);
+  const bounds = pop.getContentBounds();
+  view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
+  view.setVisible(true);
+  pop.on("resize", () => {
+    if (!makerConsoleView || makerConsoleView.webContents.isDestroyed() || !makerConsoleWindow) return;
+    const next = makerConsoleWindow.getContentBounds();
+    makerConsoleView.setBounds({ x: 0, y: 0, width: next.width, height: next.height });
+  });
+  pop.on("closed", () => {
+    makerConsoleWindow = null;
+    if (makerConsoleMode === "popout") {
+      makerConsoleMode = "hidden";
+      notifyMakerConsoleMode();
+      mainWindow?.webContents.send("tapmakerwork:maker-console-popout-closed");
+    }
+  });
+  makerConsoleMode = "popout";
+  notifyMakerConsoleMode();
+  return { ok: true, mode: "popout" as const, site: makerConsoleSite };
+});
+
+ipcMain.handle("tapmakerwork:maker-console-pop-in", async (_event, opts: {
+  accountId?: string;
+  site?: TapConsoleSite;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}) => {
+  const site = normalizeConsoleSite(opts?.site ?? makerConsoleSite);
+  if (makerConsoleWindow && !makerConsoleWindow.isDestroyed()) {
+    makerConsoleMode = "embedded";
+    makerConsoleWindow.close();
+    makerConsoleWindow = null;
+  }
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  if (!window) return { ok: false, error: "window_unavailable" };
+  const ensured = await ensureMakerConsoleView(opts?.accountId || makerConsoleAccountId || "default", site);
+  if ("error" in ensured) return { ok: false, error: ensured.error };
+  detachMakerConsoleView();
+  window.contentView.addChildView(ensured.view);
+  const width = Math.max(320, Math.round(opts.width));
+  const height = Math.max(240, Math.round(opts.height));
+  ensured.view.setBounds({ x: Math.round(opts.x), y: Math.round(opts.y), width, height });
+  ensured.view.setVisible(true);
+  makerConsoleMode = "embedded";
+  notifyMakerConsoleMode();
+  return { ok: true, mode: "embedded" as const, site: makerConsoleSite };
+});
+
+ipcMain.handle("tapmakerwork:maker-console-web-login", async (_event, accountId?: string) => {
+  return readMakerWebLogin(accountId || makerConsoleAccountId || "default");
+});
+
+ipcMain.handle("tapmakerwork:maker-console-open-external", async (_event, siteRaw?: unknown) => {
+  const site = normalizeConsoleSite(siteRaw ?? makerConsoleSite);
+  await shell.openExternal(consoleUrlForSite(site));
+  return { ok: true, site };
 });
 
 ipcMain.handle("tapmakerwork:preview-capture", async () => {

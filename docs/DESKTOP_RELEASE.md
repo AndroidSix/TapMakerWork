@@ -43,7 +43,15 @@ npm run package:ide:mac
 # 等价：npm run dist:mac
 ```
 
-也可双击仓库内 `outputs/launchers/Package-TapMakerWork-All.command`（会尝试打双端；只要 mac 用上面的 `package:ide:mac` 即可）。
+也可双击仓库内 `outputs/launchers/Package-TapMakerWork-All.command`（会尝试打双端）。
+
+**Apple Silicon 打 Windows NSIS：** electron-builder 自带的 `makensis` 是 x86_64。`npm run package:ide` / `package:ide:win` / 一键打包启动器会先检测 Rosetta 2，缺少时自动执行：
+
+```bash
+softwareupdate --install-rosetta --agree-to-license
+```
+
+自动安装失败时，可在本机终端手动执行上述命令后再打包；`--all` 场景下会跳过 Windows 只打 macOS。Windows 安装包也可在 GitHub Actions `desktop-release` 或 Windows 主机上生成。
 
 **产物与启动**
 

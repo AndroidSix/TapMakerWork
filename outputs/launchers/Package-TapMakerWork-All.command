@@ -37,5 +37,12 @@ if ! node -e "const s=require('./package.json').scripts||{}; if(!s['package:ide'
   finish 1
 fi
 
+print "[0/1] 安装项目根依赖（npm install）…"
+if ! npm install; then
+  print -u2 "npm install 失败，无法继续打包。"
+  finish 1
+fi
+print ""
+
 npm run package:ide
 finish $?
