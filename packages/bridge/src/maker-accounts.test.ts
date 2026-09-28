@@ -3,15 +3,19 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  activateGlobalMakerHome,
   addMakerAccount,
   chooseMakerAccount,
   clearMakerAppsCache,
   DEFAULT_MAKER_ACCOUNT_ID,
+  defaultMakerHome,
   loadMakerAccounts,
+  migrateLegacyDefaultHomeIfNeeded,
   projectIdsFromAppsPayload,
   removeMakerAccount,
   resolveProjectAccount,
   setAccountLoginCheckForTests,
+  setDefaultMakerHomeForTests,
   setGlobalMakerAccount,
   setMakerAccountsFileForTests,
   setMakerHomesRootForTests,
@@ -41,6 +45,7 @@ function storeWith(extra: MakerAccountFile["accounts"][number], projectRoot: str
 afterEach(() => {
   setMakerAccountsFileForTests(undefined);
   setMakerHomesRootForTests(undefined);
+  setDefaultMakerHomeForTests(undefined);
   setAccountLoginCheckForTests(undefined);
   for (const dir of temps.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -49,6 +54,7 @@ function useTempStore(): string {
   const root = tempDir();
   setMakerAccountsFileForTests(path.join(root, "accounts.json"));
   setMakerHomesRootForTests(path.join(root, "homes"));
+  setDefaultMakerHomeForTests(path.join(root, "taptap-maker-link"));
   setAccountLoginCheckForTests(() => true);
   return root;
 }
@@ -130,6 +136,23 @@ describe("resolveProjectAccount", () => {
     expect(both.source).toBe("global");
   });
 
+  it("本机 projects.json 可在断网时隔离项目所属账号", async () => {
+    const root = useTempStore();
+    const added = addMakerAccount("账号 B");
+    fs.writeFileSync(path.join(path.join(loadMakerAccounts().accounts[0]!.home), "pat.json"), "{}\n");
+    fs.writeFileSync(path.join(added.home, "pat.json"), "{}\n");
+    fs.mkdirSync(path.join(root, ".maker-mcp"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".maker-mcp", "config.json"), JSON.stringify({ project_id: "p-local" }));
+    fs.writeFileSync(path.join(added.home, "projects.json"), JSON.stringify({
+      schema: 1,
+      projects: [{ path: root, binding: "p-local" }]
+    }));
+    const chosen = await resolveProjectAccount(root, async () => {
+      throw new Error("offline");
+    });
+    expect(chosen).toMatchObject({ accountId: added.id, source: "auto" });
+  });
+
   it("可以切换全局账号，删除后回到默认账号", () => {
     useTempStore();
     const added = addMakerAccount("账号 B");
@@ -138,5 +161,41 @@ describe("resolveProjectAccount", () => {
     removeMakerAccount(added.id);
     expect(loadMakerAccounts().globalAccountId).toBe(DEFAULT_MAKER_ACCOUNT_ID);
     expect(loadMakerAccounts().accounts.map((account) => account.id)).toEqual([DEFAULT_MAKER_ACCOUNT_ID]);
+  });
+});
+
+describe("activateGlobalMakerHome", () => {
+  it("把遗留 ~/.taptap-maker 目录迁到 maker-homes/default，并链到全局账号", () => {
+    const root = useTempStore();
+    const legacy = defaultMakerHome();
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "pat.json"), "{\"token\":\"legacy\"}\n");
+
+    expect(migrateLegacyDefaultHomeIfNeeded()).toBe(true);
+    const activation = activateGlobalMakerHome();
+    expect(activation.accountId).toBe(DEFAULT_MAKER_ACCOUNT_ID);
+    expect(fs.readFileSync(path.join(activation.activatedHome, "pat.json"), "utf8")).toContain("legacy");
+    expect(fs.lstatSync(legacy).isSymbolicLink()).toBe(true);
+    expect(path.resolve(fs.readlinkSync(legacy))).toBe(path.resolve(activation.activatedHome));
+  });
+
+  it("切换全局账号时更新符号链接，外部 CLI 目录指向新账号 home", () => {
+    useTempStore();
+    const added = addMakerAccount("账号 B");
+    fs.writeFileSync(path.join(added.home, "pat.json"), "{\"token\":\"b\"}\n");
+    const activation = setGlobalMakerAccount(added.id);
+    expect(activation.accountId).toBe(added.id);
+    expect(fs.lstatSync(defaultMakerHome()).isSymbolicLink()).toBe(true);
+    expect(path.resolve(fs.readlinkSync(defaultMakerHome()))).toBe(path.resolve(added.home));
+    expect(fs.readFileSync(path.join(defaultMakerHome(), "pat.json"), "utf8")).toContain("\"b\"");
+  });
+
+  it("删除当前全局账号后链接回到默认账号", () => {
+    useTempStore();
+    const added = addMakerAccount("账号 B");
+    setGlobalMakerAccount(added.id);
+    const after = removeMakerAccount(added.id);
+    expect(after?.accountId).toBe(DEFAULT_MAKER_ACCOUNT_ID);
+    expect(path.resolve(fs.readlinkSync(defaultMakerHome()))).toBe(path.resolve(after!.activatedHome));
   });
 });

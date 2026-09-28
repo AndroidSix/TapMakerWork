@@ -1,5 +1,28 @@
 # Change log
 
+<a id="release-0.1.4"></a>
+
+## 2026-09-28 — TapMakerWork 0.1.4
+
+### 账号与本地后台
+- **全局账号同步本机**：切换全局账号会把 `~/.taptap-maker` 指到对应账号目录（符号链接），外部 Maker CLI / Cursor MCP 与 IDE 一致；首次使用会把旧目录迁到 `~/.tapmakerwork/maker-homes/default`。
+- **Maker / 开发者后台内嵌**：命令栏可在 IDE 内打开制造后台与开发者后台；同一账号两边共享登录态；支持弹出独立小窗与嵌回。
+- 后台工具栏增加 **「网页账号」下拉**，可手动切换 Cookie 分区；每账号独立登录，互不串号。
+- **修复后台切换未隔离**：此前切账号会误复用旧浏览器视图；现按 partition 强制重建，分区前缀为 `persist:tapmakerwork-console-v2-*`。
+- **修复本项目账号菜单点不开** / 无法切换：下拉改为 portal，账号 API 带 `projectRoot`，刷新与指定不再依赖 Bridge 内存里是否仍开着项目。
+- 打开后台默认跟本项目解析账号；账号列表分别显示 CLI / 网页登录态。
+- 项目账号自动核对优先读各账号本机 `projects.json`，并缓存上次成功结果，减少断网时退回全局导致串号。
+
+### 本地预览
+- 启动预览用右下角 **轻量 toast** 显示进度，成功后自动消失。
+- 本地 Runtime 按账号 home 隔离；缺 Runtime（`Runtime is missing`）时自动 `preview install`。
+- 遇到旧版 Maker Console 占用（`Another Maker version is serving the console`）时，自动 `console stop` 后重试。
+
+### 打包与其它
+- Apple Silicon 一键打包缺 Rosetta 时自动安装 Rosetta，再继续打 Windows NSIS。
+- 修复命令栏「工具 / 更多」下拉被 overflow 裁切；窄屏收起的入口可通过右侧「更多」展开。
+- 版本号同步至 **0.1.4**。
+
 <a id="release-0.1.3"></a>
 
 ## 2026-09-28 — TapMakerWork 0.1.3

@@ -99,6 +99,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   border-radius: 8px;
   box-shadow: 0 16px 40px #000a;
 }
+.account-switcher-menu-portal {
+  position: fixed;
+  z-index: 3200;
+  right: auto;
+  max-height: min(70vh, 520px);
+  overflow: auto;
+}
 .account-switcher-menu h3 { margin: 6px 0 2px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .account-switcher-menu h3:first-child { margin-top: 0; }
 .account-switcher-menu button {
@@ -178,11 +185,52 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   white-space: nowrap;
 }
 
-.commandbar { gap: 6px; padding: 4px 10px; background: var(--panel); border-bottom: 1px solid var(--border); font-size: 12px; position: relative; flex-wrap: nowrap; }
+.commandbar {
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  position: relative;
+  z-index: 60;
+  flex-wrap: nowrap;
+  overflow: visible;
+}
+.commandbar-scroll {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.commandbar-scroll::-webkit-scrollbar { height: 4px; }
+.commandbar-scroll::-webkit-scrollbar-thumb { background: #2c3444; border-radius: 4px; }
+.commandbar-scroll > * { flex: 0 0 auto; }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toast-pulse {
+  0%, 100% { box-shadow: 0 10px 24px #000a; }
+  50% { box-shadow: 0 10px 28px #000c, 0 0 0 1px #5b8def55; }
+}
+.commandbar-trail {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  z-index: 61;
+}
 .commandbar label { display: flex; align-items: center; gap: 5px; color: var(--muted); white-space: nowrap; }
 .commandbar input[type="number"] { width: 62px; }
 .commandbar input, .commandbar select { height: 28px; color: var(--text); background: var(--control); border: 1px solid var(--border); border-radius: 4px; padding: 0 7px; }
 .commandbar-spacer { flex: 1 1 auto; min-width: 0; }
+
 .developer-console-button { height: 27px; display: flex; align-items: center; gap: 5px; padding: 0 8px; color: #bad7fb; white-space: nowrap; border: 1px solid #31577f; border-radius: 4px; background: #173252; cursor: pointer; }
 .developer-console-button:hover { color: #fff; background: #214a75; }
 .maker-console-button { color: #c9d4ff; border-color: #4a4b86; background: #292953; }
@@ -210,7 +258,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .roadmap-dialog > footer button { min-height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; color: var(--text); background: var(--control); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
 .roadmap-dialog > footer button.primary { background: #2f70b4; border-color: #4b91d8; }
 .community-card .desktop-card-actions button { cursor: pointer; }
-.device-compact select { max-width: 140px; }
+.device-compact select { max-width: 120px; }
 .mode-hint { min-width: 0; max-width: 280px; flex: 0 1 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
 .mode-switch { display: flex; padding: 2px; background: #0f131b; border: 1px solid var(--border-soft); border-radius: 5px; }
 .mode-switch .tip-wrap { flex: 0 0 auto; }
@@ -225,10 +273,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .tools-menu-wrap { position: relative; }
 .tools-menu {
   position: absolute;
-  z-index: 40;
+  z-index: 80;
   top: calc(100% + 6px);
   right: 0;
   width: min(320px, calc(100vw - 24px));
+  max-height: min(70vh, 560px);
+  overflow: auto;
   padding: 10px;
   display: grid;
   gap: 10px;
@@ -237,6 +287,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   border-radius: 8px;
   box-shadow: 0 16px 40px #000a;
 }
+.tools-menu.toolkit-menu { width: min(280px, calc(100vw - 24px)); }
+.commandbar-more-label { display: none; margin-left: 2px; font-size: 11px; }
 .tools-menu h3 { margin: 0 0 6px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .tools-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .tools-grid label { display: grid; gap: 3px; color: var(--muted); font-size: 11px; }
@@ -889,13 +941,142 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .ide-package-meta dt { color: var(--muted); font-size: 10px; }
 .ide-package-meta dd { margin: 0; overflow: hidden; color: #dce7f7; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .ide-package-actions { align-items: center; }
-.maker-accounts-card {
+.maker-accounts-card code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  color: #9ec0ea;
+}
+.maker-console-panel {
+  z-index: 46;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 0;
+  width: min(1180px, calc(100vw - 48px));
+  height: min(820px, calc(100vh - 72px));
+  padding: 0;
+  overflow: hidden;
+}
+.maker-console-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: #101722;
+}
+.maker-console-toolbar strong {
+  font-size: 13px;
+}
+.maker-console-heading {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.maker-console-heading small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.maker-console-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: min(420px, 70vw);
+}
+.maker-console-account > span {
+  flex: 0 0 auto;
+  color: #9eb4cc;
+  font-size: 11px;
+}
+.maker-console-account select {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 28px;
+  padding: 0 8px;
+  color: var(--text);
+  background: #0f141d;
+  border: 1px solid #3d5f86;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.maker-console-account select:focus {
+  outline: 1px solid #5b8def;
+  border-color: #5b8def;
+}
+.maker-console-sites {
+  display: flex;
+  gap: 4px;
+}
+.maker-console-sites button {
+  height: 24px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: #0f141d;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.maker-console-sites button.active {
+  color: #e8f1ff;
+  background: #28598d;
+  border-color: #3976b3;
+}
+.maker-console-hint {
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: #0d121a;
+  font-size: 11px;
+}
+.maker-console-hint strong {
+  color: #dce8f8;
+  font-weight: 650;
+}
+.maker-console-actions {
+  display: flex;
+  gap: 6px;
+}
+.maker-console-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--control);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.maker-console-frame {
+  min-height: 0;
+  background: #0a0e14;
+}
+.maker-console-frame[data-mode="popout"],
+.maker-console-frame[data-mode="hidden"] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.maker-console-fallback {
   display: grid;
   gap: 10px;
-  padding: 12px;
-  background: #111722;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  padding: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.maker-console-fallback .primary {
+  width: fit-content;
+  height: 30px;
+  padding: 0 12px;
+  color: #fff;
+  background: #28598d;
+  border: 1px solid #3976b3;
+  border-radius: 4px;
+  cursor: pointer;
 }
 .maker-account-row { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 8px; color: var(--text); font-size: 12px; }
 .maker-account-row select, .maker-accounts-card button { color: var(--text); background: var(--control); border: 1px solid var(--border); }
@@ -1310,7 +1491,7 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
   position: fixed;
   right: 18px;
   bottom: 28px;
-  z-index: 100;
+  z-index: 3500;
   display: grid;
   gap: 8px;
   width: min(360px, calc(100vw - 36px));
@@ -1329,6 +1510,10 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
   word-break: break-word;
   white-space: pre-wrap;
   box-shadow: 0 10px 24px #000a;
+  animation: toast-in 0.22s ease-out;
+}
+.toast-item.toast-busy {
+  animation: toast-in 0.22s ease-out, toast-pulse 1.6s ease-in-out infinite;
 }
 .mode-hint {
   margin-left: 8px;
@@ -1422,7 +1607,7 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 }
 .qr-menu-actions button:hover:not(:disabled) { background: var(--raised); }
 .qr-menu-actions button:disabled { opacity: .45; cursor: default; }
-.commandbar { position: relative; }
+.commandbar { position: relative; z-index: 60; }
 .pane-body.hierarchy-pane-body { overflow: hidden; }
 .hier-wrap { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
 .hier-actions {
@@ -1704,22 +1889,47 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .spin { animation: cockpit-spin 900ms linear infinite; }
 @keyframes cockpit-spin { to { transform: rotate(360deg); } }
 
-.commandbar { flex-wrap: nowrap; }
-
-@media (max-width: 1350px) {
-  .commandbar .mode-hint,
-  .commandbar .qq-group-button,
-  .commandbar .roadmap-button { display: none; }
+.commandbar {
+  flex-wrap: nowrap;
+  overflow: visible;
+}
+.commandbar .commandbar-spacer { flex: 1 1 auto; min-width: 8px; }
+.commandbar .mode-hint { flex: 0 1 280px; }
+.commandbar .account-switcher { max-width: min(280px, 34vw); min-width: 0; }
+.commandbar .account-switcher > button { max-width: 100%; width: auto; min-width: 0; }
+.commandbar .account-switcher > button strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-@media (max-width: 1150px) {
-  .commandbar .creator-games-button,
-  .commandbar .sponsor-button { display: none; }
+/* 次要入口已在「更多」菜单的快捷入口里；窄屏优先收起，右侧「工具 / 更多」始终可展开 */
+@media (max-width: 1560px) {
+  .commandbar .mode-hint { display: none; }
+}
+
+@media (max-width: 1480px) {
+  .commandbar-scroll > .tip-wrap:has(.creator-games-button),
+  .commandbar-scroll > .tip-wrap:has(.sponsor-button),
+  .commandbar-scroll > .tip-wrap:has(.qq-group-button),
+  .commandbar-scroll > .tip-wrap:has(.roadmap-button) { display: none; }
+  .commandbar-more-label { display: inline; }
+}
+
+@media (max-width: 1280px) {
+  .commandbar-scroll > .tip-wrap:has(.developer-console-button) { display: none; }
+  .commandbar .account-switcher { max-width: min(220px, 30vw); }
+}
+
+@media (max-width: 1100px) {
+  .commandbar .device-compact,
+  .commandbar .sidecar-chip,
+  .commandbar-scroll label:nth-of-type(4),
+  .fps-control { display: none; }
 }
 
 @media (max-width: 1050px) {
   .workspace { grid-template-columns: 210px minmax(360px, 1fr) 250px; }
-  .commandbar .device-compact, .commandbar label:nth-of-type(4), .fps-control { display: none; }
   .cockpit-grid { grid-template-columns: 1fr; }
   .stage-rail { grid-template-columns: 1fr; }
   .runtime-editor-shell.runtime-editor-split { grid-template-columns: 1fr; grid-template-rows: repeat(2, minmax(0, 1fr)); }

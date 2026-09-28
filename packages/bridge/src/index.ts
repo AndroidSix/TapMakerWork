@@ -71,10 +71,12 @@ import {
 import { buildProjectWorkflowOverview, saveProjectWorkflow } from "./project-workflow.js";
 import {
   accountSourceLabel,
+  activateGlobalMakerHome,
   addMakerAccount,
   clearMakerAppsCache,
   getMakerAccount,
   makerAccountSnapshot,
+  MAKER_CONSOLE_URL,
   projectAccountKey,
   projectIdsFromAppsPayload,
   removeMakerAccount,
@@ -487,6 +489,18 @@ function validOrigin(request: IncomingMessage): boolean {
 }
 
 const previewAccountHomes = new Map<string, string>();
+
+/** Prefer explicit projectRoot from client; fall back to Bridge 当前打开的项目。 */
+function resolveAccountsProjectRoot(candidate?: string | null): string | undefined {
+  if (typeof candidate === "string" && candidate.trim()) {
+    try {
+      return resolveProjectRoot(candidate).root;
+    } catch {
+      // 客户端传了无效路径时，再试 Bridge 内存里的项目
+    }
+  }
+  return project?.root;
+}
 
 async function accountFor(projectRoot: string): Promise<AccountResolution> {
   return resolveProjectAccount(projectRoot, async (account) => {
@@ -1437,50 +1451,93 @@ const server = http.createServer(async (request, response) => {
       broadcast({ type: "log.append", channel: "build", lines: [`已重新同步系统 Node.js：${node.version}（${node.executable}）`] });
       sendJson(response, 200, { ok: true, ...nodeVersionsPayload(), maker: makerVersionsPayload() });
     } else if (request.method === "GET" && url.pathname === "/api/maker/accounts") {
-      const resolution = project ? await accountFor(project.root) : undefined;
-      sendJson(response, 200, makerAccountSnapshot(project?.root, resolution));
+      const activation = activateGlobalMakerHome();
+      const root = resolveAccountsProjectRoot(url.searchParams.get("projectRoot"));
+      const resolution = root ? await accountFor(root) : undefined;
+      sendJson(response, 200, {
+        ...makerAccountSnapshot(root, resolution, activation),
+        consoleUrl: MAKER_CONSOLE_URL
+      });
     } else if (request.method === "POST" && url.pathname === "/api/maker/accounts") {
-      const body = await readJson(request) as { label?: string };
+      const body = await readJson(request) as { label?: string; projectRoot?: string };
       const created = addMakerAccount(typeof body.label === "string" ? body.label : "");
-      sendJson(response, 200, { ok: true, account: { id: created.id, label: created.label }, ...makerAccountSnapshot(project?.root) });
+      const activation = activateGlobalMakerHome();
+      const root = resolveAccountsProjectRoot(body.projectRoot);
+      sendJson(response, 200, {
+        ok: true,
+        account: { id: created.id, label: created.label },
+        ...makerAccountSnapshot(root, undefined, activation),
+        consoleUrl: MAKER_CONSOLE_URL
+      });
     } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/global") {
-      const body = await readJson(request) as { accountId?: string };
+      const body = await readJson(request) as { accountId?: string; projectRoot?: string };
       if (!body.accountId) throw new Error("maker_account_not_found");
-      setGlobalMakerAccount(body.accountId);
-      const resolution = project ? await accountFor(project.root) : undefined;
-      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(project?.root, resolution) });
+      const activation = setGlobalMakerAccount(body.accountId);
+      previewAccountHomes.clear();
+      const root = resolveAccountsProjectRoot(body.projectRoot);
+      const resolution = root ? await accountFor(root) : undefined;
+      broadcast({
+        type: "log.append",
+        channel: "build",
+        lines: [`全局账号已切换并同步本机 ~/.taptap-maker → ${activation.activatedHome}`]
+      });
+      sendJson(response, 200, {
+        ok: true,
+        ...makerAccountSnapshot(root, resolution, activation),
+        consoleUrl: MAKER_CONSOLE_URL
+      });
     } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/rename") {
-      const body = await readJson(request) as { accountId?: string; label?: string };
+      const body = await readJson(request) as { accountId?: string; label?: string; projectRoot?: string };
       if (!body.accountId) throw new Error("maker_account_not_found");
       renameMakerAccount(body.accountId, body.label || "");
-      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(project?.root) });
+      const root = resolveAccountsProjectRoot(body.projectRoot);
+      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(root), consoleUrl: MAKER_CONSOLE_URL });
     } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/remove") {
-      const body = await readJson(request) as { accountId?: string };
+      const body = await readJson(request) as { accountId?: string; projectRoot?: string };
       if (!body.accountId) throw new Error("maker_account_not_found");
-      removeMakerAccount(body.accountId);
-      const resolution = project ? await accountFor(project.root) : undefined;
-      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(project?.root, resolution) });
+      const activation = removeMakerAccount(body.accountId) ?? activateGlobalMakerHome();
+      previewAccountHomes.clear();
+      const root = resolveAccountsProjectRoot(body.projectRoot);
+      const resolution = root ? await accountFor(root) : undefined;
+      sendJson(response, 200, {
+        ok: true,
+        ...makerAccountSnapshot(root, resolution, activation),
+        consoleUrl: MAKER_CONSOLE_URL
+      });
     } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/project") {
-      if (!project) throw new Error("project_not_open");
-      const body = await readJson(request) as { mode?: MakerAccountMode; accountId?: string };
+      const body = await readJson(request) as { mode?: MakerAccountMode; accountId?: string; projectRoot?: string };
       if (body.mode !== "auto" && body.mode !== "manual") throw new Error("maker_account_mode_invalid");
-      setProjectMakerAccount(project.root, body.mode, body.accountId);
-      const resolution = await accountFor(project.root);
-      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(project.root, resolution) });
+      const root = resolveAccountsProjectRoot(body.projectRoot);
+      if (!root) throw new Error("project_not_open");
+      setProjectMakerAccount(root, body.mode, body.accountId);
+      clearMakerAppsCache();
+      previewAccountHomes.delete(projectAccountKey(root));
+      const resolution = await accountFor(root);
+      broadcast({
+        type: "log.append",
+        channel: "build",
+        lines: [
+          body.mode === "manual"
+            ? `项目已指定账号「${resolution.label}」（${root}）`
+            : `项目已改回自动核对（当前解析为「${resolution.label}」）`
+        ]
+      });
+      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(root, resolution) });
     } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/login") {
       if (!makerRuntime) throw new Error("maker_cli_not_found");
-      const body = await readJson(request) as { accountId?: string };
+      const body = await readJson(request) as { accountId?: string; projectRoot?: string };
       if (!body.accountId) throw new Error("maker_account_not_found");
       const target = getMakerAccount(body.accountId);
       if (!target) throw new Error("maker_account_not_found");
-      const cwd = project?.root ?? target.home;
+      const root = resolveAccountsProjectRoot(body.projectRoot);
+      const cwd = root ?? target.home;
       broadcast({ type: "log.append", channel: "build", lines: [`正在用无痕窗口打开登录页，请登录账号「${target.label}」并创建 token。`] });
       try {
         await runMakerLogin(makerRuntime, cwd, target.home);
         clearMakerAppsCache();
         broadcast({ type: "log.append", channel: "build", lines: [`账号「${target.label}」登录完成。`] });
-        const resolution = project ? await accountFor(project.root) : undefined;
-        sendJson(response, 200, { ok: true, ...makerAccountSnapshot(project?.root, resolution) });
+        const resolution = root ? await accountFor(root) : undefined;
+        sendJson(response, 200, { ok: true, ...makerAccountSnapshot(root, resolution) });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         broadcast({ type: "log.append", channel: "build", lines: [`账号「${target.label}」登录失败：${message}`] });
@@ -1786,6 +1843,13 @@ wss.on("connection", (socket) => {
   socket.send(JSON.stringify({ type: "ui.snapshot", snapshot: editor.getSnapshot() } satisfies BridgeEvent));
   socket.on("close", () => sockets.delete(socket));
 });
+
+try {
+  const activation = activateGlobalMakerHome();
+  process.stdout.write(`[TapMakerWork] Maker home active: ${activation.activatedHome} (link ${activation.linkPath})\n`);
+} catch (error) {
+  process.stderr.write(`[TapMakerWork] Maker home activate failed: ${error instanceof Error ? error.message : String(error)}\n`);
+}
 
 server.listen(port, host, () => {
   process.stdout.write(`[TapMakerWork] Bridge listening on http://${host}:${port}\n`);

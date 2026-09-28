@@ -101,7 +101,8 @@ import {
   isRequiredMakerMcpVersion,
   type WorkspaceMode
 } from "@tapmakerwork/protocol";
-import { MakerAccountSwitcher, MakerAccountsCard, mutateMakerAccounts } from "./MakerAccountsCard";
+import { MakerAccountSwitcher, MakerAccountsCard, mutateMakerAccounts, refreshMakerAccounts, resolveConsoleAccount, subscribeMakerAccounts, type AccountsPayload } from "./MakerAccountsCard";
+import { MakerConsolePanel, type TapConsoleSite } from "./MakerConsolePanel";
 import { PreviewDock } from "./PreviewDock";
 import { ProjectCockpit } from "./ProjectCockpit";
 import { RuntimeMirror } from "./RuntimeMirror";
@@ -494,14 +495,14 @@ function runtimeStyle(node: UiNode): CSSProperties {
 }
 
 type ToastKind = "info" | "success" | "error" | "warn";
-interface ToastItem { id: number; kind: ToastKind; message: string }
+interface ToastItem { id: number; kind: ToastKind; message: string; busy?: boolean }
 
 function ToastStack({ items }: { items: ToastItem[] }) {
   if (!items.length) return null;
   return (
     <div className="toast-stack" aria-live="polite">
       {items.map((item) => (
-        <div key={item.id} className={`toast-item toast-${item.kind}`}>{item.message}</div>
+        <div key={item.id} className={`toast-item toast-${item.kind}${item.busy ? " toast-busy" : ""}`}>{item.message}</div>
       ))}
     </div>
   );
@@ -1441,11 +1442,20 @@ export function App() {
   const [codeDirty, setCodeDirty] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [runtimeBusy, setRuntimeBusy] = useState(false);
+  const runtimeBusyRef = useRef(false);
+  const previewToastIdRef = useRef<number | null>(null);
+  const previewToastTimerRef = useRef<number | null>(null);
   const [adapterInstallBusy, setAdapterInstallBusy] = useState(false);
   const [runtimeEditRevision, setRuntimeEditRevision] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountsOpen, setAccountsOpen] = useState(false);
+  const [makerConsoleOpen, setMakerConsoleOpen] = useState(false);
+  const [makerConsoleAccountId, setMakerConsoleAccountId] = useState("default");
+  const [makerConsoleAccountLabel, setMakerConsoleAccountLabel] = useState("默认账号");
+  const [makerConsoleAccountSource, setMakerConsoleAccountSource] = useState<"manual" | "auto" | "global" | "none">("none");
+  const [makerConsolePinned, setMakerConsolePinned] = useState(false);
+  const [makerConsoleSite, setMakerConsoleSite] = useState<TapConsoleSite>("maker");
   const [guideOpen, setGuideOpen] = useState(false);
   const [tipsOpen, setTipsOpen] = useState(false);
   const [compressOpen, setCompressOpen] = useState(false);
@@ -1527,13 +1537,36 @@ export function App() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
-  const toast = useCallback((message: string, kind: ToastKind = "info") => {
+  const toast = useCallback((message: string, kind: ToastKind = "info", durationMs = 2800) => {
     const id = Date.now() + Math.random();
     setToasts((list) => list.some((item) => item.kind === kind && item.message === message)
       ? list
       : [...list, { id, kind, message }]);
-    window.setTimeout(() => setToasts((list) => list.filter((item) => item.id !== id)), 2800);
+    window.setTimeout(() => setToasts((list) => list.filter((item) => item.id !== id)), durationMs);
   }, []);
+
+  const upsertPreviewToast = useCallback((message: string, kind: ToastKind = "info", opts?: { busy?: boolean; autoHideMs?: number }) => {
+    const id = previewToastIdRef.current ?? (Date.now() + Math.random());
+    previewToastIdRef.current = id;
+    if (previewToastTimerRef.current != null) {
+      window.clearTimeout(previewToastTimerRef.current);
+      previewToastTimerRef.current = null;
+    }
+    setToasts((list) => {
+      const without = list.filter((item) => item.id !== id);
+      return [...without, { id, kind, message, busy: Boolean(opts?.busy) }];
+    });
+    if (opts?.autoHideMs != null) {
+      previewToastTimerRef.current = window.setTimeout(() => {
+        setToasts((list) => list.filter((item) => item.id !== id));
+        if (previewToastIdRef.current === id) previewToastIdRef.current = null;
+        previewToastTimerRef.current = null;
+      }, opts.autoHideMs);
+    }
+  }, []);
+
+  const upsertPreviewToastRef = useRef(upsertPreviewToast);
+  upsertPreviewToastRef.current = upsertPreviewToast;
   const [syncUiEditsToCode, setSyncUiEditsToCode] = useState(loadSyncUiEditsToCode);
   const syncUiEditsToCodeRef = useRef(syncUiEditsToCode);
   const setSyncUiEditsToCodePersisted = useCallback((enabled: boolean) => {
@@ -3389,7 +3422,13 @@ export function App() {
           }
         }
         if (event.type === "preview.panel") setPreviewPanel(event.panel);
-        if (event.type === "log.append") setLogs((current) => ({ ...current, [event.channel]: [...current[event.channel], ...event.lines] }));
+        if (event.type === "log.append") {
+          setLogs((current) => ({ ...current, [event.channel]: [...current[event.channel], ...event.lines] }));
+          if (event.channel === "runtime" && runtimeBusyRef.current) {
+            const latest = event.lines.filter((line) => line.trim()).at(-1);
+            if (latest) upsertPreviewToastRef.current(latest.slice(0, 120), "info", { busy: true });
+          }
+        }
       };
     };
     connect();
@@ -3405,11 +3444,93 @@ export function App() {
     void mutateMakerAccounts("/api/maker/accounts/global", { accountId })
       .then((payload) => {
         const label = payload.accounts.find((account) => account.id === accountId)?.label || accountId;
-        toast(`全局账号已切换为「${label}」`, "success");
+        toast(`全局账号已切换为「${label}」${payload.activatedHome ? "，已同步本机 ~/.taptap-maker" : ""}`, "success");
+        const consoleAccount = resolveConsoleAccount(payload);
+        setMakerConsoleAccountId(consoleAccount.accountId);
+        setMakerConsoleAccountLabel(consoleAccount.label);
+        setMakerConsoleAccountSource(consoleAccount.source);
+        if (makerConsoleOpen) {
+          void window.tapMakerWork?.makerConsole?.setAccount(consoleAccount.accountId, makerConsoleSite);
+        }
       })
       .catch((error: unknown) => toast(error instanceof Error ? error.message : String(error), "error"));
-  }), [toast]);
+  }), [toast, makerConsoleSite, makerConsoleOpen]);
   useEffect(() => window.tapMakerWork?.accounts?.onManage?.(() => setAccountsOpen(true)), []);
+  const applyConsoleAccount = useCallback((accountId: string, label: string, source: "manual" | "auto" | "global" | "none", site: TapConsoleSite, pinned: boolean) => {
+    setMakerConsoleAccountId(accountId);
+    setMakerConsoleAccountLabel(label);
+    setMakerConsoleAccountSource(source);
+    setMakerConsolePinned(pinned);
+    setMakerConsoleSite(site);
+    if (!window.tapMakerWork?.makerConsole) {
+      openExternalUrl(site === "developer" ? "https://developer.taptap.cn/" : "https://maker.taptap.cn/");
+      return;
+    }
+    setMakerConsoleOpen(true);
+    void window.tapMakerWork.makerConsole.setAccount(accountId, site);
+  }, [openExternalUrl]);
+
+  const openTapConsole = useCallback((site: TapConsoleSite = "maker", accountId?: string, label?: string) => {
+    const projectRoot = project?.root;
+    if (accountId) {
+      applyConsoleAccount(accountId, label || accountId, "manual", site, true);
+      if (!label) {
+        void refreshMakerAccounts(projectRoot)
+          .then((payload) => {
+            const found = payload.accounts.find((account) => account.id === accountId);
+            if (found) setMakerConsoleAccountLabel(found.label);
+          })
+          .catch(() => undefined);
+      }
+      return;
+    }
+    void refreshMakerAccounts(projectRoot)
+      .then((payload) => {
+        const chosen = resolveConsoleAccount(payload);
+        applyConsoleAccount(chosen.accountId, chosen.label, chosen.source, site, false);
+        const siteName = site === "developer" ? "开发者后台" : "制造后台";
+        if (chosen.source === "manual" || chosen.source === "auto") {
+          toast(`${siteName}已按本项目账号「${chosen.label}」打开（网页登录态按账号隔离）`, "info", 4500);
+        } else if ((payload.accounts?.length || 0) > 1) {
+          toast(`${siteName}暂用全局「${chosen.label}」。请为本项目指定账号，否则多项目会共用同一网页登录态。`, "warn", 6500);
+        }
+      })
+      .catch(() => {
+        applyConsoleAccount(makerConsoleAccountId || "default", makerConsoleAccountLabel, makerConsoleAccountSource, site, false);
+        if (!window.tapMakerWork?.makerConsole) {
+          openExternalUrl(site === "developer" ? "https://developer.taptap.cn/" : "https://maker.taptap.cn/");
+        }
+      });
+  }, [applyConsoleAccount, makerConsoleAccountId, makerConsoleAccountLabel, makerConsoleAccountSource, openExternalUrl, project?.root, toast]);
+
+  const openMakerConsole = useCallback((accountId?: string, label?: string) => {
+    openTapConsole("maker", accountId, label);
+  }, [openTapConsole]);
+
+  const syncConsoleToProjectAccount = useCallback((payload: AccountsPayload) => {
+    const chosen = resolveConsoleAccount(payload);
+    setMakerConsolePinned(false);
+    if (!makerConsoleOpen) {
+      setMakerConsoleAccountId(chosen.accountId);
+      setMakerConsoleAccountLabel(chosen.label);
+      setMakerConsoleAccountSource(chosen.source);
+      return;
+    }
+    applyConsoleAccount(chosen.accountId, chosen.label, chosen.source, makerConsoleSite, false);
+    toast(`后台已切换到本项目账号「${chosen.label}」`, "info", 3500);
+  }, [applyConsoleAccount, makerConsoleOpen, makerConsoleSite, toast]);
+
+  useEffect(() => {
+    if (!makerConsoleOpen || makerConsolePinned) return;
+    return subscribeMakerAccounts((payload) => {
+      const chosen = resolveConsoleAccount(payload);
+      if (chosen.accountId === makerConsoleAccountId && chosen.label === makerConsoleAccountLabel) {
+        setMakerConsoleAccountSource(chosen.source);
+        return;
+      }
+      applyConsoleAccount(chosen.accountId, chosen.label, chosen.source, makerConsoleSite, false);
+    });
+  }, [applyConsoleAccount, makerConsoleOpen, makerConsolePinned, makerConsoleAccountId, makerConsoleAccountLabel, makerConsoleSite]);
   useEffect(() => window.tapMakerWork?.onCloseProject?.(() => { void closeCurrentProject(); }), [closeCurrentProject]);
 
   useEffect(() => {
@@ -3701,8 +3822,15 @@ export function App() {
 
   const runtimeAction = async (action: "start" | "stop" | "refresh") => {
     setRuntimeBusy(true);
+    runtimeBusyRef.current = true;
     setActiveTerminal("runtime");
-    setLogs((current) => ({ ...current, runtime: [...current.runtime, `Maker preview ${action}…`] }));
+    const phaseLabel = action === "start"
+      ? "正在启动 Maker 预览…"
+      : action === "refresh"
+        ? "正在刷新 Maker 预览…"
+        : "正在停止 Maker 预览…";
+    setLogs((current) => ({ ...current, runtime: [...current.runtime, phaseLabel] }));
+    upsertPreviewToast(phaseLabel, "info", { busy: true });
     try {
       const response = await fetch(`${API}/api/maker/preview/${action}`, { method: "POST" });
       const result = await response.json() as { error?: string; state?: string; message?: string };
@@ -3711,8 +3839,12 @@ export function App() {
         setLogs((current) => ({ ...current, runtime: [...current.runtime, `Runtime 操作失败：${detail}`] }));
         const toastText = detail.includes("Supervisor 不可达")
           ? "预览 Supervisor 不可达。已自动 stop / 退役残留会话并重试；仍失败请看 Runtime 日志。"
-          : (detail.split("\n")[0] || "Runtime 操作失败");
-        toast(toastText, "error");
+          : detail.includes("本地预览 Runtime 尚未安装") || detail.includes("Runtime is missing")
+            ? "当前账号尚未安装本地预览 Runtime。请看 Runtime 日志；完成后请再点一次启动。"
+            : detail.includes("Another Maker version") || detail.includes("旧版 Maker Console")
+              ? "旧版 Maker Console 冲突，已自动停止并重试。仍失败请看 Runtime 日志。"
+            : (detail.split("\n")[0] || "Runtime 操作失败");
+        upsertPreviewToast(toastText, "error", { autoHideMs: 5000 });
         trackTelemetry("preview.action", { action, result: "fail" });
       } else {
         trackTelemetry("preview.action", { action, result: "ok" });
@@ -3732,7 +3864,7 @@ export function App() {
             setCenterTab("runtime");
             setPreviewDockOpen(false);
           }
-          toast(action === "start" ? "Runtime 已启动；当前显示真实运行器窗口画面。" : "Runtime 已刷新。", "success");
+          upsertPreviewToast(action === "start" ? "Runtime 已启动" : "Runtime 已刷新", "success", { autoHideMs: 1800 });
           [1500, 3000, 5000, 8000, 12000].forEach((delay) => {
             window.setTimeout(() => {
               void syncFromRuntime();
@@ -3742,7 +3874,7 @@ export function App() {
             }, delay);
           });
         } else {
-          toast("Runtime 已停止", "info");
+          upsertPreviewToast("Runtime 已停止", "info", { autoHideMs: 1600 });
         }
         window.setTimeout(() => {
           void fetch(`${API}/api/maker/preview/status`).then(async (statusResponse) => {
@@ -3752,6 +3884,7 @@ export function App() {
       }
     } finally {
       setRuntimeBusy(false);
+      runtimeBusyRef.current = false;
     }
   };
 
@@ -3982,7 +4115,15 @@ export function App() {
   const accountsDialog = accountsOpen ? (
     <div className="legal-backdrop account-dialog-backdrop" onClick={() => setAccountsOpen(false)}>
       <section className="account-dialog" role="dialog" aria-labelledby="maker-accounts-heading" onClick={(event) => event.stopPropagation()}>
-        <MakerAccountsCard open {...(project?.root ? { projectRoot: project.root } : {})} notify={toast} />
+        <MakerAccountsCard
+          open
+          {...(project?.root ? { projectRoot: project.root } : {})}
+          notify={toast}
+          onOpenConsole={(accountId) => {
+            setAccountsOpen(false);
+            openMakerConsole(accountId);
+          }}
+        />
         <button type="button" onClick={() => setAccountsOpen(false)}>关闭</button>
       </section>
     </div>
@@ -4019,7 +4160,25 @@ export function App() {
           </div>
           <div className="welcome-decoration" aria-hidden="true"><div /><div /><div /></div>
         </section>
-      </main>{legalOverlay}{projectRejectOverlay}{permissionOverlay}{updatePromptOverlay}{makerVersionGate}{accountsDialog}</>
+      </main>{legalOverlay}{projectRejectOverlay}{permissionOverlay}{updatePromptOverlay}{makerVersionGate}{accountsDialog}{makerConsoleOpen && (
+        <MakerConsolePanel
+          key="console-welcome"
+          open={makerConsoleOpen}
+          accountId={makerConsoleAccountId}
+          accountLabel={makerConsoleAccountLabel}
+          accountSource={makerConsoleAccountSource}
+          site={makerConsoleSite}
+          onSiteChange={setMakerConsoleSite}
+          onAccountChange={(id, label) => applyConsoleAccount(id, label, "manual", makerConsoleSite, true)}
+          onClose={() => {
+            setMakerConsoleOpen(false);
+            setMakerConsolePinned(false);
+            void window.tapMakerWork?.makerConsole?.unmount();
+          }}
+          onOpenExternal={openExternalUrl}
+          notify={toast}
+        />
+      )}</>
     );
   }
 
@@ -4063,6 +4222,7 @@ export function App() {
       </header>
 
       <section className="commandbar">
+        <div className="commandbar-scroll">
         <div className="mode-switch" aria-label="工作模式">
           <Tip disabled label="在结构草图中直接拖动、缩放、改属性或右键创建节点">
             <button aria-pressed={mode === "inspect" && centerTab === "visual"} className={mode === "inspect" && centerTab === "visual" ? "active" : ""} onClick={() => { setMode("inspect"); setCanvasAutoFit(true); setCenterTab("visual"); }}><Pause size={14} />结构编辑</button>
@@ -4089,21 +4249,25 @@ export function App() {
         <button className="icon-command" aria-label="撤销" onClick={() => void historyAction("undo")}><Undo2 size={14} /></button>
         <button className="icon-command" aria-label="重做" onClick={() => void historyAction("redo")}><Redo2 size={14} /></button>
         <span className="separator" />
-        <MakerAccountSwitcher {...(project.root ? { projectRoot: project.root } : {})} notify={toast} onManage={() => setAccountsOpen(true)} />
+        <MakerAccountSwitcher
+          {...(project.root ? { projectRoot: project.root } : {})}
+          notify={toast}
+          onManage={() => setAccountsOpen(true)}
+          onProjectAccountChange={syncConsoleToProjectAccount}
+        />
         <Tip label="启动官方 Maker Runtime（独立窗口）">
           <CoachMark label="② 再启动 Runtime" active={coachRuntimeStart}>
             <button
               className="runtime-launch-button"
               disabled={!health?.capabilities.makerCli || runtimeBusy}
               onClick={() => {
-                toast("正在启动 Maker 预览…", "info");
                 void runtimeAction("start");
                 if (coachRuntimeStart) {
                   dismissCoachMark(COACH_RUNTIME_START_KEY);
                   setCoachRuntimeStart(false);
                 }
               }}
-            ><CirclePlay size={14} />{runtimeBusy ? "…" : "启动"}</button>
+            ><CirclePlay size={14} />{runtimeBusy ? "启动中…" : "启动"}</button>
           </CoachMark>
         </Tip>
         <Tip label="刷新 Maker Runtime">
@@ -4138,11 +4302,11 @@ export function App() {
             : "ui.json 未创建"}</span>
         </Tip>
         <span className="commandbar-spacer" />
-        <Tip label="打开 TapTap 开发者后台">
-          <button className="developer-console-button" onClick={() => openExternalUrl("https://developer.taptap.cn/")}><ExternalLink size={13} />开发者后台</button>
+        <Tip label="在 IDE 内打开 TapTap 开发者后台（按本项目账号隔离登录）">
+          <button className="developer-console-button" onClick={() => openTapConsole("developer")}><ExternalLink size={13} />开发者后台</button>
         </Tip>
-        <Tip label="打开 TapTap Maker 后台">
-          <button className="developer-console-button maker-console-button" onClick={() => openExternalUrl("https://maker.taptap.cn/")}><ExternalLink size={13} />Maker 后台</button>
+        <Tip label="在 IDE 内打开 TapTap 制造后台（按本项目账号隔离登录）">
+          <button className="developer-console-button maker-console-button" onClick={() => openTapConsole("maker")}><ExternalLink size={13} />Maker 后台</button>
         </Tip>
         <Tip label="查看作者发布的 TapTap 游戏">
           <button className="developer-console-button creator-games-button" onClick={() => openExternalUrl("https://www.taptap.cn/user/59693183/works")}><Gamepad2 size={13} />作者游戏品鉴</button>
@@ -4156,6 +4320,15 @@ export function App() {
         <Tip label="查看 TapMakerWork 后续开发规划（资源优化、AI 提效、多平台打包等）">
           <button className="developer-console-button roadmap-button" onClick={() => setRoadmapOpen(true)}><Map size={13} />后续规划</button>
         </Tip>
+        <span className="mode-hint">
+          {centerTab === "visual"
+            ? "结构编辑：拖动改位置 · 控制点改尺寸 · 右键管理节点 · 自动保存"
+            : mode === "live-edit"
+            ? "实时编辑：编辑视图与实际 Runtime 同步 · Shift 多选 · W/E/R/T 变换"
+            : "检查：单击只选中，源码跳转需显式点击"}
+        </span>
+        </div>
+        <div className="commandbar-trail">
         <div className="toolkit-menu-wrap tools-menu-wrap">
           <Tip label="工具集：图片压缩、新游雷达、在线 PS 等实用工具">
             <button
@@ -4223,13 +4396,13 @@ export function App() {
           </select>
         </label>
         <div className="tools-menu-wrap">
-          <Tip label="设备参数与 Maker 工具">
+          <Tip label="窄屏收起的入口与设备参数都在这里展开">
             <button
               className={`icon-command ${toolsMenuOpen ? "active" : ""}`}
-              aria-label="更多工具"
+              aria-label="更多"
               aria-expanded={toolsMenuOpen}
-              onClick={() => setToolsMenuOpen((open) => !open)}
-            ><MoreHorizontal size={15} /></button>
+              onClick={() => { setToolkitMenuOpen(false); setToolsMenuOpen((open) => !open); }}
+            ><MoreHorizontal size={15} /><span className="commandbar-more-label">更多</span></button>
           </Tip>
           {toolsMenuOpen && (
             <div className="tools-menu" role="menu">
@@ -4291,8 +4464,8 @@ export function App() {
               <section>
                 <h3>快捷入口</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolsMenuOpen(false); openExternalUrl("https://developer.taptap.cn/"); }}><ExternalLink size={13} />开发者后台</button>
-                  <button onClick={() => { setToolsMenuOpen(false); openExternalUrl("https://maker.taptap.cn/"); }}><ExternalLink size={13} />Maker 后台</button>
+                  <button onClick={() => { setToolsMenuOpen(false); openTapConsole("developer"); }}><ExternalLink size={13} />开发者后台</button>
+                  <button onClick={() => { setToolsMenuOpen(false); openTapConsole("maker"); }}><ExternalLink size={13} />Maker 后台</button>
                   <button onClick={() => { setToolsMenuOpen(false); openExternalUrl("https://www.taptap.cn/user/59693183/works"); }}><Gamepad2 size={13} />作者游戏品鉴</button>
                   <button onClick={() => { setToolsMenuOpen(false); setSponsorOpen(true); }}><Heart size={13} />赞赏作者</button>
                   <button onClick={() => { setToolsMenuOpen(false); openExternalUrl(QQ_GROUP_JOIN_URL); }}><MessageCircle size={13} />一键入群</button>
@@ -4302,13 +4475,7 @@ export function App() {
             </div>
           )}
         </div>
-        <span className="mode-hint">
-          {centerTab === "visual"
-            ? "结构编辑：拖动改位置 · 控制点改尺寸 · 右键管理节点 · 自动保存"
-            : mode === "live-edit"
-            ? "实时编辑：编辑视图与实际 Runtime 同步 · Shift 多选 · W/E/R/T 变换"
-            : "检查：单击只选中，源码跳转需显式点击"}
-        </span>
+        </div>
       </section>
 
       {qrOpen && (
@@ -4428,6 +4595,27 @@ export function App() {
             markNewGameRadarSeen();
             setRadarSeen(true);
           }}
+        />
+      )}
+
+      {makerConsoleOpen && (
+        <MakerConsolePanel
+          key="console-main"
+          open={makerConsoleOpen}
+          accountId={makerConsoleAccountId}
+          accountLabel={makerConsoleAccountLabel}
+          accountSource={makerConsoleAccountSource}
+          site={makerConsoleSite}
+          {...(project.root ? { projectRoot: project.root } : {})}
+          onSiteChange={setMakerConsoleSite}
+          onAccountChange={(id, label) => applyConsoleAccount(id, label, "manual", makerConsoleSite, true)}
+          onClose={() => {
+            setMakerConsoleOpen(false);
+            setMakerConsolePinned(false);
+            void window.tapMakerWork?.makerConsole?.unmount();
+          }}
+          onOpenExternal={openExternalUrl}
+          notify={toast}
         />
       )}
 
@@ -4603,7 +4791,12 @@ export function App() {
                 <button onClick={() => openExternalUrl(OFFICIAL_SITE_URL)}><ExternalLink size={13} />官网</button>
               </div>
             </section>
-            <MakerAccountsCard open={settingsOpen} {...(project?.root ? { projectRoot: project.root } : {})} notify={toast} />
+            <MakerAccountsCard
+              open={settingsOpen}
+              {...(project?.root ? { projectRoot: project.root } : {})}
+              notify={toast}
+              onOpenConsole={(accountId) => openMakerConsole(accountId)}
+            />
             <section className="maker-version-settings" aria-labelledby="maker-version-heading">
               <div className="maker-version-heading">
                 <div>
@@ -5074,7 +5267,7 @@ export function App() {
                     setCoachRuntimeStart(false);
                   }}
                   onModeChange={(next) => { if (next !== "play") setMode(next); }}
-                  onStart={() => { toast("正在启动 Maker 预览…", "info"); void runtimeAction("start"); }}
+                  onStart={() => { void runtimeAction("start"); }}
                   onInstallAdapter={() => void installRuntimeEditor()}
                   onSelect={selectCanvasNode}
                   onContextMenu={openNodeContextMenu}

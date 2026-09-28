@@ -355,7 +355,7 @@ export function installMakerRuntimeVersion(version: string, timeoutMs = 10 * 60_
 
 function runMakerArgs(
   runtime: MakerRuntime,
-  project: string,
+  project: string | undefined,
   args: string[],
   timeoutMs: number,
   home?: string,
@@ -363,9 +363,10 @@ function runMakerArgs(
 ): Promise<unknown> {
   const env = { ...process.env, ...extraEnv };
   if (home) env.TAPTAP_MAKER_HOME = home;
+  const cliArgs = project ? [...args, "--target-dir", project, "--json"] : [...args, "--json"];
   return new Promise((resolve, reject) => {
-    const child = spawn(runtime.node, [runtime.entry, ...args, "--target-dir", project, "--json"], {
-      cwd: project,
+    const child = spawn(runtime.node, [runtime.entry, ...cliArgs], {
+      cwd: project || process.cwd(),
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       env
@@ -489,6 +490,72 @@ export function runMakerCommand(
   return runMakerArgs(runtime, project, ["preview", command], timeoutMs, home);
 }
 
+export function runMakerPreviewInstall(
+  runtime: MakerRuntime,
+  project: string,
+  timeoutMs = 10 * 60_000,
+  home?: string
+): Promise<unknown> {
+  return runMakerArgs(runtime, project, ["preview", "install"], timeoutMs, home);
+}
+
+/** Stop Maker local console server (needed when launcher fingerprint mismatches after upgrade). */
+export function runMakerConsoleStop(
+  runtime: MakerRuntime,
+  timeoutMs = 30_000,
+  home?: string
+): Promise<unknown> {
+  return runMakerArgs(runtime, undefined, ["console", "stop"], timeoutMs, home);
+}
+
+/**
+ * Ensure current Maker home has a local UrhoX preview binary.
+ * Preview homes are per-account; installing under another account does not help.
+ */
+export async function ensureMakerPreviewRuntimeInstalled(
+  runtime: MakerRuntime,
+  project: string,
+  timeoutMs = 10 * 60_000,
+  onProgress?: (message: string) => void,
+  home?: string
+): Promise<"ready" | "installed"> {
+  try {
+    const status = await runMakerCommand(runtime, project, "status", Math.min(timeoutMs, 20_000), home) as {
+      install_state?: string;
+      process_alive?: boolean | null;
+    };
+    if (status?.install_state === "ready") return "ready";
+  } catch {
+    // Status may fail on a fresh home; still try install.
+  }
+
+  onProgress?.("当前账号的本地预览 Runtime 未安装，正在自动 preview install（首次可能较久）…");
+  try {
+    await runMakerCommand(runtime, project, "stop", Math.min(timeoutMs, 30_000), home);
+  } catch {
+    // Best effort: Maker refuses install while a verified preview is still alive.
+  }
+
+  try {
+    await runMakerPreviewInstall(runtime, project, timeoutMs, home);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/Stop the verified preview before installing/i.test(detail)) {
+      onProgress?.("安装前需先停止旧预览，正在 stop 后重试 install…");
+      try {
+        await runMakerCommand(runtime, project, "stop", Math.min(timeoutMs, 30_000), home);
+      } catch {
+        // continue
+      }
+      await runMakerPreviewInstall(runtime, project, timeoutMs, home);
+    } else {
+      throw error;
+    }
+  }
+  onProgress?.("preview install 完成。");
+  return "installed";
+}
+
 /** Extract Maker CLI JSON error payloads embedded in thrown Error.message / stdout. */
 export function parseMakerCliFailure(raw: unknown): { ok: false; result?: string; error?: string; message: string } | undefined {
   const text = raw instanceof Error ? raw.message : typeof raw === "string" ? raw : "";
@@ -519,6 +586,34 @@ export function isPreviewSupervisorUnreachable(raw: unknown): boolean {
     || /Process ownership is unverified/i.test(text)
     || /Previous preview ownership could not be verified/i.test(text);
 }
+
+/** Maker local UrhoX preview binary not installed yet (needs `preview install`). */
+export function isPreviewRuntimeMissing(raw: unknown): boolean {
+  if (raw && typeof raw === "object") {
+    const value = raw as { install_state?: string; error?: string; message?: string };
+    if (value.install_state === "missing") return true;
+    if (typeof value.error === "string" && /Runtime is missing/i.test(value.error)) return true;
+    if (typeof value.message === "string" && /Runtime is missing/i.test(value.message)) return true;
+  }
+  const text = raw instanceof Error ? raw.message : typeof raw === "string" ? raw : String(raw ?? "");
+  return /Runtime is missing/i.test(text)
+    || /install_state["']?\s*:\s*["']missing/i.test(text)
+    || /taptap-maker preview install/i.test(text);
+}
+
+/** Console server was started by another Maker build/launcher fingerprint. */
+export function isConsoleVersionConflict(raw: unknown): boolean {
+  const text = raw instanceof Error ? raw.message : typeof raw === "string" ? raw : String(raw ?? "");
+  if (raw && typeof raw === "object") {
+    const value = raw as { error?: string; message?: string };
+    if (typeof value.error === "string" && isConsoleVersionConflict(value.error)) return true;
+    if (typeof value.message === "string" && isConsoleVersionConflict(value.message)) return true;
+  }
+  return /Another Maker version is serving the console/i.test(text)
+    || /Stop that console before opening this version/i.test(text)
+    || /older console requiring a token is still running/i.test(text);
+}
+
 
 export type ProcessPresence = "alive" | "missing" | "unknown";
 
@@ -669,7 +764,10 @@ export function retireStaleMakerPreviewSession(
 /**
  * Windows often leaves a stale preview session after antivirus/WMI launch races.
  * Maker then refuses start/stop until the dead supervisor record is cleared.
- * Recovery: stop → retry start → if still stuck, safely retire dead session.json → start again.
+ * Also auto-runs `preview install` when the local UrhoX runtime is missing,
+ * and auto-stops an incompatible Maker console when launcher fingerprints mismatch.
+ * Recovery: install if missing → stop conflicting console → stop → retry start →
+ * if still stuck, safely retire dead session.json → start again.
  */
 export async function runMakerPreviewStartWithRecovery(
   runtime: MakerRuntime,
@@ -679,9 +777,10 @@ export async function runMakerPreviewStartWithRecovery(
   home?: string
 ): Promise<unknown> {
   const looksFailed = (value: unknown) => {
-    if (isPreviewSupervisorUnreachable(value)) return true;
+    if (isPreviewSupervisorUnreachable(value) || isConsoleVersionConflict(value)) return true;
     if (value && typeof value === "object" && "ok" in value && (value as { ok?: boolean }).ok === false) {
-      return isPreviewSupervisorUnreachable(JSON.stringify(value));
+      const text = JSON.stringify(value);
+      return isPreviewSupervisorUnreachable(text) || isConsoleVersionConflict(text);
     }
     return false;
   };
@@ -689,16 +788,103 @@ export async function runMakerPreviewStartWithRecovery(
   const attemptStart = async () => {
     try {
       const result = await runMakerCommand(runtime, project, "start", timeoutMs, home);
+      if (isPreviewRuntimeMissing(result)) return { ok: false as const, result, missingRuntime: true as const };
+      if (isConsoleVersionConflict(result)) return { ok: false as const, result, consoleConflict: true as const };
       if (!looksFailed(result)) return { ok: true as const, result };
       return { ok: false as const, result };
     } catch (error) {
+      if (isPreviewRuntimeMissing(error)) return { ok: false as const, error, missingRuntime: true as const };
+      if (isConsoleVersionConflict(error)) return { ok: false as const, error, consoleConflict: true as const };
       if (!isPreviewSupervisorUnreachable(error)) throw error;
       return { ok: false as const, error };
     }
   };
 
-  const first = await attemptStart();
+  const stopConflictingConsole = async () => {
+    onRecover?.("检测到旧版 Maker Console 占用，正在自动 console stop 后重试…");
+    const homes = new Set<string | undefined>([home, undefined]);
+    try {
+      const defaultHome = path.join(os.homedir(), ".taptap-maker");
+      if (fs.existsSync(defaultHome)) homes.add(fs.realpathSync(defaultHome));
+      const homesRoot = path.join(os.homedir(), ".tapmakerwork", "maker-homes");
+      if (fs.existsSync(homesRoot)) {
+        for (const entry of fs.readdirSync(homesRoot, { withFileTypes: true })) {
+          if (entry.isDirectory() || entry.isSymbolicLink()) {
+            homes.add(path.join(homesRoot, entry.name));
+          }
+        }
+      }
+    } catch {
+      // Best-effort discovery only.
+    }
+    for (const candidate of homes) {
+      try {
+        await runMakerConsoleStop(runtime, Math.min(timeoutMs, 30_000), candidate);
+      } catch {
+        // Keep trying other homes; current start retry is the source of truth.
+      }
+    }
+  };
+
+  const installMissingRuntime = async () => {
+    try {
+      await ensureMakerPreviewRuntimeInstalled(
+        runtime,
+        project,
+        Math.max(timeoutMs, 10 * 60_000),
+        onRecover,
+        home
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      onRecover?.(`preview install 失败：${detail}`);
+      throw new Error(
+        [
+          "自动安装 Maker 本地预览 Runtime 失败。",
+          `账号 home：${home || "~/.taptap-maker"}`,
+          "可手动执行：taptap-maker preview install --target-dir <项目绝对路径> --json",
+          detail
+        ].join("\n")
+      );
+    }
+  };
+
+  // Proactive: per-account home may lack Runtime even if another account already installed it.
+  try {
+    await ensureMakerPreviewRuntimeInstalled(
+      runtime,
+      project,
+      Math.max(timeoutMs, 10 * 60_000),
+      onRecover,
+      home
+    );
+  } catch (error) {
+    // Fall through to start; missing-runtime recovery below will retry install once more.
+    onRecover?.(error instanceof Error ? error.message : String(error));
+  }
+
+  let first = await attemptStart();
   if (first.ok) return first.result;
+
+  if ("missingRuntime" in first && first.missingRuntime) {
+    await installMissingRuntime();
+    first = await attemptStart();
+    if (first.ok) return first.result;
+    if ("missingRuntime" in first && first.missingRuntime) {
+      if ("error" in first && first.error) throw first.error;
+      return first.result;
+    }
+  }
+
+  if ("consoleConflict" in first && first.consoleConflict) {
+    await stopConflictingConsole();
+    first = await attemptStart();
+    if (first.ok) return first.result;
+    if ("consoleConflict" in first && first.consoleConflict) {
+      if ("error" in first && first.error) throw first.error;
+      return first.result;
+    }
+  }
 
   onRecover?.("检测到预览 Supervisor 不可达（常见于 Windows 残留会话），正在 stop 后重试 start…");
   try {
@@ -710,6 +896,12 @@ export async function runMakerPreviewStartWithRecovery(
   const second = await attemptStart();
   if (second.ok) return second.result;
 
+  if ("consoleConflict" in second && second.consoleConflict) {
+    await stopConflictingConsole();
+    const afterConsole = await attemptStart();
+    if (afterConsole.ok) return afterConsole.result;
+  }
+
   onRecover?.("stop 后仍不可达，正在安全退役已确认死亡的预览会话记录（不杀进程）…");
   const retired = retireStaleMakerPreviewSession(project, home ? { makerHome: home } : undefined);
   if (retired.retired) {
@@ -720,6 +912,13 @@ export async function runMakerPreviewStartWithRecovery(
 
   const third = await attemptStart();
   if (third.ok) return third.result;
+  if ("consoleConflict" in third && third.consoleConflict) {
+    await stopConflictingConsole();
+    const fourth = await attemptStart();
+    if (fourth.ok) return fourth.result;
+    if ("error" in fourth && fourth.error) throw fourth.error;
+    return fourth.result;
+  }
   if ("error" in third && third.error) throw third.error;
   return third.result;
 }
@@ -727,6 +926,22 @@ export async function runMakerPreviewStartWithRecovery(
 export function formatMakerPreviewError(raw: unknown): string {
   const parsed = parseMakerCliFailure(raw);
   const detail = parsed?.error || (raw instanceof Error ? raw.message : String(raw ?? "unknown"));
+  if (isPreviewRuntimeMissing(detail) || isPreviewRuntimeMissing(raw)) {
+    return [
+      "Maker 本地预览 Runtime 尚未安装（与顶部「Runtime 运行中」不是同一回事：那是 IDE 采集 Runtime）。",
+      "预览 Runtime 按 Maker 账号 home 隔离；换账号后需要重新安装。",
+      "IDE 会在当前账号下自动执行 preview install；请看 Runtime 日志里的安装进度。",
+      `原始错误：${detail}`
+    ].join("\n");
+  }
+  if (isConsoleVersionConflict(detail) || isConsoleVersionConflict(raw)) {
+    return [
+      "本机已有其它 Maker 版本在跑 Console（升级 / 换账号后指纹不匹配）。",
+      "IDE 会自动执行 console stop 后重试启动预览。",
+      "若仍失败，可手动运行：npx @taptap/maker console stop --json",
+      `原始错误：${detail}`
+    ].join("\n");
+  }
   if (isPreviewSupervisorUnreachable(detail)) {
     return [
       "Maker 预览 Supervisor 不可达（Windows 常见：上次预览异常退出后会话残留，或杀毒/WMI 后台启动被拦截）。",
