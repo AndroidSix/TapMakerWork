@@ -106,7 +106,7 @@ describe("project workflow", () => {
     });
   });
 
-  it("blocks Maker MCP versions other than 0.0.34 and offers an upgrade", () => {
+  it("blocks Maker MCP versions below 0.0.34 and offers an upgrade", () => {
     const overview = buildProjectWorkflowOverview({
       projectRoot: project(),
       projectName: "demo",
@@ -132,14 +132,39 @@ describe("project workflow", () => {
     expect(overview.nextAction?.label).toBe("升级");
   });
 
+  it("accepts Maker MCP 0.0.34 and newer without an upgrade prompt", () => {
+    const overview = buildProjectWorkflowOverview({
+      projectRoot: project(),
+      projectName: "demo",
+      makerBound: true,
+      makerCli: true,
+      makerVersion: "0.0.35",
+      uiScreenCount: 0,
+      previewPanel: {
+        url: "",
+        urlSource: "none",
+        orientation: "portrait",
+        autoRefreshIframe: true,
+        autoRefreshMaker: false,
+        transport: "auto",
+        reloadToken: 1
+      },
+      assets: []
+    });
+    const makerCheck = overview.stages.find((stage) => stage.id === "environment")?.checks.find((check) => check.id === "maker-cli");
+    expect(makerCheck?.status).toBe("pass");
+    expect(makerCheck?.action).toBeUndefined();
+    expect(makerCheck?.detail).toContain("0.0.35");
+  });
+
   it("shows an upgrade when the active Maker channel has a newer release", () => {
     const overview = buildProjectWorkflowOverview({
       projectRoot: project(),
       projectName: "demo",
       makerBound: true,
       makerCli: true,
-      makerVersion: "0.0.34",
-      makerChannelLatest: "0.0.35",
+      makerVersion: "0.0.35",
+      makerChannelLatest: "0.0.36",
       uiScreenCount: 0,
       previewPanel: {
         url: "",
@@ -155,6 +180,6 @@ describe("project workflow", () => {
     const makerCheck = overview.stages.find((stage) => stage.id === "environment")?.checks.find((check) => check.id === "maker-cli");
     expect(makerCheck?.status).toBe("warning");
     expect(makerCheck?.actionLabel).toBe("升级");
-    expect(makerCheck?.detail).toContain("0.0.35");
+    expect(makerCheck?.detail).toContain("0.0.36");
   });
 });

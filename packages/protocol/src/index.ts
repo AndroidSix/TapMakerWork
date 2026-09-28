@@ -116,11 +116,49 @@ export type ProjectWorkflowAction =
   | "generate-qrcode"
   | "build";
 
-/** TapMakerWork 当前只保证这个 Maker MCP 版本可用。 */
+/** 低于这个版本才提示升级。达到或超过即可继续使用。 */
 export const REQUIRED_MAKER_MCP_VERSION = "0.0.34";
 
-export function isRequiredMakerMcpVersion(version: string | undefined): version is typeof REQUIRED_MAKER_MCP_VERSION {
-  return version === REQUIRED_MAKER_MCP_VERSION;
+const MAKER_VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
+
+function compareMakerMcpVersions(leftVersion: string, rightVersion: string): number {
+  const parse = (version: string) => {
+    const match = MAKER_VERSION_PATTERN.exec(version.trim());
+    if (!match) return undefined;
+    return {
+      core: [Number(match[1]), Number(match[2]), Number(match[3])],
+      prerelease: match[4]?.split(".") ?? []
+    };
+  };
+  const left = parse(leftVersion);
+  const right = parse(rightVersion);
+  if (!left || !right) return Number.NaN;
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (left.core[index] ?? 0) - (right.core[index] ?? 0);
+    if (difference) return difference;
+  }
+  if (!left.prerelease.length && right.prerelease.length) return 1;
+  if (left.prerelease.length && !right.prerelease.length) return -1;
+  for (let index = 0; index < Math.max(left.prerelease.length, right.prerelease.length); index += 1) {
+    const leftPart = left.prerelease[index];
+    const rightPart = right.prerelease[index];
+    if (leftPart == null) return -1;
+    if (rightPart == null) return 1;
+    const leftNumber = /^\d+$/.test(leftPart) ? Number(leftPart) : undefined;
+    const rightNumber = /^\d+$/.test(rightPart) ? Number(rightPart) : undefined;
+    if (leftNumber !== undefined && rightNumber !== undefined && leftNumber !== rightNumber) return leftNumber - rightNumber;
+    if (leftNumber !== undefined && rightNumber === undefined) return -1;
+    if (leftNumber === undefined && rightNumber !== undefined) return 1;
+    const difference = leftPart.localeCompare(rightPart);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+export function isRequiredMakerMcpVersion(version: string | undefined): version is string {
+  if (!version) return false;
+  const compared = compareMakerMcpVersions(version, REQUIRED_MAKER_MCP_VERSION);
+  return Number.isFinite(compared) && compared >= 0;
 }
 
 export interface ProjectWorkflowCheck {
