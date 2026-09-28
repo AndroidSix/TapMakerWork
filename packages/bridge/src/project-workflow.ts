@@ -1,13 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
-import type {
-  PreviewPanelState,
-  ProjectAssetSummary,
-  ProjectWorkflowCheck,
-  ProjectWorkflowEvidence,
-  ProjectWorkflowOverview,
-  ProjectWorkflowStage,
-  ProjectWorkflowStatus
+import {
+  REQUIRED_MAKER_MCP_VERSION,
+  isRequiredMakerMcpVersion,
+  type PreviewPanelState,
+  type ProjectAssetSummary,
+  type ProjectWorkflowCheck,
+  type ProjectWorkflowEvidence,
+  type ProjectWorkflowOverview,
+  type ProjectWorkflowStage,
+  type ProjectWorkflowStatus
 } from "@tapmakerwork/protocol";
 import type { AssetEntry, GitStatus } from "./ide-tools.js";
 import { resolveInsideProject } from "./project.js";
@@ -36,6 +38,8 @@ export interface ProjectWorkflowInput {
   git?: GitStatus | undefined;
   gitError?: string | undefined;
   assets: AssetEntry[];
+  /** Newer release on the same channel as the active Maker MCP, when one exists. */
+  makerChannelLatest?: string | undefined;
 }
 
 function walkFiles(root: string, predicate: (filename: string) => boolean, limit = 500): string[] {
@@ -167,14 +171,28 @@ export function buildProjectWorkflowOverview(input: ProjectWorkflowInput): Proje
   const devKit = fs.existsSync(path.join(input.projectRoot, "AGENTS.md")) || fs.existsSync(path.join(input.projectRoot, ".installer"));
   const previewConfigured = Boolean(input.previewPanel.url);
 
+  const versionOk = isRequiredMakerMcpVersion(input.makerVersion);
+  const newerChannel = versionOk && input.makerChannelLatest && input.makerChannelLatest !== input.makerVersion
+    ? input.makerChannelLatest
+    : undefined;
   const stages: ProjectWorkflowStage[] = [
     stage("environment", "环境", "确认官方 Maker 与本地 Git 工具链。", [
       {
         id: "maker-cli",
         label: "官方 Maker CLI",
-        status: input.makerCli ? "pass" : "blocked",
-        detail: input.makerCli ? `已发现 ${input.makerVersion || "Maker runtime"}` : "未发现 @taptap/maker runtime",
-        ...(input.makerCli ? {} : { action: "install-maker" as const, actionLabel: "一键修复" })
+        status: !input.makerCli || !versionOk ? "blocked" : newerChannel ? "warning" : "pass",
+        detail: !input.makerCli
+          ? "未发现 @taptap/maker runtime"
+          : !versionOk
+            ? `当前 ${input.makerVersion || "未知版本"}，需要 ${REQUIRED_MAKER_MCP_VERSION} 才能使用`
+            : newerChannel
+              ? `当前 ${input.makerVersion}，对应通道有新版本 ${newerChannel}`
+              : `已发现 ${input.makerVersion || "Maker runtime"}`,
+        ...(!input.makerCli
+          ? { action: "install-maker" as const, actionLabel: "一键修复" }
+          : (!versionOk || newerChannel)
+            ? { action: "install-maker" as const, actionLabel: "升级" }
+            : {})
       },
       {
         id: "git",

@@ -385,6 +385,13 @@ const capabilities: BridgeCapabilities = {
   platform: process.platform
 };
 
+function newerMakerChannelVersion(activeVersion: string | undefined): string | undefined {
+  if (!activeVersion || !makerRemoteVersions) return undefined;
+  const latest = activeVersion.includes("-") ? makerRemoteVersions.beta : makerRemoteVersions.stable;
+  if (!latest || compareMakerVersions(latest, activeVersion) <= 0) return undefined;
+  return latest;
+}
+
 function makerVersionsPayload() {
   const installed = listInstalledMakerRuntimes();
   const preference = readMakerRuntimePreference();
@@ -529,6 +536,13 @@ const server = http.createServer(async (request, response) => {
       const makerMeta = readMakerProjectMeta(project.root);
       const panel = resolvePreviewPanel(project.root, makerMeta);
       const fileStatus = syncRuntimeFileChannel();
+      if (!makerRemoteVersions) {
+        try {
+          makerRemoteVersions = await checkMakerRuntimeUpdates();
+        } catch {
+          // 工作台仍可展示本机版本；对应通道的新版本等下次检查。
+        }
+      }
       sendJson(response, 200, buildProjectWorkflowOverview({
         projectRoot: project.root,
         projectName: project.name,
@@ -543,7 +557,8 @@ const server = http.createServer(async (request, response) => {
         qrcodeUrl: makerMeta.qrcodeUrl,
         git,
         gitError,
-        assets: listProjectAssets(project.root)
+        assets: listProjectAssets(project.root),
+        makerChannelLatest: newerMakerChannelVersion(makerRuntime?.version)
       }));
     } else if (request.method === "POST" && url.pathname === "/api/workflow/state") {
       if (!project) throw new Error("project_not_open");
@@ -1343,15 +1358,20 @@ const server = http.createServer(async (request, response) => {
       broadcast({ type: "log.append", channel: "agent", lines: [`Maker MCP 已切换为 ${body.mode === "device" ? "设备自动" : makerRuntime?.version ?? body.mode}`] });
       sendJson(response, 200, { ok: true, ...makerVersionsPayload() });
     } else if (request.method === "POST" && url.pathname === "/api/maker/version/install") {
-      const body = await readJson(request) as { channel?: "stable" | "beta" };
-      if (body.channel !== "stable" && body.channel !== "beta") throw new Error("invalid_maker_update_channel");
-      makerRemoteVersions = await checkMakerRuntimeUpdates();
-      const target = makerRemoteVersions[body.channel];
-      if (!target) throw new Error(`maker_${body.channel}_version_unavailable`);
-      broadcast({ type: "log.append", channel: "build", lines: [`正在安装 Maker MCP ${target}（${body.channel === "stable" ? "稳定版" : "Beta"}）…`] });
+      const body = await readJson(request) as { channel?: "stable" | "beta"; version?: string };
+      const pinned = typeof body.version === "string" && body.version !== "" ? body.version : undefined;
+      if (!pinned && body.channel !== "stable" && body.channel !== "beta") throw new Error("invalid_maker_update_channel");
+      let target = pinned;
+      if (!target) {
+        makerRemoteVersions = await checkMakerRuntimeUpdates();
+        target = makerRemoteVersions[body.channel!];
+        if (!target) throw new Error(`maker_${body.channel}_version_unavailable`);
+      }
+      const label = pinned ? target : body.channel === "stable" ? "稳定版" : "Beta";
+      broadcast({ type: "log.append", channel: "build", lines: [`正在安装 Maker MCP ${target}（${label}）…`] });
       const result = await installMakerRuntimeVersion(target);
       if (!listInstalledMakerRuntimes().some((runtime) => runtime.version === target)) throw new Error("maker_install_not_found_after_upgrade");
-      writeMakerRuntimePreference({ mode: body.channel });
+      writeMakerRuntimePreference(pinned ? { mode: "version", version: target } : { mode: body.channel! });
       refreshSelectedMakerRuntime();
       broadcast({ type: "log.append", channel: "build", lines: [`Maker MCP ${target} 安装完成，TapMakerWork 已切换。其他 AI 客户端可能需要重新连接 MCP。`] });
       sendJson(response, 200, { ok: true, result, ...makerVersionsPayload() });

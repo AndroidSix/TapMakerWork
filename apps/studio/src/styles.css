@@ -987,7 +987,10 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .sponsor-codes figcaption { color: #dce6f4; font-size: 12px; font-weight: 650; }
 .sponsor-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 20px; border-top: 1px solid var(--border); }
 .sponsor-dialog > footer button { min-height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; color: var(--text); background: var(--control); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
-.update-prompt-dialog { width: min(520px, calc(100vw - 32px)); }
+.maker-version-dialog { width: min(480px, calc(100vw - 32px)); }
+.maker-version-gate-body { padding: 16px 18px 4px; color: var(--text); font-size: 13px; line-height: 1.6; }
+.maker-version-backdrop { z-index: 2100; }
+.maker-required-upgrade { margin-top: 8px; }
 .update-prompt-body { padding: 16px 20px; overflow: auto; }
 .update-notes {
   margin: 0;

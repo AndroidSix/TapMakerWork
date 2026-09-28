@@ -26,12 +26,12 @@ export interface AppUpdateManifest {
 }
 
 export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
-  latest: "0.1.2",
-  title: "TapMakerWork 0.1.2",
+  latest: "0.1.3",
+  title: "TapMakerWork 0.1.3",
   notes: [
-    "【macOS】请下载 .pkg（不要用 .dmg）。未签名时双击被拦截后，到「隐私与安全性」点「仍要打开」。",
-    "实时编辑：预览改成功并保存后，重启与正式运行一致；写不进源码的改动记入 UiOverrides 并重放。",
-    "Yoga 回写 Lua + 新游雷达 + Maker CLI 一键修复；详见完整更新日志。",
+    "Maker MCP 必须是 0.0.34。版本不符时会弹窗，升级完成后才能继续使用。",
+    "工作台：当前通道有更新的对应版本时显示升级按钮。",
+    "实时编辑增加「同步代码」开关，默认打开。",
     "未配置远程 version.json 时使用内置清单。"
   ],
   links: [
@@ -41,7 +41,7 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
     },
     {
       label: "完整更新日志",
-      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.2"
+      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.3"
     },
     {
       label: "源码打包详细步骤",
@@ -51,12 +51,12 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
   publishedAt: "2026-09-24",
   force: false,
   downloads: {
-    macArm64: "https://github.com/AndroidSix/TapMakerWork/releases/download/0.1.2/TapMakerWork-0.1.2-mac-arm64.pkg",
-    macX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/0.1.2/TapMakerWork-0.1.2-mac-x64.pkg",
-    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/0.1.2/TapMakerWork-0.1.2-windows-x64.exe",
-    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/0.1.2",
+    macArm64: "https://github.com/AndroidSix/TapMakerWork/releases/download/0.1.3/TapMakerWork-0.1.3-mac-arm64.pkg",
+    macX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/0.1.3/TapMakerWork-0.1.3-mac-x64.pkg",
+    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/0.1.3/TapMakerWork-0.1.3-windows-x64.exe",
+    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/0.1.3",
     site: "https://androidsix.github.io/tapmakerwork-site/",
-    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/0.1.2"
+    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/0.1.3"
   }
 };
 

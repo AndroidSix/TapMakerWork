@@ -97,6 +97,8 @@ import {
   type PreviewPanelState,
   type ProjectWorkflowAction,
   type ProjectWorkflowOverview,
+  REQUIRED_MAKER_MCP_VERSION,
+  isRequiredMakerMcpVersion,
   type WorkspaceMode
 } from "@tapmakerwork/protocol";
 import { PreviewDock } from "./PreviewDock";
@@ -2862,6 +2864,52 @@ export function App() {
     }
   }, [makerVersions, refreshMakerHealth, toast]);
 
+  const installRequiredMakerMcp = useCallback(async () => {
+    const current = health?.makerVersion;
+    if (isRequiredMakerMcpVersion(current)) {
+      await installMakerChannel(current.includes("-") ? "beta" : "stable", { confirm: false });
+      await loadWorkflow();
+      return;
+    }
+    let installed = makerVersions?.installed.some((item) => item.version === REQUIRED_MAKER_MCP_VERSION) ?? false;
+    if (!installed) {
+      try {
+        const listed = await fetch(`${API}/api/maker/versions`);
+        if (listed.ok) {
+          const versions = await listed.json() as MakerVersionState;
+          setMakerVersions(versions);
+          installed = versions.installed.some((item) => item.version === REQUIRED_MAKER_MCP_VERSION);
+        }
+      } catch {
+        installed = false;
+      }
+    }
+    if (installed) {
+      await selectMakerVersion("version", REQUIRED_MAKER_MCP_VERSION);
+      await loadWorkflow();
+      return;
+    }
+    setMakerVersionBusy("stable");
+    try {
+      toast(`正在安装 Maker MCP ${REQUIRED_MAKER_MCP_VERSION}…`, "info");
+      const response = await fetch(`${API}/api/maker/version/install`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: REQUIRED_MAKER_MCP_VERSION })
+      });
+      const result = await response.json() as MakerVersionState & { error?: string };
+      if (!response.ok) throw new Error(result.error || "安装失败");
+      setMakerVersions(result);
+      await refreshMakerHealth();
+      await loadWorkflow();
+      toast(`Maker MCP ${REQUIRED_MAKER_MCP_VERSION} 已安装并切换`, "success");
+    } catch (error) {
+      toast(`安装 Maker MCP 失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setMakerVersionBusy("");
+    }
+  }, [health?.makerVersion, installMakerChannel, loadWorkflow, makerVersions, refreshMakerHealth, selectMakerVersion, toast]);
+
   const syncSystemNode = useCallback(async () => {
     setMakerVersionBusy("node");
     try {
@@ -3772,7 +3820,7 @@ export function App() {
     setWorkflowBusyAction(action);
     try {
       if (action === "doctor") await runMakerDoctor();
-      else if (action === "install-maker") await installMakerChannel("stable", { confirm: false });
+      else if (action === "install-maker") await installRequiredMakerMcp();
       else if (action === "open-design") {
         setMode("live-edit");
         setCenterTab("visual");
@@ -3897,6 +3945,28 @@ export function App() {
       onOpenExternal={openExternalUrl}
     />
     : null;
+  const makerVersionGate = health && !isRequiredMakerMcpVersion(health.makerVersion)
+    ? (
+      <div className="legal-backdrop maker-version-backdrop" role="presentation">
+        <section className="legal-dialog maker-version-dialog" role="dialog" aria-modal="true" aria-labelledby="maker-version-gate-title">
+          <header>
+            <div>
+              <span>MAKER MCP</span>
+              <h2 id="maker-version-gate-title">需要升级 Maker MCP 才能使用</h2>
+            </div>
+          </header>
+          <div className="maker-version-gate-body">
+            <p>当前版本是 {health.makerVersion || "未安装"}。TapMakerWork 只支持 Maker MCP {REQUIRED_MAKER_MCP_VERSION}，升级到这个版本之后才能继续编辑和预览。</p>
+          </div>
+          <footer>
+            <button className="primary" disabled={Boolean(makerVersionBusy)} onClick={() => void installRequiredMakerMcp()}>
+              {makerVersionBusy ? "正在升级…" : `升级到 ${REQUIRED_MAKER_MCP_VERSION}`}
+            </button>
+          </footer>
+        </section>
+      </div>
+    )
+    : null;
 
   if (!projectLoaded || !project) {
     return (
@@ -3926,7 +3996,7 @@ export function App() {
           </div>
           <div className="welcome-decoration" aria-hidden="true"><div /><div /><div /></div>
         </section>
-      </main>{legalOverlay}{projectRejectOverlay}{permissionOverlay}{updatePromptOverlay}</>
+      </main>{legalOverlay}{projectRejectOverlay}{permissionOverlay}{updatePromptOverlay}{makerVersionGate}</>
     );
   }
 
@@ -4536,6 +4606,13 @@ export function App() {
                 <small>自动使用设备中版本最高的 Maker MCP，不锁定版本。</small>
                 <strong>{makerVersions?.active?.version || "未发现本机版本"}</strong>
               </button>
+              {!isRequiredMakerMcpVersion(makerVersions?.active?.version) && (
+                <button
+                  className="primary maker-required-upgrade"
+                  onClick={() => void installRequiredMakerMcp()}
+                  disabled={Boolean(makerVersionBusy)}
+                >升级到 {REQUIRED_MAKER_MCP_VERSION}</button>
+              )}
 
               <div className="maker-channel-grid">
                 {(["stable", "beta"] as const).map((channel) => {
@@ -5396,6 +5473,6 @@ export function App() {
         <span>{connected ? "本机连接" : "离线"}</span>
       </footer>
       <ToastStack items={toasts} />
-    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{sponsorOverlay}{roadmapOverlay}{newbieOverlay}{permissionOverlay}{updatePromptOverlay}</>
+    </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{sponsorOverlay}{roadmapOverlay}{newbieOverlay}{permissionOverlay}{updatePromptOverlay}{makerVersionGate}</>
   );
 }

@@ -22,7 +22,7 @@ function jsonText(value: unknown): { content: Array<{ type: "text"; text: string
 }
 
 const server = new Server(
-  { name: "tapmakerwork-project", version: "0.1.2" },
+  { name: "tapmakerwork-project", version: "0.1.3" },
   { capabilities: { resources: {}, tools: {} } }
 );
 
