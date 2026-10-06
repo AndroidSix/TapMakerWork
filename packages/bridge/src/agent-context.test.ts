@@ -39,6 +39,7 @@ describe("agent-context file channel", () => {
     })).toMatchObject({ channel: "runtime" });
     expect(parseAgentFileRequest({ id: "1", action: "shell" })).toBeUndefined();
     expect(AGENT_FILE_ACTIONS).toContain("capture_frame");
+    expect(AGENT_FILE_ACTIONS).toContain("maker_console_open");
   });
 
   it("publishes STATUS / errors / snapshot under .tapmakerwork/ai", () => {

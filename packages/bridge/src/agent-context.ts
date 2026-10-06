@@ -21,6 +21,7 @@ export const AGENT_FILE_ACTIONS = [
   "maker_build",
   "maker_doctor",
   "maker_qrcode",
+  "maker_console_open",
   "save_ui_sidecar",
   "sync_runtime",
   "open_ui",

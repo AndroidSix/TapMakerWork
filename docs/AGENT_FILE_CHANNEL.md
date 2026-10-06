@@ -49,6 +49,7 @@ Base：`http://127.0.0.1:43121/api/agent`
 | `maker_preview_start` / `stop` / `refresh` | 预览生命周期 |
 | `maker_preview_status` / `maker_preview_logs` | 预览状态与日志 |
 | `maker_build` / `maker_doctor` / `maker_qrcode` | 构建 / doctor / 测试码 |
+| `maker_console_open` | 打开本地 Runtime 控制台（`console open`） |
 | `open_ui` | 打开 UI 文件（IDE 切到该文件） |
 | `open_terminal` | 打开指定终端通道（runtime/build/lua…） |
 | `focus_ide` | 把 TapMakerWork 提到前台 |
