@@ -508,6 +508,16 @@ export function runMakerConsoleStop(
   return runMakerArgs(runtime, undefined, ["console", "stop"], timeoutMs, home);
 }
 
+/** Open official local Maker Runtime console for the bound project (browser / desktop console UI). */
+export function runMakerConsoleOpen(
+  runtime: MakerRuntime,
+  project: string,
+  timeoutMs = 45_000,
+  home?: string
+): Promise<unknown> {
+  return runMakerArgs(runtime, project, ["console", "open"], timeoutMs, home);
+}
+
 /**
  * Ensure current Maker home has a local UrhoX preview binary.
  * Preview homes are per-account; installing under another account does not help.

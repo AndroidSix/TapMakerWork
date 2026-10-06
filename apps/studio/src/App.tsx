@@ -3954,6 +3954,27 @@ export function App() {
     }
   };
 
+  const openRuntimeConsole = useCallback(async () => {
+    if (!project) {
+      toast("请先打开 Maker 项目", "warn");
+      return;
+    }
+    setActiveTerminal("runtime");
+    toast("正在打开本地 Runtime 控制台…", "info");
+    setLogs((current) => ({ ...current, runtime: [...current.runtime, "正在打开本地 Runtime 控制台（maker console open）…"] }));
+    try {
+      const response = await fetch(`${API}/api/maker/console/open`, { method: "POST" });
+      const result = await response.json() as { error?: string; ok?: boolean };
+      if (!response.ok) throw new Error(result.error || response.statusText);
+      toast("已请求打开 Runtime 控制台", "success");
+      setLogs((current) => ({ ...current, runtime: [...current.runtime, "本地 Runtime 控制台已请求打开"] }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast(`打开 Runtime 控制台失败：${message}`, "error");
+      setLogs((current) => ({ ...current, runtime: [...current.runtime, `打开 Runtime 控制台失败：${message}`] }));
+    }
+  }, [project, toast]);
+
   const installRuntimeEditor = async () => {
     setAdapterInstallBusy(true);
     try {
@@ -4337,11 +4358,24 @@ export function App() {
           </CoachMark>
         </Tip>
         <Tip label="刷新 Maker Runtime">
-          <button className="icon-command" aria-label="刷新 Runtime" disabled={runtimeBusy} onClick={() => void runtimeAction("refresh")}><RefreshCw size={14} /></button>
+          <button
+            className="icon-command icon-command-label"
+            aria-label="刷新 Runtime"
+            disabled={runtimeBusy}
+            onClick={() => void runtimeAction("refresh")}
+          ><RefreshCw size={14} /><span className="tiny">刷新</span></button>
+        </Tip>
+        <Tip label="打开官方本地 Runtime 控制台（maker console open；与网页「Maker 后台」不同）">
+          <button
+            className="icon-command icon-command-label"
+            aria-label="打开 Runtime 控制台"
+            disabled={!project || !health?.capabilities.makerCli || runtimeBusy}
+            onClick={() => void openRuntimeConsole()}
+          ><TerminalSquare size={14} /><span className="tiny">控制台</span></button>
         </Tip>
         <Tip label="右侧内嵌预览（可与画布/代码并排）">
           <button
-            className={`icon-command ${previewDockOpen ? "active" : ""}`}
+            className={`icon-command icon-command-label ${previewDockOpen ? "active" : ""}`}
             aria-pressed={previewDockOpen}
             aria-label="内嵌预览"
             onClick={() => {

@@ -38,6 +38,7 @@ import {
   runMakerPreviewStartWithRecovery,
   formatMakerPreviewError,
   isPreviewSupervisorUnreachable,
+  runMakerConsoleOpen,
   runMakerDoctor,
   runMakerQrcode,
   runMakerReadOnly,
@@ -298,6 +299,8 @@ async function executeAgentFileRequest(request: AgentFileRequest): Promise<unkno
       return bridgeLocalJson("/api/maker/build", { method: "POST" });
     case "maker_doctor":
       return bridgeLocalJson("/api/maker/doctor");
+    case "maker_console_open":
+      return bridgeLocalJson("/api/maker/console/open", { method: "POST" });
     case "maker_qrcode":
       return bridgeLocalJson("/api/maker/qrcode", {
         method: "POST",
@@ -1824,6 +1827,20 @@ const server = http.createServer(async (request, response) => {
         const message = error instanceof Error ? error.message : String(error);
         broadcast({ type: "log.append", channel: "qrcode", lines: [`二维码生成失败：${message}`] });
         sendJson(response, 400, { error: message, meta: readMakerProjectMeta(project.root) });
+      }
+    } else if (request.method === "POST" && url.pathname === "/api/maker/console/open") {
+      if (!project) throw new Error("project_not_open");
+      if (!makerRuntime) throw new Error("maker_cli_not_found");
+      broadcast({ type: "log.append", channel: "runtime", lines: ["正在打开本地 Runtime 控制台（maker console open）…"] });
+      try {
+        const home = await previewHome(project.root);
+        const result = await runMakerConsoleOpen(makerRuntime, project.root, 45_000, home);
+        broadcast({ type: "log.append", channel: "runtime", lines: ["本地 Runtime 控制台已请求打开。", JSON.stringify(result).slice(0, 2000)] });
+        sendJson(response, 200, { ok: true, result });
+      } catch (error) {
+        const message = formatMakerPreviewError(error);
+        broadcast({ type: "log.append", channel: "runtime", lines: [`打开 Runtime 控制台失败：${message}`] });
+        sendJson(response, 400, { error: message });
       }
     } else if (request.method === "GET" && url.pathname === "/api/maker/preview/status") {
       if (!project) throw new Error("project_not_open");
