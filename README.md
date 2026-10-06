@@ -98,7 +98,7 @@
 | **图片压缩工具** | 内置批量压缩（默认本地可用；可选 TinyPNG），结果面板直接看体积收益，缩小包体 |
 | **交付工作台** | 环境 / 项目 / 内容 / Runtime / 验证 / 构建就绪度一条线 |
 | **素材审计** | 图片、音频、视频、模型、字体引用审计，辅助清理无用资源 |
-| **AI / MCP** | 项目级 **MCP**，供 Claude / Cursor / Codex 等读项目与控件状态 |
+| **AI 开箱** | 无 MCP：项目内 `.tapmakerwork/ai/` 文件通道，Cursor / Trae / WorkBuddy 等直接读快照并 inbox 控制 |
 | **开发技巧** | IDE 内可复制提示（本地预览 Token 优化、grill-me、发布前检查等） |
 
 ### 演示视频
@@ -119,7 +119,7 @@ Electron 桌面 / 控制台
         │
    本地 Editor Bridge (127.0.0.1)
         │
-   官方 Maker CLI  ·  可选项目适配器  ·  MCP
+   官方 Maker CLI  ·  可选项目适配器  ·  AI 文件通道
 ```
 
 ---
@@ -257,8 +257,6 @@ https://qm.qq.com/q/OCt1HAmHK2
 - Maker MCP 版本发现与 stable/Beta 切换
 - 系统 Node.js 发现（PATH / 登录 shell / Homebrew / Volta）
 - macOS Runtime 窗口采集与输入转发（需系统权限）
-- 项目 MCP：文件、转换、快照、Runtime、预览与构建工具（无通用 Shell）
-
 </details>
 
 ---
@@ -315,15 +313,20 @@ npm run dist:all    # 双平台（视构建链而定）
 
 ---
 
-## Project MCP
+## AI Agent（文件通道 + HTTP，无 Project MCP）
 
-构建并保持 Bridge 运行后，在任意 stdio MCP 客户端中配置：
+用 TapMakerWork 打开游戏项目后，Bridge 会自动维护：
 
 ```text
-node /absolute/path/to/packages/bridge/dist/mcp.js
+.tapmakerwork/ai/STATUS.md          ← 先读；改完再读
+.tapmakerwork/ai/ui-snapshot.json
+.tapmakerwork/ai/errors.json
+.tapmakerwork/ai/preview.png        ← Runtime 画面（有则看）
+.tapmakerwork/ai/inbox/ / outbox/   ← 命令与结果
 ```
 
-可提供项目文件、UI 转换与补丁、Runtime 状态与日志、预览/构建/测试码等能力；**不提供通用 shell**。详见 [`docs/MCP.md`](./docs/MCP.md)。
+也可用本机 HTTP：`http://127.0.0.1:43121/api/agent/status|command|…`。  
+任意 AI IDE 打开**同一游戏项目**即可闭环调试。详见 [`docs/AGENT_FILE_CHANNEL.md`](./docs/AGENT_FILE_CHANNEL.md)。
 
 ---
 

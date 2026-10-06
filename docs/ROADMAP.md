@@ -16,7 +16,7 @@
 - [ ] macOS and Windows filesystem-sandbox escape suite (Shell remains fail-closed).
 - [x] Official Maker preview status, log and lifecycle adapters.
 - [x] Static/hybrid Lua UI converter with source mapping and dynamic-slot preservation.
-- [x] Project MCP resources/tools smoke-tested over stdio.
+- [x] Agent file channel under `.tapmakerwork/ai/` (Project MCP removed).
 
 ## M1 - IDE foundation
 
@@ -63,7 +63,7 @@
 - [x] AI 开发技巧库：提示词、上下文组织、本地预览 Token 优化、grill-me、发布前检查（可一键复制）
 - [x] 新手引导：实时编辑两步上手 + 首次弱提示
 - [ ] 可导入 Skills / 工程模板，供 Claude、Cursor、Codex 等参考
-- [ ] 与项目 MCP 联动：把指南暴露为 resource，方便 Agent 检索
+- [x] 指南写入 `.tapmakerwork/ai`，方便 Agent 检索（文件通道）
 
 ## M7 - 多平台打包能力（规划）
 

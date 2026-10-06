@@ -324,7 +324,7 @@ const initialLogs: Record<LogChannel, string[]> = {
   shell: ["Shell 已锁定：OS 级项目沙箱尚未通过双平台逃逸测试。"],
   repl: ["Lua REPL 将在 Runtime Dev Bridge 接入后启用。"],
   qrcode: ["暂无二维码任务。"],
-  agent: ["等待 Codex / Claude / Cursor 通过项目 MCP Bridge 连接。"]
+  agent: ["AI：读 .tapmakerwork/ai/STATUS.md；inbox 或 POST /api/agent/command 控制；改完再读 snapshot/errors/preview.png。"]
 };
 
 function iconForType(type: string): ReactNode {
@@ -1312,7 +1312,7 @@ const ROADMAP_SECTIONS: Array<{ title: string; icon: ReactNode; items: string[] 
     items: [
       "IDE 内实践指南：常见坑、排错路径、交付检查清单（标题栏「开发技巧」已提供部分）",
       "AI 开发技巧库扩展：更多可导入 Skills / 工程模板",
-      "指南暴露为项目 MCP resource，便于 Agent 检索"
+      "指南写入 .tapmakerwork/ai，便于 Agent 检索"
     ]
   },
   {
@@ -1537,13 +1537,18 @@ export function App() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
+  const bringIdeToFront = useCallback(() => {
+    void window.tapMakerWork?.bringToFront?.();
+  }, []);
+
   const toast = useCallback((message: string, kind: ToastKind = "info", durationMs = 2800) => {
     const id = Date.now() + Math.random();
     setToasts((list) => list.some((item) => item.kind === kind && item.message === message)
       ? list
       : [...list, { id, kind, message }]);
     window.setTimeout(() => setToasts((list) => list.filter((item) => item.id !== id)), durationMs);
-  }, []);
+    if (kind === "error") bringIdeToFront();
+  }, [bringIdeToFront]);
 
   const upsertPreviewToast = useCallback((message: string, kind: ToastKind = "info", opts?: { busy?: boolean; autoHideMs?: number }) => {
     const id = previewToastIdRef.current ?? (Date.now() + Math.random());
@@ -1563,7 +1568,8 @@ export function App() {
         previewToastTimerRef.current = null;
       }, opts.autoHideMs);
     }
-  }, []);
+    if (kind === "error") bringIdeToFront();
+  }, [bringIdeToFront]);
 
   const upsertPreviewToastRef = useRef(upsertPreviewToast);
   upsertPreviewToastRef.current = upsertPreviewToast;
@@ -2310,6 +2316,41 @@ export function App() {
     await readFile(screenPath, false);
     setCenterTab("visual");
   }, [readFile, screens, toast]);
+
+  const openUiScreenRef = useRef(openUiScreen);
+  openUiScreenRef.current = openUiScreen;
+  const projectRef = useRef(project);
+  projectRef.current = project;
+
+  const uploadAgentPreviewFrame = useCallback(async () => {
+    const capture = window.tapMakerWork?.captureRuntime || window.tapMakerWork?.runtime?.capture;
+    const current = projectRef.current;
+    if (!capture || !current) return;
+    try {
+      const result = await capture({
+        projectName: current.name,
+        orientation: previewPanel?.orientation || "portrait"
+      });
+      if (!result.ok || !result.dataUrl) return;
+      await fetch(`${API}/api/agent/frame`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dataUrl: result.dataUrl })
+      });
+    } catch {
+      // 截图权限未就绪时忽略
+    }
+  }, [previewPanel?.orientation]);
+
+  const uploadAgentPreviewFrameRef = useRef(uploadAgentPreviewFrame);
+  uploadAgentPreviewFrameRef.current = uploadAgentPreviewFrame;
+
+  useEffect(() => {
+    if (!project || health?.runtimeScene !== "live") return;
+    void uploadAgentPreviewFrame();
+    const timer = window.setInterval(() => { void uploadAgentPreviewFrame(); }, 4_000);
+    return () => window.clearInterval(timer);
+  }, [project, health?.runtimeScene, uploadAgentPreviewFrame]);
 
   const selectNode = useCallback((nodeId: string, additive = false) => {
     setSelectedNodeIds((currentIds) => {
@@ -3422,11 +3463,36 @@ export function App() {
           }
         }
         if (event.type === "preview.panel") setPreviewPanel(event.panel);
+        if (event.type === "agent.ui") {
+          const req = event.request;
+          if (req.kind === "focus_ide") void window.tapMakerWork?.bringToFront?.();
+          if (req.kind === "open_terminal") {
+            setActiveTerminal(req.channel);
+            void window.tapMakerWork?.bringToFront?.();
+          }
+          if (req.kind === "open_ui") {
+            void openUiScreenRef.current?.(req.path);
+            setCenterTab("code");
+            void window.tapMakerWork?.bringToFront?.();
+          }
+          if (req.kind === "capture_frame") {
+            void uploadAgentPreviewFrameRef.current?.();
+            void window.tapMakerWork?.bringToFront?.();
+          }
+        }
         if (event.type === "log.append") {
           setLogs((current) => ({ ...current, [event.channel]: [...current[event.channel], ...event.lines] }));
+          const failureLine = event.lines.find((line) => /失败|error|exception|unreachable|崩溃|FAIL\b/i.test(line));
+          if (failureLine && (event.channel === "runtime" || event.channel === "build" || event.channel === "lua")) {
+            setActiveTerminal(event.channel);
+            void window.tapMakerWork?.bringToFront?.();
+          }
           if (event.channel === "runtime" && runtimeBusyRef.current) {
             const latest = event.lines.filter((line) => line.trim()).at(-1);
-            if (latest) upsertPreviewToastRef.current(latest.slice(0, 120), "info", { busy: true });
+            if (latest) {
+              const failed = /失败|error|exception|unreachable|崩溃|FAIL\b/i.test(latest);
+              upsertPreviewToastRef.current(latest.slice(0, 120), failed ? "error" : "info", failed ? { autoHideMs: 5000 } : { busy: true });
+            }
           }
         }
       };

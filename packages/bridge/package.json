@@ -1,18 +1,16 @@
 {
   "name": "@tapmakerwork/bridge",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "mcp": "tsx src/mcp.ts",
     "test": "vitest run src",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.27.1",
     "@tapmakerwork/protocol": "*",
     "jimp": "^1.6.1",
     "luaparse": "^0.3.1",

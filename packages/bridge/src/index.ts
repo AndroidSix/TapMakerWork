@@ -10,6 +10,7 @@ import {
   findUiNode,
   type BridgeCapabilities,
   type BridgeEvent,
+  type LogChannel,
   type RuntimeCommand,
   type SnapshotSource,
   type UiConversionDocument,
@@ -69,6 +70,20 @@ import {
   type PreviewPanelFile
 } from "./preview-panel.js";
 import { buildProjectWorkflowOverview, saveProjectWorkflow } from "./project-workflow.js";
+import {
+  AGENT_FILE_ACTIONS,
+  listAgentInboxRequests,
+  looksLikeFailureLine,
+  markAgentContextOffline,
+  parseAgentFileRequest,
+  previewPngExists,
+  publishAgentContext,
+  pushAgentError,
+  writeAgentOutbox,
+  writeAgentPreviewFrame,
+  type AgentErrorEntry,
+  type AgentFileRequest
+} from "./agent-context.js";
 import {
   accountSourceLabel,
   activateGlobalMakerHome,
@@ -205,11 +220,211 @@ function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
 
 const host = "127.0.0.1";
 const port = Number(process.env.TAPMAKERWORK_BRIDGE_PORT || 43121);
+const bridgeUrl = `http://${host}:${port}`;
 let makerRuntime = discoverMakerRuntime();
 let makerRemoteVersions: MakerRemoteVersions | undefined;
 let nodeRemoteVersion: NodeRemoteVersion | undefined;
 const sandbox = sandboxStatus();
 let project: ProjectBinding | undefined;
+let lastAgentPublishAt = 0;
+let lastAgentPublishKey = "";
+let agentInboxBusy = false;
+let agentErrors: AgentErrorEntry[] = [];
+const recentAgentLogs: Partial<Record<LogChannel, string[]>> = {};
+
+function rememberAgentLog(channel: LogChannel, lines: string[]): void {
+  const bucket = recentAgentLogs[channel] ?? [];
+  bucket.push(...lines.map((line) => line.slice(0, 400)));
+  recentAgentLogs[channel] = bucket.slice(-30);
+  for (const line of lines) {
+    if (looksLikeFailureLine(line)) agentErrors = pushAgentError(agentErrors, channel, line);
+  }
+}
+
+function publishAgentContextNow(force = false): void {
+  if (!project) return;
+  const snapshot = editor.getSnapshot();
+  const key = `${snapshot.revision}:${snapshotSource}:${runtimeScene}:${runtimeSessionId || ""}:${agentErrors.length}:${previewPngExists(project.root)}`;
+  const now = Date.now();
+  if (!force && key === lastAgentPublishKey && now - lastAgentPublishAt < 250) return;
+  lastAgentPublishKey = key;
+  lastAgentPublishAt = now;
+  try {
+    publishAgentContext({
+      projectRoot: project.root,
+      projectName: project.name,
+      bridgeUrl,
+      snapshot,
+      snapshotSource,
+      runtimeScene,
+      activeUiEntry,
+      errors: agentErrors,
+      recentLogs: recentAgentLogs,
+      ...(runtimeSessionId ? { runtimeSessionId } : {}),
+      alive: true
+    });
+  } catch (error) {
+    process.stderr.write(`[TapMakerWork] agent context publish failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+}
+
+async function bridgeLocalJson(pathname: string, init?: RequestInit): Promise<unknown> {
+  const response = await fetch(`${bridgeUrl}${pathname}`, init);
+  const value = await response.json() as { error?: string };
+  if (!response.ok) throw new Error(value.error || `bridge_http_${response.status}`);
+  return value;
+}
+
+async function executeAgentFileRequest(request: AgentFileRequest): Promise<unknown> {
+  switch (request.action) {
+    case "publish_now":
+      publishAgentContextNow(true);
+      return { published: true, revision: editor.getSnapshot().revision, previewPng: project ? previewPngExists(project.root) : false };
+    case "ui_undo":
+      return bridgeLocalJson("/api/ui/undo", { method: "POST" });
+    case "ui_redo":
+      return bridgeLocalJson("/api/ui/redo", { method: "POST" });
+    case "maker_preview_start":
+      return bridgeLocalJson("/api/maker/preview/start", { method: "POST" });
+    case "maker_preview_stop":
+      return bridgeLocalJson("/api/maker/preview/stop", { method: "POST" });
+    case "maker_preview_refresh":
+      return bridgeLocalJson("/api/maker/preview/refresh", { method: "POST" });
+    case "maker_preview_status":
+      return bridgeLocalJson("/api/maker/preview/status");
+    case "maker_preview_logs":
+      return bridgeLocalJson("/api/maker/preview/logs");
+    case "maker_build":
+      return bridgeLocalJson("/api/maker/build", { method: "POST" });
+    case "maker_doctor":
+      return bridgeLocalJson("/api/maker/doctor");
+    case "maker_qrcode":
+      return bridgeLocalJson("/api/maker/qrcode", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...(request.orientation ? { confirmedScreenOrientation: request.orientation } : {})
+        })
+      });
+    case "save_ui_sidecar": {
+      const snapshot = editor.getSnapshot();
+      return bridgeLocalJson("/api/ui/sidecar", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: request.path || activeUiEntry, snapshot })
+      });
+    }
+    case "sync_runtime": {
+      syncRuntimeFileChannel();
+      publishAgentContextNow(true);
+      return { ok: true, snapshot: editor.getSnapshot(), source: snapshotSource, runtimeScene };
+    }
+    case "open_ui": {
+      const uiPath = request.path || activeUiEntry;
+      if (!uiPath) throw new Error("path_required");
+      const opened = await bridgeLocalJson("/api/ui/open", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: uiPath })
+      });
+      broadcast({ type: "agent.ui", request: { kind: "open_ui", path: uiPath } });
+      return opened;
+    }
+    case "open_terminal": {
+      const channel = request.channel || "runtime";
+      broadcast({ type: "agent.ui", request: { kind: "open_terminal", channel } });
+      return { ok: true, channel };
+    }
+    case "focus_ide":
+      broadcast({ type: "agent.ui", request: { kind: "focus_ide" } });
+      return { ok: true };
+    case "capture_frame":
+      broadcast({ type: "agent.ui", request: { kind: "capture_frame" } });
+      return { ok: true, pending: true, note: "Studio will write preview.png shortly" };
+    case "project_search": {
+      const query = encodeURIComponent(request.query || "");
+      const limit = Number(request.limit || 50);
+      return bridgeLocalJson(`/api/project/search?q=${query}&limit=${limit}`);
+    }
+    case "read_project_file": {
+      if (!request.path) throw new Error("path_required");
+      return bridgeLocalJson(`/api/project/file?path=${encodeURIComponent(request.path)}`);
+    }
+    case "convert_lua_ui": {
+      if (!request.path) throw new Error("path_required");
+      return bridgeLocalJson(`/api/ui/convert?path=${encodeURIComponent(request.path)}`);
+    }
+    case "workflow_set_objective": {
+      if (!request.objective?.trim()) throw new Error("objective_required");
+      return bridgeLocalJson("/api/workflow/state", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ objective: request.objective.trim() })
+      });
+    }
+    case "git_status":
+      return bridgeLocalJson("/api/git/status");
+    case "ui_apply_patch": {
+      if (!request.nodeId) throw new Error("nodeId_required");
+      const snapshot = editor.getSnapshot();
+      const patch: UiPatch = {
+        requestId: crypto.randomUUID(),
+        baseRevision: snapshot.revision,
+        nodeId: request.nodeId,
+        props: request.props || {}
+      };
+      return bridgeLocalJson("/api/ui/patch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+    }
+    default:
+      throw new Error(`unknown_action:${String((request as { action?: string }).action)}`);
+  }
+}
+
+async function processAgentInbox(): Promise<void> {
+  if (!project || agentInboxBusy) return;
+  const items = listAgentInboxRequests(project.root);
+  if (!items.length) return;
+  agentInboxBusy = true;
+  try {
+    for (const { file, request } of items) {
+      try {
+        const result = await executeAgentFileRequest(request);
+        writeAgentOutbox(project.root, {
+          id: request.id,
+          ok: true,
+          action: request.action,
+          result,
+          finishedAt: new Date().toISOString()
+        }, file);
+        broadcast({
+          type: "log.append",
+          channel: "agent",
+          lines: [`AI 文件通道：${request.action} 完成（${request.id}）`]
+        });
+      } catch (error) {
+        writeAgentOutbox(project.root, {
+          id: request.id,
+          ok: false,
+          action: request.action,
+          error: error instanceof Error ? error.message : String(error),
+          finishedAt: new Date().toISOString()
+        }, file);
+        broadcast({
+          type: "log.append",
+          channel: "agent",
+          lines: [`AI 文件通道：${request.action} 失败（${request.id}）：${error instanceof Error ? error.message : String(error)}`]
+        });
+      }
+      publishAgentContextNow(true);
+    }
+  } finally {
+    agentInboxBusy = false;
+  }
+}
 
 if (process.env.TAPMAKERWORK_PROJECT) {
   try {
@@ -751,7 +966,15 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, 200, { project, activeUiEntry });
     } else if (request.method === "POST" && url.pathname === "/api/project/close") {
       const closedProject = project ? { root: project.root, name: project.name } : null;
+      if (closedProject) {
+        try {
+          markAgentContextOffline(closedProject.root, closedProject.name, bridgeUrl);
+        } catch {
+          // ignore offline marker failures
+        }
+      }
       project = undefined;
+      lastAgentPublishKey = "";
       activeUiEntry = defaultUiEntry;
       uiScreens = { summaries: [] as UiScreenSummary[], documents: new Map<string, UiConversionDocument>() };
       conversion = undefined;
@@ -804,11 +1027,16 @@ const server = http.createServer(async (request, response) => {
       } catch (error) {
         adapter = { installed: false, changed: false, error: error instanceof Error ? error.message : String(error) };
       }
+      publishAgentContextNow(true);
       sendJson(response, 200, {
         project,
         snapshot,
         activeUiEntry,
         adapter,
+        agentContext: {
+          dir: ".tapmakerwork/ai",
+          contextFile: ".tapmakerwork/ai/CONTEXT.md"
+        },
         sidecar: conversion ? {
           path: sidecarRelativePath(conversion.sourceFile),
           exists: sidecarExists(project.root, conversion.sourceFile),
@@ -1443,7 +1671,7 @@ const server = http.createServer(async (request, response) => {
       if (!listInstalledMakerRuntimes().some((runtime) => runtime.version === target)) throw new Error("maker_install_not_found_after_upgrade");
       writeMakerRuntimePreference(pinned ? { mode: "version", version: target } : { mode: body.channel! });
       refreshSelectedMakerRuntime();
-      broadcast({ type: "log.append", channel: "build", lines: [`Maker MCP ${target} 安装完成，TapMakerWork 已切换。其他 AI 客户端可能需要重新连接 MCP。`] });
+      broadcast({ type: "log.append", channel: "build", lines: [`Maker CLI ${target} 安装完成，TapMakerWork 已切换。`] });
       sendJson(response, 200, { ok: true, result, ...makerVersionsPayload() });
     } else if (request.method === "POST" && url.pathname === "/api/node/version/sync") {
       refreshSelectedMakerRuntime();
@@ -1811,6 +2039,75 @@ const server = http.createServer(async (request, response) => {
           error: error instanceof Error ? error.message : String(error)
         });
       }
+    } else if (request.method === "GET" && url.pathname === "/api/agent/status") {
+      if (!project) throw new Error("project_not_open");
+      syncRuntimeFileChannel();
+      publishAgentContextNow(true);
+      sendJson(response, 200, {
+        ok: true,
+        bridgeUrl,
+        httpApi: `${bridgeUrl}/api/agent`,
+        project: { root: project.root, name: project.name },
+        activeUiEntry,
+        runtimeScene,
+        runtimeSessionId,
+        snapshotSource,
+        snapshotRevision: editor.getSnapshot().revision,
+        previewPng: previewPngExists(project.root),
+        errorCount: agentErrors.length,
+        errors: agentErrors.slice(-20),
+        actions: AGENT_FILE_ACTIONS
+      });
+    } else if (request.method === "GET" && url.pathname === "/api/agent/snapshot") {
+      if (!project) throw new Error("project_not_open");
+      syncRuntimeFileChannel();
+      sendJson(response, 200, { snapshot: editor.getSnapshot(), source: snapshotSource, runtimeScene });
+    } else if (request.method === "GET" && url.pathname === "/api/agent/errors") {
+      if (!project) throw new Error("project_not_open");
+      sendJson(response, 200, { errors: agentErrors, logs: recentAgentLogs });
+    } else if (request.method === "POST" && url.pathname === "/api/agent/command") {
+      if (!project) throw new Error("project_not_open");
+      const body = await readJson(request) as unknown;
+      const parsed = parseAgentFileRequest(body)
+        || parseAgentFileRequest({
+          ...(body && typeof body === "object" ? body as object : {}),
+          id: typeof (body as { id?: string })?.id === "string"
+            ? (body as { id: string }).id
+            : crypto.randomUUID()
+        });
+      if (!parsed) throw new Error("invalid_agent_command");
+      try {
+        const result = await executeAgentFileRequest(parsed);
+        writeAgentOutbox(project.root, {
+          id: parsed.id,
+          ok: true,
+          action: parsed.action,
+          result,
+          finishedAt: new Date().toISOString()
+        });
+        publishAgentContextNow(true);
+        sendJson(response, 200, { ok: true, id: parsed.id, action: parsed.action, result });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        agentErrors = pushAgentError(agentErrors, "agent", `${parsed.action}: ${message}`);
+        writeAgentOutbox(project.root, {
+          id: parsed.id,
+          ok: false,
+          action: parsed.action,
+          error: message,
+          finishedAt: new Date().toISOString()
+        });
+        publishAgentContextNow(true);
+        sendJson(response, 400, { ok: false, id: parsed.id, action: parsed.action, error: message });
+      }
+    } else if (request.method === "POST" && url.pathname === "/api/agent/frame") {
+      if (!project) throw new Error("project_not_open");
+      const body = await readJson(request, 8_000_000) as { dataUrl?: string; base64?: string };
+      const payload = body.dataUrl || body.base64;
+      if (!payload) throw new Error("frame_data_required");
+      const written = writeAgentPreviewFrame(project.root, payload);
+      publishAgentContextNow(true);
+      sendJson(response, 200, { ok: true, ...written });
     } else if (request.method === "POST" && url.pathname === "/api/shell/execute") {
       sendJson(response, 423, { error: "sandbox_unavailable", detail: sandbox.reason });
     } else {
@@ -1834,6 +2131,10 @@ server.on("upgrade", (request, socket, head) => {
 function broadcast(event: BridgeEvent): void {
   const payload = JSON.stringify(event);
   for (const socket of sockets) if (socket.readyState === WebSocket.OPEN) socket.send(payload);
+  if (event.type === "log.append") rememberAgentLog(event.channel, event.lines);
+  if (event.type === "ui.snapshot" || event.type === "ui.patch.applied" || event.type === "log.append") {
+    publishAgentContextNow();
+  }
 }
 
 wss.on("connection", (socket) => {
@@ -1853,9 +2154,30 @@ try {
 
 server.listen(port, host, () => {
   process.stdout.write(`[TapMakerWork] Bridge listening on http://${host}:${port}\n`);
+  process.stdout.write(`[TapMakerWork] Agent file channel: project/.tapmakerwork/ai\n`);
+  if (project) publishAgentContextNow(true);
 });
 
+const agentChannelTimer = setInterval(() => {
+  if (!project) return;
+  try {
+    syncRuntimeFileChannel();
+    publishAgentContextNow();
+  } catch {
+    // ignore periodic sync failures
+  }
+  void processAgentInbox();
+}, 500);
+
 function shutdown(): void {
+  clearInterval(agentChannelTimer);
+  if (project) {
+    try {
+      markAgentContextOffline(project.root, project.name, bridgeUrl);
+    } catch {
+      // ignore
+    }
+  }
   for (const socket of sockets) socket.close();
   server.close(() => process.exit(0));
 }

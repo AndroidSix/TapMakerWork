@@ -160,10 +160,35 @@ async function interactOnWindows(opts?: {
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   } finally {
-    app.focus({ steal: true });
-    mainWindow?.show();
-    mainWindow?.focus();
+    bringIdeToFront();
   }
+}
+
+let lastBringToFrontAt = 0;
+
+/** 运行/预览报错时把 IDE 提到前台，避免用户盯着游戏窗错过失败提示。 */
+function bringIdeToFront(force = false): { ok: boolean } {
+  const now = Date.now();
+  if (!force && now - lastBringToFrontAt < 1_500) return { ok: true };
+  lastBringToFrontAt = now;
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  if (!window) return { ok: false };
+  try {
+    if (process.platform === "darwin") {
+      app.dock?.show();
+      app.focus({ steal: true });
+      app.dock?.bounce("informational");
+    } else if (process.platform === "win32") {
+      window.flashFrame(true);
+    }
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.moveTop();
+    window.focus();
+  } catch {
+    // ignore focus races while quitting
+  }
+  return { ok: true };
 }
 
 type PermissionName = "screen" | "accessibility";
@@ -647,6 +672,7 @@ function createWindow(): void {
 }
 
 ipcMain.handle("tapmakerwork:permissions-get", () => permissionState());
+ipcMain.handle("tapmakerwork:bring-to-front", () => bringIdeToFront(true));
 ipcMain.handle("tapmakerwork:clipboard-write", (_event, value: unknown) => {
   if (typeof value !== "string" || !value) return { ok: false, error: "clipboard_text_empty" };
   if (Buffer.byteLength(value, "utf8") > 5 * 1024 * 1024) return { ok: false, error: "clipboard_text_too_large" };

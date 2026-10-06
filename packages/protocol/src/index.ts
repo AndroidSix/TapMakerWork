@@ -212,6 +212,12 @@ export interface ProjectWorkflowOverview {
 
 export type SnapshotSource = "conversion" | "sidecar" | "runtime" | "empty";
 
+export type AgentUiRequest =
+  | { kind: "open_terminal"; channel: LogChannel }
+  | { kind: "open_ui"; path: string }
+  | { kind: "capture_frame" }
+  | { kind: "focus_ide" };
+
 export type BridgeEvent =
   | { type: "session.hello"; protocolVersion: typeof PROTOCOL_VERSION; capabilities: BridgeCapabilities }
   | { type: "ui.snapshot"; snapshot: UiSnapshot; source?: SnapshotSource }
@@ -219,7 +225,8 @@ export type BridgeEvent =
   | { type: "ui.patch.rejected"; requestId: string; reason: string; snapshot: UiSnapshot }
   | { type: "log.append"; channel: LogChannel; lines: string[] }
   | { type: "runtime.frame"; frameId: number; mimeType: string; data: string; width: number; height: number }
-  | { type: "preview.panel"; panel: PreviewPanelState; reason?: string };
+  | { type: "preview.panel"; panel: PreviewPanelState; reason?: string }
+  | { type: "agent.ui"; request: AgentUiRequest };
 
 export type RuntimeCommand =
   | { id: number; type: "ui.patch"; patch: UiPatch }

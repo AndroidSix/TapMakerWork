@@ -92,4 +92,4 @@ The Studio delivery cockpit is an original TapMakerWork composition and a projec
 - Validation state is derived from `*.ui.json` sidecars, Runtime snapshots and the official test QR entry; screenshot evidence is intentionally not part of the workbench.
 - The current objective is the only manually persisted workflow field and lives in `.tapmakerwork/workflow.json`.
 - Build remains an explicit action. A readiness score never triggers a build, push or publish automatically.
-- External agents read the same state through `tapmakerwork://workflow/overview`; they do not maintain a parallel progress database.
+- External agents use `.tapmakerwork/ai/` (STATUS/snapshot/errors/preview) plus optional `http://127.0.0.1:43121/api/agent/*` (Project MCP removed). See `AGENT_FILE_CHANNEL.md`.
