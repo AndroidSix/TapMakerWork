@@ -4,22 +4,18 @@
 
 ## 2026-10-06 — TapMakerWork 0.1.5
 
-### 用法（AI 调试 IDE / 运行时）
-1. 打开 **TapMakerWork**，绑定你的 Maker 游戏项目（建议再启动 Runtime / 预览）。
-2. 用 **Cursor / Trae / WorkBuddy / Codex / Claude** 等打开**同一个游戏项目目录**（不是本仓库源码）。
-3. 对 AI 说：`按 .tapmakerwork/ai/STATUS.md 闭环调试`（或「读 STATUS / snapshot / errors，修好界面」）。
-4. 无需配置 Project MCP。可选自检：`curl -s http://127.0.0.1:43121/api/agent/status`。
-5. 详细协议与 action 列表见 [`docs/AGENT_FILE_CHANNEL.md`](./AGENT_FILE_CHANNEL.md)。
+### 本版核心功能
+- **AI 控 IDE / Runtime（跨工具）**：Cursor、Trae、WorkBuddy、Codex、Claude 等可读取运行时 UI 活树、错误与画面，并控制 patch、预览启停、构建、doctor、打开 UI/终端、截帧等——无需 Project MCP。
+- **开箱文件通道**：打开项目即写入 `.tapmakerwork/ai/`（`STATUS.md`、`ui-snapshot.json`、`errors.json`、`preview.png`、`inbox`/`outbox`）；可选本机 HTTP `http://127.0.0.1:43121/api/agent/*`。
+- **闭环调试约定**：改完必须再读 STATUS / snapshot / errors（`AGENTS.md` 自动插入说明）；Runtime `live` 时自动刷新 `preview.png`。
+- **报错置前**：运行/预览失败时桌面 IDE 自动提到前台（任务栏/Dock 提示），避免漏看错误。
+- **移除 Project MCP**；官方 Maker CLI 版本门禁不变。协议详见 [`docs/AGENT_FILE_CHANNEL.md`](./AGENT_FILE_CHANNEL.md)。
 
-### AI 文件通道 + HTTP（无 Project MCP）
-- **开箱即用**：自动维护 `.tapmakerwork/ai/`（`STATUS.md`、`CONTEXT.md`、`ui-snapshot.json`、`errors.json`、`logs-summary.json`、`preview.png`）。
-- **移除 Project MCP**；官方 Maker CLI 版本门禁不变。
-- Agent 用 **inbox/outbox** 或 **`http://127.0.0.1:43121/api/agent/*`** 控制 IDE/运行时（patch、预览、构建、doctor、打开 UI/终端、截帧、搜代码等）。
-- **闭环约定**：改完必须再读 STATUS / snapshot / errors（AGENTS.md 自动插入说明）。
-- Runtime `live` 时自动采样画面到 `preview.png`；也可用 `capture_frame`。
-
-### 桌面体验
-- **运行/预览报错时**桌面 IDE 自动提到前台（并闪烁任务栏/Dock），避免用户错过失败提示。
+### 用法
+1. 打开 **TapMakerWork**，绑定 Maker 游戏项目（建议启动 Runtime / 预览）。
+2. 用任意 AI IDE 打开**同一游戏项目目录**。
+3. 对 AI 说：`按 .tapmakerwork/ai/STATUS.md 闭环调试`。
+4. 可选自检：`curl -s http://127.0.0.1:43121/api/agent/status`。
 
 ### 打包与其它
 - 版本号同步至 **0.1.5**（GitHub Release 标签为 **`v0.1.5`**：[发行页](https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.5)）。

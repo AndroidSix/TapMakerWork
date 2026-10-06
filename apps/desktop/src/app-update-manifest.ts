@@ -29,10 +29,10 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
   latest: "0.1.5",
   title: "TapMakerWork 0.1.5",
   notes: [
-    "AI 调试开箱：打开 TapMakerWork 绑定游戏项目后，自动写入 .tapmakerwork/ai/（无需 MCP）。",
-    "用法：① 保持本 IDE 打开并尽量启动 Runtime ② 用 Cursor/Trae/WorkBuddy/Codex 打开同一游戏目录 ③ 对 AI 说「按 .tapmakerwork/ai/STATUS.md 闭环调试」。",
-    "AI 可读 STATUS/snapshot/errors/preview.png，经 inbox 或 http://127.0.0.1:43121/api/agent 控制 patch、预览、构建等；改完再读结果。",
-    "运行/预览报错时 IDE 自动提到前台。版本 0.1.5"
+    "【AI 控 IDE】任意 AI（Cursor/Trae/WorkBuddy/Codex…）可像控本地软件一样调试本 IDE 与 Runtime：读活树/错误/画面，改控件、启停预览、构建、doctor、截帧。",
+    "【开箱无 MCP】打开项目即写入 .tapmakerwork/ai/（STATUS、snapshot、errors、preview.png）；也可用 http://127.0.0.1:43121/api/agent。",
+    "【报错置前】运行/预览失败时 IDE 自动抢到前台，避免漏看错误。",
+    "用法：TapMakerWork 打开游戏项目并尽量启动 Runtime → AI 打开同一目录 → 说「按 .tapmakerwork/ai/STATUS.md 闭环调试」。"
   ],
   links: [
     {
