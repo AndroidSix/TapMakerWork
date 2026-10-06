@@ -26,19 +26,18 @@ export interface AppUpdateManifest {
 }
 
 export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
-  latest: "0.1.4",
-  title: "TapMakerWork 0.1.4",
+  latest: "0.1.5",
+  title: "TapMakerWork 0.1.5",
   notes: [
-    "全局账号切换会同步本机 ~/.taptap-maker，外部 Maker CLI / MCP 跟着生效。",
-    "Maker / 开发者后台可在 IDE 内嵌打开，按账号隔离登录；工具栏可手动切换网页账号。",
-    "修复后台切账号串 Cookie、本项目账号菜单点不开、启动预览无进度反馈。",
-    "本地预览按账号隔离 Runtime，缺装或 Console 冲突时自动恢复。",
-    "版本号同步至 0.1.4"
+    "AI 调试开箱：打开 TapMakerWork 绑定游戏项目后，自动写入 .tapmakerwork/ai/（无需 MCP）。",
+    "用法：① 保持本 IDE 打开并尽量启动 Runtime ② 用 Cursor/Trae/WorkBuddy/Codex 打开同一游戏目录 ③ 对 AI 说「按 .tapmakerwork/ai/STATUS.md 闭环调试」。",
+    "AI 可读 STATUS/snapshot/errors/preview.png，经 inbox 或 http://127.0.0.1:43121/api/agent 控制 patch、预览、构建等；改完再读结果。",
+    "运行/预览报错时 IDE 自动提到前台。版本 0.1.5"
   ],
   links: [
     {
       label: "完整更新日志",
-      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.4"
+      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.5"
     },
     {
       label: "macOS 安装说明",
@@ -49,15 +48,15 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
       url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/DESKTOP_RELEASE.md#macos-build-from-source"
     }
   ],
-  publishedAt: "2026-09-28",
+  publishedAt: "2026-10-06",
   force: false,
   downloads: {
-    macArm64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.4/TapMakerWork-0.1.4-mac-arm64.pkg",
-    macX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.4/TapMakerWork-0.1.4-mac-x64.pkg",
-    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.4/TapMakerWork-0.1.4-windows-x64.exe",
-    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.4",
+    macArm64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.5/TapMakerWork-0.1.5-mac-arm64.pkg",
+    macX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.5/TapMakerWork-0.1.5-mac-x64.pkg",
+    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.5/TapMakerWork-0.1.5-windows-x64.exe",
+    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.5",
     site: "https://androidsix.github.io/tapmakerwork-site/",
-    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.4"
+    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.5"
   }
 };
 
