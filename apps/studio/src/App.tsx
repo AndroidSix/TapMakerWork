@@ -3148,7 +3148,7 @@ export function App() {
     setMakerBusy("doctor");
     setActiveTerminal("build");
     try {
-      const response = await fetch(`${API}/api/maker/doctor`);
+      const response = await fetch(`${API}/api/maker/doctor`, { method: "POST" });
       if (!response.ok) {
         const result = await response.json() as { error?: string };
         setLogs((current) => ({ ...current, build: [...current.build, `doctor 失败：${result.error ?? response.statusText}`] }));

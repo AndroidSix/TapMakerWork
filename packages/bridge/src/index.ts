@@ -299,7 +299,7 @@ async function executeAgentFileRequest(request: AgentFileRequest): Promise<unkno
     case "maker_build":
       return bridgeLocalJson("/api/maker/build", { method: "POST" });
     case "maker_doctor":
-      return bridgeLocalJson("/api/maker/doctor");
+      return bridgeLocalJson("/api/maker/doctor", { method: "POST" });
     case "maker_console_open":
       return bridgeLocalJson("/api/maker/console/open", { method: "POST" });
     case "maker_qrcode":
@@ -1803,7 +1803,7 @@ const server = http.createServer(async (request, response) => {
         makerVersion: makerRuntime?.version,
         meta: readMakerProjectMeta(project.root)
       });
-    } else if (request.method === "GET" && url.pathname === "/api/maker/doctor") {
+    } else if (request.method === "POST" && url.pathname === "/api/maker/doctor") {
       if (!project) throw new Error("project_not_open");
       if (!makerRuntime) throw new Error("maker_cli_not_found");
       broadcast({ type: "log.append", channel: "build", lines: ["Maker doctor…"] });
@@ -2190,6 +2190,14 @@ try {
 } catch (error) {
   process.stderr.write(`[TapMakerWork] Maker home activate failed: ${error instanceof Error ? error.message : String(error)}\n`);
 }
+
+server.on("error", (error: NodeJS.ErrnoException) => {
+  const reason = error.code === "EADDRINUSE"
+    ? `端口 ${port} 已被占用（可能已有一个 TapMakerWork 在运行，或其它程序占用了该端口）`
+    : error.message;
+  process.stderr.write(`[TapMakerWork] Bridge failed to listen on http://${host}:${port}: ${error.code ?? "error"} ${reason}\n`);
+  process.exit(error.code === "EADDRINUSE" ? 98 : 1);
+});
 
 server.listen(port, host, () => {
   process.stdout.write(`[TapMakerWork] Bridge listening on http://${host}:${port}\n`);
