@@ -59,6 +59,21 @@ describe("Maker runtime selection", () => {
     expect(selectMakerRuntime(installed, { mode: "beta" })?.version).toBe("0.0.34-beta.7");
   });
 
+  it("merges Maker versions installed under different account homes, preferring the first root", () => {
+    const activeRoot = temporaryDirectory();
+    const otherAccountRoot = temporaryDirectory();
+    const install = (root: string, version: string) => {
+      fs.mkdirSync(path.join(root, version, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(root, version, "dist", "maker.js"), "", "utf8");
+    };
+    install(activeRoot, "0.0.32");
+    install(otherAccountRoot, "0.0.32");
+    install(otherAccountRoot, "0.0.40");
+    const installed = listInstalledMakerRuntimes([activeRoot, otherAccountRoot, path.join(activeRoot, "missing")]);
+    expect(installed.map((runtime) => runtime.version)).toEqual(["0.0.40", "0.0.32"]);
+    expect(installed.find((runtime) => runtime.version === "0.0.32")?.entry).toBe(path.join(activeRoot, "0.0.32", "dist", "maker.js"));
+  });
+
   it("persists an explicit version preference atomically", () => {
     const preferenceFile = path.join(temporaryDirectory(), "settings", "maker-runtime.json");
     expect(readMakerRuntimePreference(preferenceFile)).toEqual({ mode: "device" });
@@ -192,5 +207,40 @@ describe("Maker runtime selection", () => {
     expect(retired.retired).toBe(false);
     expect(retired.reason).toContain("pids_not_safe");
     expect(fs.existsSync(path.join(previewDir, "session.json"))).toBe(true);
+  });
+});
+
+describe("npm tool launch", () => {
+  const upgradeArgs = ["-y", "--package", "@taptap/maker@1.2.3", "taptap-maker", "upgrade", "--json"];
+
+  it("runs npm's bundled npx-cli.js with node instead of the Windows .cmd shim", async () => {
+    const { resolveNpmToolLaunch } = await import("./maker.js");
+    const node = path.join("C:", "nodejs", "node.exe");
+    const cli = path.join("C:", "nodejs", "node_modules", "npm", "bin", "npx-cli.js");
+    const launch = resolveNpmToolLaunch("npx", node, upgradeArgs, "win32", (candidate) => candidate === cli, () => undefined);
+    expect(launch).toEqual({ command: node, args: [cli, ...upgradeArgs], windowsVerbatimArguments: false });
+  });
+
+  it("finds npm's CLI entry in the Unix lib layout", async () => {
+    const { resolveNpmToolLaunch } = await import("./maker.js");
+    const cli = path.join("/opt/node/bin", "..", "lib", "node_modules", "npm", "bin", "npm-cli.js");
+    const launch = resolveNpmToolLaunch("npm", "/opt/node/bin/node", ["install"], "darwin", (candidate) => candidate === cli, () => undefined);
+    expect(launch?.command).toBe("/opt/node/bin/node");
+    expect(launch?.args).toEqual([cli, "install"]);
+  });
+
+  it("wraps a Windows .cmd shim in a quoted cmd.exe call when no CLI entry exists", async () => {
+    const { resolveNpmToolLaunch } = await import("./maker.js");
+    const shim = "C:\\Program Files\\nodejs\\npx.cmd";
+    const launch = resolveNpmToolLaunch("npx", "C:\\Users\\A B\\node.exe", [...upgradeArgs, "C:\\Users\\A B\\cache"], "win32", () => false, () => shim);
+    expect(launch?.command).toBe("cmd.exe");
+    expect(launch?.windowsVerbatimArguments).toBe(true);
+    expect(launch?.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
+    expect(launch?.args[3]).toBe(`""${shim}" -y --package @taptap/maker@1.2.3 taptap-maker upgrade --json "C:\\Users\\A B\\cache""`);
+  });
+
+  it("reports nothing when neither npm nor npx can be found", async () => {
+    const { resolveNpmToolLaunch } = await import("./maker.js");
+    expect(resolveNpmToolLaunch("npx", "/usr/bin/node", [], "linux", () => false, () => undefined)).toBeUndefined();
   });
 });
