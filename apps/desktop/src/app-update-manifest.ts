@@ -33,7 +33,10 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
     "【实时编辑桥注入】支持任意 TimeStep 变量名；保留入口文件 BOM 与 CRLF，修复 Windows 编辑器保存的 main.lua 注入后报 Lua 语法错误。",
     "【失败原因可见】注入失败、Runtime 自动重启失败会弹出中文原因并写入 Runtime 日志。",
     "【Git 忽略】打开项目时自动把 .tapmakerwork/ 写入项目 .gitignore。",
-    "【防丢改动】保存时检测外部修改并提示，切换文件前确认未保存内容；非 UTF-8 文件只读打开，避免中文乱码；视觉改动写回 Lua 更安全。"
+    "【防丢改动】保存时检测外部修改并提示，切换文件前确认未保存内容；非 UTF-8 文件只读打开，避免中文乱码；视觉改动写回 Lua 更安全。",
+    "【多项目 Runtime】多个项目可同时运行各自的 Runtime，切换项目不再停止预览；项目标签绿点表示运行中。",
+    "【Node.js 升级】设置页支持一键升级 Node.js；无法自动升级时提供可一键复制的升级命令。",
+    "【新游雷达】每日上线新增「今日」「近3天」快捷范围。"
   ],
   links: [
     {

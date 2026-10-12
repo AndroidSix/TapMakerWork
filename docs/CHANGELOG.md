@@ -4,6 +4,11 @@
 
 ## 2026-10-12 — TapMakerWork 0.1.6
 
+### 新功能
+- **多项目同时运行 Runtime**：切换项目不再停止上一个项目的 UrhoXRuntime；项目标签上的绿点表示该项目 Runtime 正在运行，关闭非当前标签时会停止该项目的预览。Bridge 按 Runtime 上报的项目名过滤 HTTP 通道，其它项目的快照不会覆盖当前画布。
+- **Node.js 一键升级**：设置页按 Node 实际安装方式识别 winget / Homebrew / Volta / nvm 并提供「一键升级」（输出进构建终端）；nvm-windows、fnm、macOS 官方安装包等无法无人值守的方式改为展示一行升级命令与「复制」按钮。
+- **新游雷达**：「每日上线」增加「今日」「近3天」快捷范围并高亮当前范围；含今天的区间在缓存超过 30 分钟后自动重新拉取。
+
 ### 双端对齐修复
 - **Windows 切换/升级 Maker MCP**：不再直接启动 `npx.cmd`（新版 Node 会报 `EINVAL`），改用 npm 自带的 CLI 入口，必要时通过 `cmd.exe` 转义调用；Maker CLI 子进程不再弹控制台窗口。
 - **切换账号后 MCP 版本不丢失**：`~/.taptap-maker` 指向当前账号目录，现会扫描所有账号目录下的 `mcp-runtime`。
