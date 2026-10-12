@@ -2176,6 +2176,10 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .runtime-session-meta dd { margin: 0; color: #dce7f7; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .runtime-session-logs { display: grid; gap: 4px; }
 .runtime-session-logs pre { max-height: 240px; }
+.image-compress-keys .feedback-pack-description { min-height: 72px; font-family: inherit; }
+.feedback-pack-flag { padding: 2px 8px; color: #ffb3b3; border-radius: 999px; background: #3a1c1f; font-size: 11px; }
+.feedback-pack-preview { max-height: 320px; }
+.feedback-pack-inline { margin-left: 8px; padding: 1px 8px; color: var(--text); background: var(--control); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; cursor: pointer; }
 .asset-checkup-heading-actions { display: flex; gap: 6px; }
 .asset-checkup-heading-actions button { display: inline-flex; align-items: center; gap: 4px; }
 .asset-checkup-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }

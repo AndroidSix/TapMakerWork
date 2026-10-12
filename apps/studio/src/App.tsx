@@ -61,6 +61,7 @@ import {
   BoxSelect,
   Magnet,
   Cpu,
+  LifeBuoy,
   ScrollText,
   AlertTriangle,
   X,
@@ -187,6 +188,7 @@ const CodeDiffEditor = lazy(() => import("./code-editors").then((module) => ({ d
 const ImageCompressPanel = lazy(() => import("./ImageCompressPanel").then((module) => ({ default: module.ImageCompressPanel })));
 const AssetCheckupPanel = lazy(() => import("./AssetCheckupPanel").then((module) => ({ default: module.AssetCheckupPanel })));
 const RuntimeManagerPanel = lazy(() => import("./RuntimeManagerPanel").then((module) => ({ default: module.RuntimeManagerPanel })));
+const FeedbackPackPanel = lazy(() => import("./FeedbackPackPanel").then((module) => ({ default: module.FeedbackPackPanel })));
 const NewGameRadarPanel = lazy(() => import("./NewGameRadarPanel").then((module) => ({ default: module.NewGameRadarPanel })));
 const editorFallback = <div className="editor-loading">正在加载编辑器…</div>;
 
@@ -256,6 +258,7 @@ export function App() {
   const [compressOpen, setCompressOpen] = useState(false);
   const [checkupOpen, setCheckupOpen] = useState(false);
   const [runtimeManagerOpen, setRuntimeManagerOpen] = useState(false);
+  const [feedbackPack, setFeedbackPack] = useState<{ runtimeError?: string | undefined } | null>(null);
   const [radarOpen, setRadarOpen] = useState(false);
   const [radarSeen, setRadarSeen] = useState(() => readNewGameRadarSeen());
   const [toolkitMenuOpen, setToolkitMenuOpen] = useState(false);
@@ -1253,6 +1256,7 @@ export function App() {
     setRadarOpen(false);
     setTipsOpen(false);
     setRuntimeManagerOpen(false);
+    setFeedbackPack(null);
     setCheckupOpen(true);
   }, []);
 
@@ -1261,7 +1265,18 @@ export function App() {
     setRadarOpen(false);
     setTipsOpen(false);
     setCheckupOpen(false);
+    setFeedbackPack(null);
     setRuntimeManagerOpen(true);
+  }, []);
+
+  const openFeedbackPack = useCallback((runtimeError?: string) => {
+    setCompressOpen(false);
+    setRadarOpen(false);
+    setTipsOpen(false);
+    setCheckupOpen(false);
+    setRuntimeManagerOpen(false);
+    setSettingsOpen(false);
+    setFeedbackPack({ runtimeError });
   }, []);
 
   const refreshFileTree = useCallback(async () => {
@@ -2418,6 +2433,11 @@ export function App() {
       report={runtimeErrorReport}
       copying={copyBusy}
       onCopy={() => void copyText(runtimeErrorReport.clipboardText)}
+      onFeedback={() => {
+        const errorText = runtimeErrorReport.errorText;
+        dismissRuntimeError();
+        openFeedbackPack(errorText);
+      }}
       onOpenLogs={() => {
         setActiveTerminal("runtime");
         persistLayout({ ...layout, terminal: Math.max(layout.terminal, DEFAULT_LAYOUT.terminal) });
@@ -2741,7 +2761,7 @@ export function App() {
               <section>
                 <h3>工具集</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setRadarOpen(false); setCheckupOpen(false); setRuntimeManagerOpen(false); setCompressOpen(true); }}>
+                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setRadarOpen(false); setCheckupOpen(false); setRuntimeManagerOpen(false); setFeedbackPack(null); setCompressOpen(true); }}>
                     <Image size={13} />图片压缩
                   </button>
                   <button onClick={() => { setToolkitMenuOpen(false); openAssetCheckup(); }}>
@@ -2749,6 +2769,9 @@ export function App() {
                   </button>
                   <button onClick={() => { setToolkitMenuOpen(false); openRuntimeManager(); }}>
                     <Cpu size={13} />Runtime 管理
+                  </button>
+                  <button onClick={() => { setToolkitMenuOpen(false); openFeedbackPack(runtimeErrorReport?.errorText); }}>
+                    <LifeBuoy size={13} />一键反馈包
                   </button>
                   <button
                     className="tool-entry-with-dot"
@@ -2835,9 +2858,10 @@ export function App() {
               <section>
                 <h3>工具集</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolsMenuOpen(false); setRadarOpen(false); setCheckupOpen(false); setRuntimeManagerOpen(false); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
+                  <button onClick={() => { setToolsMenuOpen(false); setRadarOpen(false); setCheckupOpen(false); setRuntimeManagerOpen(false); setFeedbackPack(null); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
                   <button onClick={() => { setToolsMenuOpen(false); openAssetCheckup(); }}><Stethoscope size={13} />资源体检</button>
                   <button onClick={() => { setToolsMenuOpen(false); openRuntimeManager(); }}><Cpu size={13} />Runtime 管理</button>
+                  <button onClick={() => { setToolsMenuOpen(false); openFeedbackPack(runtimeErrorReport?.errorText); }}><LifeBuoy size={13} />一键反馈包</button>
                   <button
                     className="tool-entry-with-dot"
                     onClick={() => {
@@ -2998,6 +3022,19 @@ export function App() {
         /></Suspense>
       )}
 
+      {feedbackPack && (
+        <Suspense fallback={null}><FeedbackPackPanel
+          apiBase={API}
+          appVersion={__APP_VERSION__}
+          desktopVersion={desktopUpdate?.currentVersion}
+          runtimeError={feedbackPack.runtimeError}
+          studioLogs={logs}
+          onClose={() => setFeedbackPack(null)}
+          onCopy={(text) => void copyText(text)}
+          onOpenCommunity={() => openExternalUrl(QQ_GROUP_JOIN_URL)}
+        /></Suspense>
+      )}
+
       {checkupOpen && (
         <Suspense fallback={null}><AssetCheckupPanel
           apiBase={API}
@@ -3094,6 +3131,7 @@ export function App() {
               <div className="desktop-card-actions">
                 <button className="primary" onClick={() => openExternalUrl(QQ_GROUP_JOIN_URL)}><Users size={13} />一键入群</button>
                 <button onClick={() => void copyText(QQ_GROUP_ID)}><Copy size={13} />复制群号</button>
+                <button onClick={() => openFeedbackPack(runtimeErrorReport?.errorText)}><LifeBuoy size={13} />一键反馈包</button>
                 <button onClick={() => setRoadmapOpen(true)}><Map size={13} />后续规划</button>
                 <button onClick={() => openExternalUrl(OFFICIAL_SITE_URL)}><ExternalLink size={13} />官网</button>
               </div>

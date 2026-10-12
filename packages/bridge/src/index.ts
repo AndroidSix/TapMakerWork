@@ -8,6 +8,9 @@ import { createAssetRoutes } from "./routes/asset-routes.js";
 import { createRuntimeRoutes } from "./routes/runtime-routes.js";
 import { createToolsRoutes } from "./routes/tools-routes.js";
 import { createGitRoutes } from "./routes/git-routes.js";
+import { createFeedbackRoutes } from "./routes/feedback-routes.js";
+import { captureStreamLines, createLogRing, defaultFeedbackDir, readProjectGameVersion } from "./feedback-pack.js";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
@@ -203,6 +206,10 @@ function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
   }
   return status;
 }
+
+const bridgeLog = createLogRing(400);
+captureStreamLines(process.stdout, bridgeLog);
+captureStreamLines(process.stderr, bridgeLog);
 
 const host = "127.0.0.1";
 const port = Number(process.env.TAPMAKERWORK_BRIDGE_PORT || 43121);
@@ -750,7 +757,37 @@ function makerPreviewStatusDetail(runtime: NonNullable<typeof makerRuntime>, pro
   return next;
 }
 
+function collectFeedbackContext() {
+  const previewDir = project ? readLocalPreviewStatus(project.root, probeProcessPresence) : undefined;
+  const meta = project ? readMakerProjectMeta(project.root) : undefined;
+  return {
+    environment: {
+      platform: process.platform,
+      arch: process.arch,
+      osRelease: os.release(),
+      node: process.version,
+      makerVersion: makerRuntime?.version,
+      protocolVersion: PROTOCOL_VERSION
+    },
+    project: project ? {
+      name: project.name,
+      root: project.root,
+      gameVersion: readProjectGameVersion(project.root),
+      title: meta?.title,
+      appId: meta?.appId,
+      orientation: meta?.orientation,
+      uiBackend: detectUiBackend(project.root)
+    } : undefined,
+    runtimeSession: runtimeSessionId,
+    recentErrors: agentErrors.map((entry) => `${entry.at} [${entry.channel}] ${entry.message}`),
+    runtimeLogs: previewDir?.preview_dir
+      ? readPreviewDirLogs(previewDir.preview_dir, previewDir.supervisor_log_path, 200).lines
+      : []
+  };
+}
+
 const routeTable: BridgeRoute[] = [
+  ...createFeedbackRoutes({ bridgeLog, collectContext: collectFeedbackContext, outputDir: defaultFeedbackDir }),
   ...createLuaRoutes({ projectRoot: () => project?.root }),
   ...createAssetRoutes({ projectRoot: () => project?.root }),
   ...createRuntimeRoutes({ presence: probeProcessPresence, currentProjectRoot: () => project?.root }),
@@ -1914,7 +1951,9 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, 404, { error: "not_found" });
     }
   } catch (error) {
-    sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== "project_not_open") bridgeLog.push(`[route-error] ${request.method} ${request.url?.split("?")[0]}: ${message}`);
+    sendJson(response, 400, { error: message });
   }
 });
 
