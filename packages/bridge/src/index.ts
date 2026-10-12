@@ -5,6 +5,7 @@ import { findRoute, type BridgeRoute } from "./routes/route-table.js";
 import { createMakerAccountRoutes } from "./routes/maker-account-routes.js";
 import { createLuaRoutes } from "./routes/lua-routes.js";
 import { createAssetRoutes } from "./routes/asset-routes.js";
+import { createRuntimeRoutes } from "./routes/runtime-routes.js";
 import { createToolsRoutes } from "./routes/tools-routes.js";
 import { createGitRoutes } from "./routes/git-routes.js";
 import path from "node:path";
@@ -58,7 +59,7 @@ import { listProjectEntries, projectFileVersion, readProjectSource, resolveProje
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
-import { listProjectAssets, projectHasRuntimeAdapter, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
+import { listProjectAssets, projectHasRuntimeAdapter, readGitStatus, readMakerPreviewLogs, readPreviewDirLogs, searchProject } from "./ide-tools.js";
 import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
 import { ensureTapMakerWorkGitIgnored } from "./git-ignore.js";
 import { detectUiBackend } from "./ui-backend.js";
@@ -752,6 +753,7 @@ function makerPreviewStatusDetail(runtime: NonNullable<typeof makerRuntime>, pro
 const routeTable: BridgeRoute[] = [
   ...createLuaRoutes({ projectRoot: () => project?.root }),
   ...createAssetRoutes({ projectRoot: () => project?.root }),
+  ...createRuntimeRoutes({ presence: probeProcessPresence, currentProjectRoot: () => project?.root }),
   ...createGitRoutes({ broadcast, currentProject: () => project, currentMakerRuntime: () => makerRuntime, freshAccount, previewHome }),
   ...createToolsRoutes({ projectRoot: () => project?.root, broadcast }),
   ...createMakerAccountRoutes({
@@ -1763,8 +1765,8 @@ const server = http.createServer(async (request, response) => {
       }
     } else if (request.method === "GET" && url.pathname === "/api/maker/preview/logs") {
       if (!project) throw new Error("project_not_open");
-      const supervisorLogPath = readLocalPreviewStatus(project.root, probeProcessPresence).supervisor_log_path;
-      const logs = readMakerPreviewLogs(project.root, supervisorLogPath);
+      const { preview_dir: previewDir, supervisor_log_path: supervisorLogPath } = readLocalPreviewStatus(project.root, probeProcessPresence);
+      const logs = previewDir ? readPreviewDirLogs(previewDir, supervisorLogPath) : readMakerPreviewLogs(supervisorLogPath);
       sendJson(response, 200, { ...logs, supervisorLogPath });
     } else if (request.method === "GET" && url.pathname === "/api/maker/preview/running") {
       sendJson(response, 200, { projects: listRunningPreviewProjects((pid) => probeProcessPresence(pid) === "alive") });

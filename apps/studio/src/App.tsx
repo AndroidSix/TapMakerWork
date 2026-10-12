@@ -186,6 +186,7 @@ const CodeEditor = lazy(() => import("./code-editors").then((module) => ({ defau
 const CodeDiffEditor = lazy(() => import("./code-editors").then((module) => ({ default: module.CodeDiffEditor })));
 const ImageCompressPanel = lazy(() => import("./ImageCompressPanel").then((module) => ({ default: module.ImageCompressPanel })));
 const AssetCheckupPanel = lazy(() => import("./AssetCheckupPanel").then((module) => ({ default: module.AssetCheckupPanel })));
+const RuntimeManagerPanel = lazy(() => import("./RuntimeManagerPanel").then((module) => ({ default: module.RuntimeManagerPanel })));
 const NewGameRadarPanel = lazy(() => import("./NewGameRadarPanel").then((module) => ({ default: module.NewGameRadarPanel })));
 const editorFallback = <div className="editor-loading">正在加载编辑器…</div>;
 
@@ -254,6 +255,7 @@ export function App() {
   const [tipsOpen, setTipsOpen] = useState(false);
   const [compressOpen, setCompressOpen] = useState(false);
   const [checkupOpen, setCheckupOpen] = useState(false);
+  const [runtimeManagerOpen, setRuntimeManagerOpen] = useState(false);
   const [radarOpen, setRadarOpen] = useState(false);
   const [radarSeen, setRadarSeen] = useState(() => readNewGameRadarSeen());
   const [toolkitMenuOpen, setToolkitMenuOpen] = useState(false);
@@ -1250,7 +1252,16 @@ export function App() {
     setCompressOpen(false);
     setRadarOpen(false);
     setTipsOpen(false);
+    setRuntimeManagerOpen(false);
     setCheckupOpen(true);
+  }, []);
+
+  const openRuntimeManager = useCallback(() => {
+    setCompressOpen(false);
+    setRadarOpen(false);
+    setTipsOpen(false);
+    setCheckupOpen(false);
+    setRuntimeManagerOpen(true);
   }, []);
 
   const refreshFileTree = useCallback(async () => {
@@ -2730,11 +2741,14 @@ export function App() {
               <section>
                 <h3>工具集</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setRadarOpen(false); setCheckupOpen(false); setCompressOpen(true); }}>
+                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setRadarOpen(false); setCheckupOpen(false); setRuntimeManagerOpen(false); setCompressOpen(true); }}>
                     <Image size={13} />图片压缩
                   </button>
                   <button onClick={() => { setToolkitMenuOpen(false); openAssetCheckup(); }}>
                     <Stethoscope size={13} />资源体检
+                  </button>
+                  <button onClick={() => { setToolkitMenuOpen(false); openRuntimeManager(); }}>
+                    <Cpu size={13} />Runtime 管理
                   </button>
                   <button
                     className="tool-entry-with-dot"
@@ -2821,8 +2835,9 @@ export function App() {
               <section>
                 <h3>工具集</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolsMenuOpen(false); setRadarOpen(false); setCheckupOpen(false); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
+                  <button onClick={() => { setToolsMenuOpen(false); setRadarOpen(false); setCheckupOpen(false); setRuntimeManagerOpen(false); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
                   <button onClick={() => { setToolsMenuOpen(false); openAssetCheckup(); }}><Stethoscope size={13} />资源体检</button>
+                  <button onClick={() => { setToolsMenuOpen(false); openRuntimeManager(); }}><Cpu size={13} />Runtime 管理</button>
                   <button
                     className="tool-entry-with-dot"
                     onClick={() => {
@@ -2971,6 +2986,15 @@ export function App() {
           onClose={() => setCompressOpen(false)}
           onCopy={(text) => void copyText(text)}
           onOpenExternal={openExternalUrl}
+        /></Suspense>
+      )}
+
+      {runtimeManagerOpen && (
+        <Suspense fallback={null}><RuntimeManagerPanel
+          apiBase={API}
+          onClose={() => setRuntimeManagerOpen(false)}
+          onOpenProject={(projectRoot) => void openProjectPath(projectRoot)}
+          onSessionsChanged={setRunningPreviewRoots}
         /></Suspense>
       )}
 
@@ -3865,6 +3889,9 @@ export function App() {
         <span>{snapshot ? `UI rev ${snapshot.revision}` : "UI 未连接"}</span>
         <span>{sidecarInfo.exists ? (sidecarInfo.dirty ? `${sidecarInfo.path || "ui.json"} ●` : `${sidecarInfo.path || "ui.json"} 已同步`) : "视觉旁路未创建"}</span>
         <span className="status-spacer" />
+        <button type="button" className={`statusbar-button ${runningPreviewRoots.length ? "is-live" : ""}`} title="打开 Runtime 管理：查看所有项目的本地预览进程" onClick={openRuntimeManager}>
+          <Cpu size={11} aria-hidden="true" />{runningPreviewRoots.length ? `Runtime 运行中 ×${runningPreviewRoots.length}` : "Runtime 未运行"}
+        </button>
         <span>{health?.runtimeAdapter?.installed ? "Runtime 适配器已安装" : "Runtime 适配器未安装"}</span>
         <span>{health?.capabilities.shellSandbox ? "沙箱就绪" : "沙箱锁定"}</span>
         <span>{connected ? "本机连接" : "离线"}</span>

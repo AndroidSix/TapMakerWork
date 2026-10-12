@@ -3,7 +3,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { listAccountHomes } from "./maker-accounts.js";
-import { resolveInsideProject } from "./project.js";
 import { detectUiBackend } from "./ui-backend.js";
 
 export interface SearchHit {
@@ -478,59 +477,56 @@ export async function commitGitProject(projectRoot: string, message: string, pus
   }
 }
 
-export function readMakerPreviewLogs(projectRoot: string, supervisorLogPath?: string, maxLines = 200): { lines: string[]; source?: string } {
-  const candidates: string[] = [];
-  if (supervisorLogPath) candidates.push(supervisorLogPath);
-  const previewRoots = [
-    path.join(os.homedir(), ".taptap-maker", "preview"),
-    ...listAccountHomes().map((home) => path.join(home, "preview"))
-  ];
-  for (const previewRoot of [...new Set(previewRoots)]) {
-  if (fs.existsSync(previewRoot)) {
-    try {
-      const sessions = fs.readdirSync(previewRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => path.join(previewRoot, entry.name))
-        .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
-        .slice(0, 5);
-      for (const session of sessions) {
-        candidates.push(path.join(session, "supervisor.log"));
-        const sessionDir = path.join(session, "sessions");
-        if (fs.existsSync(sessionDir)) {
-          try {
-            const ids = fs.readdirSync(sessionDir).sort().reverse().slice(0, 3);
-            for (const id of ids) {
-              candidates.push(path.join(sessionDir, id, "0", "prepare.log"));
-              candidates.push(path.join(sessionDir, id, "runtime.log"));
-              candidates.push(path.join(sessionDir, id, "0", "runtime.log"));
-            }
-          } catch {
-            // ignore session scan errors
-          }
-        }
-      }
-    } catch {
-      // ignore preview scan errors
+const NO_PREVIEW_LOGS = "暂无 Runtime 日志。请先启动预览，或确认 Maker supervisor 日志路径。";
+
+function previewDirLogCandidates(previewDir: string): string[] {
+  const candidates = [path.join(previewDir, "supervisor.log")];
+  try {
+    const sessionDir = path.join(previewDir, "sessions");
+    for (const id of fs.readdirSync(sessionDir).sort().reverse().slice(0, 3)) {
+      candidates.push(path.join(sessionDir, id, "0", "prepare.log"), path.join(sessionDir, id, "runtime.log"), path.join(sessionDir, id, "0", "runtime.log"));
     }
+  } catch {
+    // no session logs yet
   }
-  }
+  return candidates;
+}
+
+function readFirstLog(candidates: string[], maxLines: number): { lines: string[]; source?: string } {
   for (const candidate of candidates) {
-    if (!candidate || !fs.existsSync(candidate)) continue;
     try {
-      const content = fs.readFileSync(candidate, "utf8");
-      const lines = content.split(/\r?\n/).filter(Boolean).slice(-maxLines);
+      const lines = fs.readFileSync(candidate, "utf8").split(/\r?\n/).filter(Boolean).slice(-maxLines);
       if (lines.length) return { lines, source: candidate };
     } catch {
       // try next candidate
     }
   }
-  try {
-    const relativeHint = resolveInsideProject(projectRoot, "docs");
-    void relativeHint;
-  } catch {
-    // ignore
+  return { lines: [NO_PREVIEW_LOGS] };
+}
+
+export function readPreviewDirLogs(previewDir: string, supervisorLogPath?: string, maxLines = 200): { lines: string[]; source?: string } {
+  return readFirstLog([...(supervisorLogPath ? [supervisorLogPath] : []), ...previewDirLogCandidates(previewDir)], maxLines);
+}
+
+export function readMakerPreviewLogs(supervisorLogPath?: string, maxLines = 200): { lines: string[]; source?: string } {
+  const candidates: string[] = supervisorLogPath ? [supervisorLogPath] : [];
+  const previewRoots = [
+    path.join(os.homedir(), ".taptap-maker", "preview"),
+    ...listAccountHomes().map((home) => path.join(home, "preview"))
+  ];
+  for (const previewRoot of new Set(previewRoots)) {
+    try {
+      const recentSessions = fs.readdirSync(previewRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => path.join(previewRoot, entry.name))
+        .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
+        .slice(0, 5);
+      for (const previewDir of recentSessions) candidates.push(...previewDirLogCandidates(previewDir));
+    } catch {
+      // ignore preview scan errors
+    }
   }
-  return { lines: ["暂无 Runtime 日志。请先启动预览，或确认 Maker supervisor 日志路径。"] };
+  return readFirstLog(candidates, maxLines);
 }
 
 export function projectHasRuntimeAdapter(projectRoot: string): {

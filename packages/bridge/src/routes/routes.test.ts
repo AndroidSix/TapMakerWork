@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createAssetRoutes } from "./asset-routes.js";
 import { createGitRoutes } from "./git-routes.js";
 import { findRoute, type BridgeRoute } from "./route-table.js";
+import { createRuntimeRoutes } from "./runtime-routes.js";
 import { callRoute } from "./route-test-helpers.js";
 import { createToolsRoutes } from "./tools-routes.js";
 
@@ -51,6 +52,20 @@ describe("git routes", () => {
 
   it("requires an open project", async () => {
     await expect(callRoute(git, "GET", "/api/git/status")).rejects.toThrow("project_not_open");
+  });
+});
+
+describe("runtime routes", () => {
+  const runtimes = createRuntimeRoutes({ presence: () => "missing", currentProjectRoot: () => "/p/current" });
+
+  it("reports the current project alongside preview sessions", async () => {
+    const result = await callRoute(runtimes, "GET", "/api/runtimes");
+    expect(result.json()).toMatchObject({ currentProjectRoot: "/p/current" });
+  });
+
+  it("only serves logs for a known preview session", async () => {
+    const result = await callRoute(runtimes, "GET", `/api/runtimes/logs?projectRoot=${encodeURIComponent("/etc")}`);
+    expect(result.status).toBe(404);
   });
 });
 
