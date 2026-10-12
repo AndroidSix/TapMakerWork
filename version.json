@@ -5,7 +5,8 @@
     "【Windows 升级 MCP】修复 Windows 上切换/升级 Maker MCP 版本失败；切换账号后不再「丢失」已安装的 MCP 版本。",
     "【实时编辑桥注入】支持任意 TimeStep 变量名；保留入口文件 BOM 与 CRLF，修复 Windows 编辑器保存的 main.lua 注入后报 Lua 语法错误。",
     "【失败原因可见】注入失败、Runtime 自动重启失败会弹出中文原因并写入 Runtime 日志。",
-    "【Git 忽略】打开项目时自动把 .tapmakerwork/ 写入项目 .gitignore。"
+    "【Git 忽略】打开项目时自动把 .tapmakerwork/ 写入项目 .gitignore。",
+    "【防丢改动】保存时检测外部修改并提示，切换文件前确认未保存内容；非 UTF-8 文件只读打开，避免中文乱码；视觉改动写回 Lua 更安全。"
   ],
   "links": [
     {
