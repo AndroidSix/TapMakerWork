@@ -1,4 +1,5 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { checkBridgeRequest } from "./request-guard.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -722,11 +723,14 @@ async function readJson(request: IncomingMessage, maxBytes = 1_048_576): Promise
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
 }
 
-function validOrigin(request: IncomingMessage): boolean {
-  const hostHeader = request.headers.host;
-  const origin = request.headers.origin;
-  if (hostHeader !== `${host}:${port}`) return false;
-  return !origin || origin === "http://127.0.0.1:4173" || origin.startsWith("file://");
+const requestGuardOptions = { bridgeHost: `${host}:${port}`, allowDevOrigin: process.env.TAPMAKERWORK_PACKAGED !== "1" };
+
+function guardRequest(request: IncomingMessage, pathname: string): ReturnType<typeof checkBridgeRequest> {
+  const result = checkBridgeRequest({ method: request.method, headers: request.headers, pathname }, requestGuardOptions);
+  if (!result.ok) {
+    process.stderr.write(`[TapMakerWork] reject ${result.reason} host=${request.headers.host} origin=${request.headers.origin} url=${request.url}\n`);
+  }
+  return result;
 }
 
 const previewAccountHomes = new Map<string, string>();
@@ -824,12 +828,12 @@ function makerPreviewStatusDetail(runtime: NonNullable<typeof makerRuntime>, pro
 
 const server = http.createServer(async (request, response) => {
   try {
-    if (!validOrigin(request)) {
-      process.stderr.write(`[TapMakerWork] reject origin host=${request.headers.host} origin=${request.headers.origin} url=${request.url}\n`);
-      sendJson(response, 403, { error: "invalid_origin" });
+    const url = new URL(request.url || "/", `http://${host}:${port}`);
+    const guard = guardRequest(request, url.pathname);
+    if (!guard.ok) {
+      sendJson(response, 403, { error: guard.reason });
       return;
     }
-    const url = new URL(request.url || "/", `http://${host}:${port}`);
     if (request.method === "OPTIONS") {
       response.writeHead(204, {
         "access-control-allow-origin": "*",
@@ -2262,7 +2266,7 @@ const server = http.createServer(async (request, response) => {
 const sockets = new Set<WebSocket>();
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
-  if (!validOrigin(request) || request.url !== "/ws") {
+  if (request.url !== "/ws" || !guardRequest(request, "/ws").ok) {
     socket.destroy();
     return;
   }

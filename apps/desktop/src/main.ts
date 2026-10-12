@@ -552,6 +552,7 @@ async function startPackagedBridge(): Promise<void> {
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: "1",
+        TAPMAKERWORK_PACKAGED: "1",
         TAPMAKERWORK_APP_ROOT: app.getAppPath(),
         TAPMAKERWORK_OUTPUTS_DIR: path.join(app.getPath("documents"), "TapMakerWork", "outputs")
       },
