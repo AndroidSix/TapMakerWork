@@ -1,12 +1,15 @@
-import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import http, { type IncomingMessage } from "node:http";
 import { checkBridgeRequest } from "./request-guard.js";
-import fs from "node:fs";
+import { readJson, sendJson } from "./http-json.js";
+import { findRoute, type BridgeRoute } from "./routes/route-table.js";
+import { createMakerAccountRoutes } from "./routes/maker-account-routes.js";
+import { createToolsRoutes } from "./routes/tools-routes.js";
+import { createGitRoutes } from "./routes/git-routes.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   PROTOCOL_VERSION,
-  applyUiTreeOp,
   findParentInfo,
   findUiNode,
   type BridgeCapabilities,
@@ -35,7 +38,6 @@ import {
   runMakerApps,
   runMakerBuild,
   runMakerCommand,
-  runMakerLogin,
   runMakerPreviewStartWithRecovery,
   formatMakerPreviewError,
   isPreviewSupervisorUnreachable,
@@ -50,11 +52,11 @@ import {
   type MakerRuntimeMode
 } from "./maker.js";
 import { scanUiScreens, uiNodeCount, type UiScreenSummary } from "./ui-screens.js";
-import { listProjectEntries, projectFileVersion, readProjectSource, resolveInsideProject, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
+import { listProjectEntries, projectFileVersion, readProjectSource, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
-import { commitGitProject, listProjectAssets, mutateGitProject, projectHasRuntimeAdapter, pullGitProject, readGitDiff, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
+import { listProjectAssets, projectHasRuntimeAdapter, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
 import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
 import { ensureTapMakerWorkGitIgnored } from "./git-ignore.js";
 import { detectUiBackend } from "./ui-backend.js";
@@ -67,11 +69,7 @@ import {
   writeIdeCommandsFile
 } from "./runtime-file-channel.js";
 import { planNodeUpgrade, publicNodeUpgradePlan, runNodeUpgrade } from "./node-upgrade.js";
-import {
-  adoptWindowsMimeForFile,
-  resolveProjectAsset,
-  sendProjectAsset
-} from "./asset-handler.js";
+import { resolveProjectAsset, sendProjectAsset } from "./asset-handler.js";
 import { collectDirtyLiteralOverrides, writeBackUiOverridesToLua, writeBackUiTreeLiteralsToLua, type LuaOverridesWritebackDetail, type LuaWritebackOverride } from "./lua-prop-writeback.js";
 import { findUiNodePath, mergeUiSidecarOverride, mergeUiSidecarOverrides, nodeMatchesUiOverride, overrideSelectorForNode, readUiSidecar, sidecarExists, sidecarRelativePath, snapshotFromSidecar, uiNodeAtLine, writeUiSidecar, type UiSidecarOverride } from "./ui-sidecar.js";
 import { combineInstanceOverrides, loadInstanceOverridesExcept, mergeInstanceOverrides, planInstancePersistence, writeUiOverridesModule } from "./ui-overrides.js";
@@ -99,39 +97,11 @@ import {
 import {
   accountSourceLabel,
   activateGlobalMakerHome,
-  addMakerAccount,
-  clearMakerAppsCache,
-  getMakerAccount,
-  makerAccountSnapshot,
-  MAKER_CONSOLE_URL,
   projectAccountKey,
   projectIdsFromAppsPayload,
-  removeMakerAccount,
-  renameMakerAccount,
   resolveProjectAccount,
-  setGlobalMakerAccount,
-  setProjectMakerAccount,
-  type AccountResolution,
-  type MakerAccountMode
+  type AccountResolution
 } from "./maker-accounts.js";
-import { loadCommunityConfig } from "./community-config.js";
-import {
-  imageCompressPublicSettings,
-  readImageCompressSettings,
-  resolveDefaultCompressTarget,
-  runImageCompress,
-  writeImageCompressSettings,
-  type ImageCompressProgress
-} from "./image-compress.js";
-import {
-  emptyDailyReport,
-  emptyRadarSnapshot,
-  fetchLatestRadarSnapshot,
-  getDailyLaunchReport,
-  loadRadarSnapshot,
-  proxyTapIcon,
-  readOfflineSnapshot
-} from "./new-game-radar.js";
 
 let lastAppliedRuntimeRevision = -1;
 let snapshotSource: SnapshotSource = "empty";
@@ -702,27 +672,6 @@ function refreshSelectedMakerRuntime(): void {
   capabilities.makerCli = Boolean(makerRuntime);
 }
 
-function sendJson(response: ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store",
-    "access-control-allow-origin": "*"
-  });
-  response.end(JSON.stringify(body));
-}
-
-async function readJson(request: IncomingMessage, maxBytes = 1_048_576): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk);
-    size += data.length;
-    if (size > maxBytes) throw new Error("request_too_large");
-    chunks.push(data);
-  }
-  return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
-}
-
 const requestGuardOptions = { bridgeHost: `${host}:${port}`, allowDevOrigin: process.env.TAPMAKERWORK_PACKAGED !== "1" };
 
 function guardRequest(request: IncomingMessage, pathname: string): ReturnType<typeof checkBridgeRequest> {
@@ -734,38 +683,6 @@ function guardRequest(request: IncomingMessage, pathname: string): ReturnType<ty
 }
 
 const previewAccountHomes = new Map<string, string>();
-
-let imageCompressJob: { progress: ImageCompressProgress; controller: AbortController } | undefined;
-
-function startImageCompressJob(target: string, recursive: boolean): ImageCompressProgress {
-  const controller = new AbortController();
-  const job = {
-    controller,
-    progress: { ok: false, state: "running", target: path.resolve(target), total: 0, processed: 0, compressed: 0, skipped: 0, failed: 0, savedBytes: 0, tinyEnabled: false, keyCount: 0, engine: "", files: [], aiCopyText: "", startedAt: new Date().toISOString() } as ImageCompressProgress
-  };
-  imageCompressJob = job;
-  broadcast({ type: "log.append", channel: "build", lines: [`图片压缩开始：${job.progress.target}`] });
-  void runImageCompress({
-    target,
-    recursive,
-    signal: controller.signal,
-    onProgress: (progress) => {
-      const finished = progress.files.at(-1);
-      if (finished?.error && progress.files.length > job.progress.files.length) {
-        broadcast({ type: "log.append", channel: "build", lines: [`压缩失败：${path.relative(progress.target, finished.path) || finished.path} · ${finished.error}`] });
-      }
-      job.progress = progress;
-    }
-  }).then((result) => {
-    const summary = result.state === "failed"
-      ? `图片压缩失败：${result.error}`
-      : `图片压缩${result.state === "cancelled" ? "已停止" : "完成"}：处理 ${result.processed}/${result.total}，压缩 ${result.compressed}，跳过 ${result.skipped}，失败 ${result.failed}，节省 ${(result.savedBytes / 1024).toFixed(1)} KB`;
-    broadcast({ type: "log.append", channel: "build", lines: [summary] });
-  }).catch((error: unknown) => {
-    job.progress = { ...job.progress, state: "failed", error: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() };
-  });
-  return job.progress;
-}
 
 /** Prefer explicit projectRoot from client; fall back to Bridge 当前打开的项目。 */
 function resolveAccountsProjectRoot(candidate?: string | null): string | undefined {
@@ -826,6 +743,18 @@ function makerPreviewStatusDetail(runtime: NonNullable<typeof makerRuntime>, pro
   return next;
 }
 
+const routeTable: BridgeRoute[] = [
+  ...createGitRoutes({ broadcast, currentProject: () => project, currentMakerRuntime: () => makerRuntime, freshAccount, previewHome }),
+  ...createToolsRoutes({ projectRoot: () => project?.root, broadcast }),
+  ...createMakerAccountRoutes({
+    broadcast,
+    currentMakerRuntime: () => makerRuntime,
+    resolveAccountsProjectRoot,
+    accountFor,
+    previewAccountHomes
+  })
+];
+
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url || "/", `http://${host}:${port}`);
@@ -834,6 +763,7 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, 403, { error: guard.reason });
       return;
     }
+    const route = findRoute(routeTable, request.method, url.pathname);
     if (request.method === "OPTIONS") {
       response.writeHead(204, {
         "access-control-allow-origin": "*",
@@ -841,6 +771,8 @@ const server = http.createServer(async (request, response) => {
         "access-control-allow-headers": "content-type"
       });
       response.end();
+    } else if (route) {
+      await route.handle({ request, response, url });
     } else if (request.method === "GET" && url.pathname === "/api/health") {
       const fileStatus = syncRuntimeFileChannel();
       const adapter = project ? projectHasRuntimeAdapter(project.root) : { installed: false, paths: [] as string[] };
@@ -926,68 +858,6 @@ const server = http.createServer(async (request, response) => {
     } else if (request.method === "GET" && url.pathname === "/api/project/assets") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, { assets: listProjectAssets(project.root) });
-    } else if (request.method === "GET" && url.pathname === "/api/git/status") {
-      if (!project) throw new Error("project_not_open");
-      sendJson(response, 200, await readGitStatus(project.root));
-    } else if (request.method === "GET" && url.pathname === "/api/git/diff") {
-      if (!project) throw new Error("project_not_open");
-      const filePath = url.searchParams.get("path") || "";
-      const scope = url.searchParams.get("scope") === "staged" ? "staged" : "worktree";
-      if (!filePath) throw new Error("git_path_required");
-      sendJson(response, 200, await readGitDiff(project.root, filePath, scope));
-    } else if (request.method === "POST" && url.pathname === "/api/git/pull") {
-      if (!project) throw new Error("project_not_open");
-      const result = await pullGitProject(project.root);
-      broadcast({ type: "log.append", channel: "build", lines: [result.ok ? "Git 拉取完成。" : `Git 拉取停止：${result.error || "unknown"}`] });
-      sendJson(response, result.ok ? 200 : 409, result);
-    } else if (request.method === "POST" && url.pathname === "/api/git/mutate") {
-      if (!project) throw new Error("project_not_open");
-      const body = await readJson(request) as { action?: "stage" | "unstage" | "discard" | "stage-all" | "unstage-all" | "discard-all"; path?: string };
-      if (!body.action) throw new Error("git_action_required");
-      const result = await mutateGitProject(project.root, body.action, body.path);
-      broadcast({ type: "log.append", channel: "build", lines: [`Git ${body.action}${body.path ? `：${body.path}` : ""}`] });
-      sendJson(response, 200, result);
-    } else if (request.method === "POST" && url.pathname === "/api/git/commit") {
-      if (!project) throw new Error("project_not_open");
-      const body = await readJson(request) as { message?: string; push?: boolean; remoteBuild?: boolean };
-      const result = await commitGitProject(project.root, body.message || "", Boolean(body.push));
-      if (!result.ok) {
-        broadcast({ type: "log.append", channel: "build", lines: [`Git 提交停止：${result.error || "unknown"}`] });
-        sendJson(response, 409, result);
-      } else if (body.remoteBuild) {
-        if (!body.push) throw new Error("remote_build_requires_push");
-        if (!makerRuntime) throw new Error("maker_cli_not_found");
-        broadcast({ type: "log.append", channel: "build", lines: ["Git 已推送，开始调用 Maker MCP 远端构建并刷新预览…"] });
-        try {
-          const account = await freshAccount(project.root, "build");
-          const build = await runMakerBuild(makerRuntime, project.root, undefined, account.home);
-          let previewRefresh: { ok: boolean; error?: string } = { ok: true };
-          try {
-            await runMakerCommand(makerRuntime, project.root, "refresh", 45_000, await previewHome(project.root));
-          } catch (refreshError) {
-            previewRefresh = { ok: false, error: refreshError instanceof Error ? refreshError.message : String(refreshError) };
-          }
-          const panel = bumpPreviewReload(project.root, {}, readMakerProjectMeta(project.root));
-          broadcast({ type: "preview.panel", panel, reason: "git-remote-build" });
-          broadcast({
-            type: "log.append",
-            channel: "build",
-            lines: [
-              "Maker MCP 远端构建完成。",
-              previewRefresh.ok ? "Maker Runtime / Web 预览刷新完成。" : `构建成功，但 Runtime 刷新未完成：${previewRefresh.error}`,
-              JSON.stringify(build).slice(0, 4000)
-            ]
-          });
-          sendJson(response, 200, { ...result, remoteBuild: { ok: true, result: build, previewRefresh }, panel });
-        } catch (buildError) {
-          const message = buildError instanceof Error ? buildError.message : String(buildError);
-          broadcast({ type: "log.append", channel: "build", lines: [`Git 已推送，但 Maker MCP 远端构建失败：${message}`] });
-          sendJson(response, 502, { ...result, remoteBuild: { ok: false, error: message } });
-        }
-      } else {
-        broadcast({ type: "log.append", channel: "build", lines: [body.push ? "Git 提交并推送完成。" : "Git 本地提交完成。"] });
-        sendJson(response, 200, result);
-      }
     } else if (request.method === "GET" && url.pathname === "/api/maker/qrcode/image") {
       if (!project) throw new Error("project_not_open");
       const qrcodeUrl = readMakerProjectMeta(project.root).qrcodeUrl;
@@ -1807,99 +1677,6 @@ const server = http.createServer(async (request, response) => {
       const node = discoverNodeRuntime();
       broadcast({ type: "log.append", channel: "build", lines: [`已重新同步系统 Node.js：${node.version}（${node.executable}）`] });
       sendJson(response, 200, { ok: true, ...nodeVersionsPayload(), maker: makerVersionsPayload() });
-    } else if (request.method === "GET" && url.pathname === "/api/maker/accounts") {
-      const activation = activateGlobalMakerHome();
-      const root = resolveAccountsProjectRoot(url.searchParams.get("projectRoot"));
-      const resolution = root ? await accountFor(root) : undefined;
-      sendJson(response, 200, {
-        ...makerAccountSnapshot(root, resolution, activation),
-        consoleUrl: MAKER_CONSOLE_URL
-      });
-    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts") {
-      const body = await readJson(request) as { label?: string; projectRoot?: string };
-      const created = addMakerAccount(typeof body.label === "string" ? body.label : "");
-      const activation = activateGlobalMakerHome();
-      const root = resolveAccountsProjectRoot(body.projectRoot);
-      sendJson(response, 200, {
-        ok: true,
-        account: { id: created.id, label: created.label },
-        ...makerAccountSnapshot(root, undefined, activation),
-        consoleUrl: MAKER_CONSOLE_URL
-      });
-    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/global") {
-      const body = await readJson(request) as { accountId?: string; projectRoot?: string };
-      if (!body.accountId) throw new Error("maker_account_not_found");
-      const activation = setGlobalMakerAccount(body.accountId);
-      previewAccountHomes.clear();
-      const root = resolveAccountsProjectRoot(body.projectRoot);
-      const resolution = root ? await accountFor(root) : undefined;
-      broadcast({
-        type: "log.append",
-        channel: "build",
-        lines: [`全局账号已切换并同步本机 ~/.taptap-maker → ${activation.activatedHome}`]
-      });
-      sendJson(response, 200, {
-        ok: true,
-        ...makerAccountSnapshot(root, resolution, activation),
-        consoleUrl: MAKER_CONSOLE_URL
-      });
-    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/rename") {
-      const body = await readJson(request) as { accountId?: string; label?: string; projectRoot?: string };
-      if (!body.accountId) throw new Error("maker_account_not_found");
-      renameMakerAccount(body.accountId, body.label || "");
-      const root = resolveAccountsProjectRoot(body.projectRoot);
-      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(root), consoleUrl: MAKER_CONSOLE_URL });
-    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/remove") {
-      const body = await readJson(request) as { accountId?: string; projectRoot?: string };
-      if (!body.accountId) throw new Error("maker_account_not_found");
-      const activation = removeMakerAccount(body.accountId) ?? activateGlobalMakerHome();
-      previewAccountHomes.clear();
-      const root = resolveAccountsProjectRoot(body.projectRoot);
-      const resolution = root ? await accountFor(root) : undefined;
-      sendJson(response, 200, {
-        ok: true,
-        ...makerAccountSnapshot(root, resolution, activation),
-        consoleUrl: MAKER_CONSOLE_URL
-      });
-    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/project") {
-      const body = await readJson(request) as { mode?: MakerAccountMode; accountId?: string; projectRoot?: string };
-      if (body.mode !== "auto" && body.mode !== "manual") throw new Error("maker_account_mode_invalid");
-      const root = resolveAccountsProjectRoot(body.projectRoot);
-      if (!root) throw new Error("project_not_open");
-      setProjectMakerAccount(root, body.mode, body.accountId);
-      clearMakerAppsCache();
-      previewAccountHomes.delete(projectAccountKey(root));
-      const resolution = await accountFor(root);
-      broadcast({
-        type: "log.append",
-        channel: "build",
-        lines: [
-          body.mode === "manual"
-            ? `项目已指定账号「${resolution.label}」（${root}）`
-            : `项目已改回自动核对（当前解析为「${resolution.label}」）`
-        ]
-      });
-      sendJson(response, 200, { ok: true, ...makerAccountSnapshot(root, resolution) });
-    } else if (request.method === "POST" && url.pathname === "/api/maker/accounts/login") {
-      if (!makerRuntime) throw new Error("maker_cli_not_found");
-      const body = await readJson(request) as { accountId?: string; projectRoot?: string };
-      if (!body.accountId) throw new Error("maker_account_not_found");
-      const target = getMakerAccount(body.accountId);
-      if (!target) throw new Error("maker_account_not_found");
-      const root = resolveAccountsProjectRoot(body.projectRoot);
-      const cwd = root ?? target.home;
-      broadcast({ type: "log.append", channel: "build", lines: [`正在用无痕窗口打开登录页，请登录账号「${target.label}」并创建 token。`] });
-      try {
-        await runMakerLogin(makerRuntime, cwd, target.home);
-        clearMakerAppsCache();
-        broadcast({ type: "log.append", channel: "build", lines: [`账号「${target.label}」登录完成。`] });
-        const resolution = root ? await accountFor(root) : undefined;
-        sendJson(response, 200, { ok: true, ...makerAccountSnapshot(root, resolution) });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        broadcast({ type: "log.append", channel: "build", lines: [`账号「${target.label}」登录失败：${message}`] });
-        sendJson(response, 400, { error: message });
-      }
     } else if (request.method === "GET" && url.pathname === "/api/maker/project-meta") {
       if (!project) throw new Error("project_not_open");
       sendJson(response, 200, {
@@ -2052,138 +1829,6 @@ const server = http.createServer(async (request, response) => {
       }
       broadcast({ type: "preview.panel", panel, reason: "refresh" });
       sendJson(response, 200, { panel, makerRefresh });
-    } else if (request.method === "GET" && url.pathname === "/api/community") {
-      const force = url.searchParams.get("force") === "1";
-      sendJson(response, 200, { community: await loadCommunityConfig(force) });
-    } else if (request.method === "GET" && url.pathname === "/api/tools/image-compress/job") {
-      sendJson(response, 200, { job: imageCompressJob?.progress ?? null });
-    } else if (request.method === "GET" && url.pathname === "/api/tools/image-compress") {
-      const settings = imageCompressPublicSettings();
-      const stored = readImageCompressSettings();
-      const projectRootParam = url.searchParams.get("projectRoot") || project?.root;
-      const defaultTarget = projectRootParam ? resolveDefaultCompressTarget(projectRootParam) : "";
-      sendJson(response, 200, {
-        settings,
-        keysText: stored.tinyKeys.join("\n"),
-        defaultTarget
-      });
-    } else if (request.method === "POST" && url.pathname === "/api/tools/image-compress") {
-      const body = await readJson(request) as {
-        action?: string;
-        tinyEnabled?: boolean;
-        useWebFallback?: boolean;
-        tinyKeys?: string[];
-        target?: string;
-        projectRoot?: string;
-        recursive?: boolean;
-      };
-      if (body.action === "save-settings") {
-        const patch: Partial<import("./image-compress.js").ImageCompressSettings> = {
-          tinyEnabled: Boolean(body.tinyEnabled),
-          useWebFallback: body.useWebFallback !== false
-        };
-        if (Array.isArray(body.tinyKeys)) patch.tinyKeys = body.tinyKeys.map(String);
-        const saved = writeImageCompressSettings(patch);
-        sendJson(response, 200, {
-          settings: imageCompressPublicSettings(),
-          keysText: saved.tinyKeys.join("\n")
-        });
-      } else if (body.action === "run") {
-        const target = typeof body.target === "string" ? body.target.trim() : "";
-        if (!target) {
-          sendJson(response, 400, { error: "target_required" });
-        } else if (imageCompressJob?.progress.state === "running") {
-          sendJson(response, 409, { error: "已有压缩任务在进行中", job: imageCompressJob.progress });
-        } else {
-          sendJson(response, 202, { job: startImageCompressJob(target, body.recursive !== false) });
-        }
-      } else if (body.action === "cancel") {
-        imageCompressJob?.controller.abort();
-        sendJson(response, 200, { job: imageCompressJob?.progress ?? null });
-      } else {
-        sendJson(response, 400, { error: "unknown_action" });
-      }
-    } else if (request.method === "GET" && url.pathname === "/api/tools/new-game-radar/icon") {
-      const iconUrl = url.searchParams.get("url") || "";
-      try {
-        const image = await proxyTapIcon(iconUrl);
-        response.writeHead(200, {
-          "content-type": image.contentType,
-          "cache-control": "public, max-age=86400",
-          "access-control-allow-origin": "*"
-        });
-        response.end(image.body);
-      } catch (error) {
-        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-    } else if (request.method === "GET" && url.pathname === "/api/tools/new-game-radar") {
-      const mode = url.searchParams.get("mode") === "offline" ? "offline" : "auto";
-      try {
-        if (mode === "offline") {
-          const offline = readOfflineSnapshot();
-          sendJson(response, 200, { snapshot: offline || emptyRadarSnapshot("尚无离线快照，请先获取最新排行") });
-        } else {
-          const offline = readOfflineSnapshot();
-          if (offline) {
-            sendJson(response, 200, { snapshot: offline });
-          } else {
-            const snapshot = await fetchLatestRadarSnapshot();
-            sendJson(response, 200, { snapshot });
-          }
-        }
-      } catch (error) {
-        sendJson(response, 502, {
-          snapshot: emptyRadarSnapshot(error instanceof Error ? error.message : String(error)),
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    } else if (request.method === "POST" && url.pathname === "/api/tools/new-game-radar") {
-      const body = await readJson(request) as {
-        action?: string;
-        from?: string;
-        to?: string;
-        refresh?: boolean;
-      };
-      try {
-        if (body.action === "refresh") {
-          const snapshot = await fetchLatestRadarSnapshot();
-          sendJson(response, 200, { snapshot });
-        } else if (body.action === "offline") {
-          const offline = readOfflineSnapshot();
-          sendJson(response, 200, { snapshot: offline || emptyRadarSnapshot("尚无离线快照") });
-        } else if (body.action === "auto") {
-          const snapshot = await loadRadarSnapshot(false);
-          sendJson(response, 200, { snapshot });
-        } else if (body.action === "daily") {
-          const report = await getDailyLaunchReport({
-            ...(typeof body.from === "string" ? { from: body.from } : {}),
-            ...(typeof body.to === "string" ? { to: body.to } : {}),
-            refresh: body.refresh === true
-          });
-          sendJson(response, 200, { report });
-        } else {
-          sendJson(response, 400, { error: "unknown_action" });
-        }
-      } catch (error) {
-        if (body.action === "daily") {
-          sendJson(response, 502, {
-            report: emptyDailyReport(
-              error instanceof Error ? error.message : String(error),
-              typeof body.from === "string" ? body.from : undefined,
-              typeof body.to === "string" ? body.to : undefined
-            ),
-            error: error instanceof Error ? error.message : String(error)
-          });
-          return;
-        }
-        const offline = readOfflineSnapshot();
-        sendJson(response, offline ? 200 : 502, {
-          snapshot: offline
-            ? { ...offline, error: error instanceof Error ? error.message : String(error) }
-            : emptyRadarSnapshot(error instanceof Error ? error.message : String(error)),
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
     } else if (request.method === "GET" && url.pathname === "/api/agent/status") {
       if (!project) throw new Error("project_not_open");
       syncRuntimeFileChannel();

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   collectDirtyLiteralOverrides,
   INSPECTOR_EDITABLE_KEYS,
+  loadAssetStringAssignments,
   patchLuaWidgetLiterals,
   writeBackMatchingTextLiterals,
   writeBackUiOverridesToLua,
@@ -15,6 +16,17 @@ import type { UiSidecarOverride } from "./ui-sidecar.js";
 import type { UiNode } from "@tapmakerwork/protocol";
 
 describe("lua prop writeback", () => {
+  it("re-reads Assets.* strings after a script changes on disk", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tmw-assets-cache-"));
+    const assetsFile = path.join(root, "scripts/data/Assets.lua");
+    fs.mkdirSync(path.dirname(assetsFile), { recursive: true });
+    fs.writeFileSync(assetsFile, `Assets.Title = "旧标题"\n`, "utf8");
+    expect(loadAssetStringAssignments(root).get("Assets.Title")).toBe("旧标题");
+
+    fs.writeFileSync(assetsFile, `Assets.Title = "新的标题文本"\n`, "utf8");
+    expect(loadAssetStringAssignments(root).get("Assets.Title")).toBe("新的标题文本");
+  });
+
   it("keeps every Studio inspector/canvas editable prop in the Lua writeback allowlist", () => {
     // Guard against backgroundImage-class regressions: UI can edit, restart loses.
     const source = `

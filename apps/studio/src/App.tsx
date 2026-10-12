@@ -295,7 +295,6 @@ export function App() {
   const [runtimeErrorReport, setRuntimeErrorReport] = useState<RuntimeErrorReport>();
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [roadmapOpen, setRoadmapOpen] = useState(false);
-  const [qrMenuOpen, setQrMenuOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [copyBusy, setCopyBusy] = useState(false);
   const [newNodeType, setNewNodeType] = useState<UiNodeType>("Panel");
@@ -382,7 +381,6 @@ export function App() {
   const trackTelemetry = useCallback((name: string, props?: Record<string, unknown>) => {
     trackStudioGameAlgo(name, props);
   }, []);
-  const qrCloseTimer = useRef<number | null>(null);
   const copyInFlightRef = useRef(false);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -1132,7 +1130,6 @@ export function App() {
       setSearchOpen(false);
       setSettingsOpen(false);
       setQrOpen(false);
-      setQrMenuOpen(false);
       setToolsMenuOpen(false);
       setSponsorOpen(false);
       setNodeContextMenu(null);
@@ -1313,27 +1310,6 @@ export function App() {
     } catch {
       // ignore
     }
-  }, []);
-
-  const openQrPopover = useCallback(() => {
-    if (qrCloseTimer.current) {
-      window.clearTimeout(qrCloseTimer.current);
-      qrCloseTimer.current = null;
-    }
-    setQrMenuOpen(true);
-    void loadMakerMeta();
-  }, [loadMakerMeta]);
-
-  const scheduleQrClose = useCallback(() => {
-    if (qrCloseTimer.current) window.clearTimeout(qrCloseTimer.current);
-    qrCloseTimer.current = window.setTimeout(() => {
-      setQrMenuOpen(false);
-      qrCloseTimer.current = null;
-    }, 220);
-  }, []);
-
-  useEffect(() => () => {
-    if (qrCloseTimer.current) window.clearTimeout(qrCloseTimer.current);
   }, []);
 
   useEffect(() => {
@@ -1933,7 +1909,6 @@ export function App() {
         : activeUiPath.includes("MainShell")
           ? "MainShell 编辑视图"
           : "转换 IR / .ui.json（编辑视图）";
-  const sourceLabel = canvasSourceLabel;
   const sourceMismatch = runtimeLive && (
     runtimeScene === "loading"
       ? effectiveSource !== "runtime"

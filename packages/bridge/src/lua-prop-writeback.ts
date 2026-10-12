@@ -660,14 +660,6 @@ function rewriteLayoutMathExpression(
   return undefined;
 }
 
-/** @deprecated use rewriteLayoutMathExpression */
-function rewriteAdditiveLayoutOffset(
-  expression: Expression,
-  newAbsolute: number,
-  previousAbsolute: number | undefined
-): string | undefined {
-  return rewriteLayoutMathExpression(expression, "", newAbsolute, previousAbsolute);
-}
 
 /**
  * Copy a rewritten expression onto the same text elsewhere (Layout aliases).
@@ -1176,13 +1168,26 @@ function memberPath(expression: Expression): string | undefined {
   return undefined;
 }
 
-const assetStringCache = new Map<string, Map<string, string>>();
+const assetStringCache = new Map<string, { signature: string; map: Map<string, string> }>();
 
-function loadAssetStringAssignments(projectRoot: string): Map<string, string> {
+function luaFilesSignature(projectRoot: string, files: string[]): string {
+  return files.map((relative) => {
+    try {
+      const stat = fs.statSync(path.join(projectRoot, relative));
+      return `${relative}:${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      return `${relative}:missing`;
+    }
+  }).join("|");
+}
+
+export function loadAssetStringAssignments(projectRoot: string): Map<string, string> {
+  const files = listScriptLuaFiles(projectRoot);
+  const signature = luaFilesSignature(projectRoot, files);
   const cached = assetStringCache.get(projectRoot);
-  if (cached) return cached;
+  if (cached?.signature === signature) return cached.map;
   const map = new Map<string, string>();
-  for (const relative of listScriptLuaFiles(projectRoot)) {
+  for (const relative of files) {
     let source: string;
     try {
       source = readProjectSource(projectRoot, relative).text;
@@ -1232,13 +1237,8 @@ function loadAssetStringAssignments(projectRoot: string): Map<string, string> {
     };
     for (const statement of body) walk(statement);
   }
-  assetStringCache.set(projectRoot, map);
+  assetStringCache.set(projectRoot, { signature, map });
   return map;
-}
-
-/** Drop cached Assets.* strings after a write so the next color route sees fresh values. */
-function invalidateAssetStringCache(projectRoot: string): void {
-  assetStringCache.delete(projectRoot);
 }
 
 export type CallSiteIdentityHints = {
@@ -2175,7 +2175,7 @@ export function writeBackUiOverridesToLua(
         insertMissingFields: true,
         ...(override.previousProps ? { previousProps: override.previousProps } : {})
       });
-      let applied = [...result.applied];
+      const applied = [...result.applied];
       let skipped = [...kitSplit.skipped, ...result.skipped];
       if (result.changed) {
         nextSource = result.text;
@@ -2588,7 +2588,7 @@ export function collectDirtyLiteralOverrides(
     let baseline = baselineById.get(node.id);
     let selectorSource = node.source?.file ? normalizeSourceFile(node.source.file) : "";
     let selectorLine = Number(node.source?.line || 0);
-    let selectorType = node.type;
+    const selectorType = node.type;
     if (!baseline) {
       if (!selectorSource || selectorSource === "runtime" || selectorLine <= 0) {
         const idMatch = /^(.*?\.lua):(\d+):([A-Za-z_][A-Za-z0-9_]*):/i.exec(node.id);

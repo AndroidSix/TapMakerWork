@@ -21,7 +21,7 @@
 - **每个 PR 必须经过至少 1 名审查人 approve，且 typecheck / 单元测试为绿，才能合并。**
   - 审查人指派与目录归属见根目录 `CODEOWNERS`。
   - `main` 分支受保护，详见 [`docs/BRANCH_PROTECTION.md`](./docs/BRANCH_PROTECTION.md)。
-  - 自动检查由 `.github/workflows/pr-check.yml` 执行（`npm ci` → `typecheck` → `npm test`）。
+  - 自动检查由 `.github/workflows/pr-check.yml` 执行：`verify`（Ubuntu：`typecheck` → `lint` → `test` → `build`，必需检查）与 `verify-windows`（Windows：`typecheck` → `test` → `build`）。
 
 ## Issue
 
@@ -40,6 +40,15 @@ npm install
 npm run dev:web
 npm test
 npm run typecheck
+npm run lint
+```
+
+界面改动建议再跑一次 Playwright 冒烟（需本机已安装 Chrome 与 Maker MCP；未启动的 Bridge / Studio 会自动拉起并在结束后关闭）：
+
+```bash
+npm run smoke                                    # 自动查找本机 Chrome
+CHROME_PATH=/path/to/chrome npm run smoke        # 指定 Chrome
+SMOKE_HOME=/path/to/home npm run smoke           # 指定 Bridge 使用的 HOME（Maker 装在别处时）
 ```
 
 桌面打包说明见 `docs/DESKTOP_RELEASE.md`。

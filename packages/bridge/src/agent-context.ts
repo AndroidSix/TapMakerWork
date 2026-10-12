@@ -146,7 +146,7 @@ export function renderStatusMarkdown(input: PublishAgentContextInput & { preview
 | Runtime | \`${input.runtimeScene}\` |
 | Snapshot | \`${input.snapshotSource}\` rev ${input.snapshot.revision} |
 | 当前 UI | \`${input.activeUiEntry || "-"}\` |
-| 截图 | ${input.previewPng ? "\`.tapmakerwork/ai/preview.png\`" : "暂无（需 Runtime 可见）"} |
+| 截图 | ${input.previewPng ? "`.tapmakerwork/ai/preview.png`" : "暂无（需 Runtime 可见）"} |
 | 错误条数 | ${input.errorCount} |
 
 ## Agent 硬约定（改完必须再读）
@@ -183,7 +183,7 @@ export function renderAgentContextMarkdown(input: PublishAgentContextInput & { p
 - Bridge：\`${input.bridgeUrl}\`
 - Runtime：\`${input.runtimeScene}\` · Snapshot：\`${input.snapshotSource}\` · rev \`${input.snapshot.revision}\`
 - 当前 UI：\`${input.activeUiEntry || "-"}\`
-- 截图：${input.previewPng ? "有 \`.tapmakerwork/ai/preview.png\`" : "暂无"}
+- 截图：${input.previewPng ? "有 `.tapmakerwork/ai/preview.png`" : "暂无"}
 ${input.runtimeSessionId ? `- Runtime session：\`${input.runtimeSessionId}\`` : ""}
 
 ## 文件一览

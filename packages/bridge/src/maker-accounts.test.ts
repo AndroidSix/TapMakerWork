@@ -166,7 +166,7 @@ describe("resolveProjectAccount", () => {
 
 describe("activateGlobalMakerHome", () => {
   it("把遗留 ~/.taptap-maker 目录迁到 maker-homes/default，并链到全局账号", () => {
-    const root = useTempStore();
+    useTempStore();
     const legacy = defaultMakerHome();
     fs.mkdirSync(legacy, { recursive: true });
     fs.writeFileSync(path.join(legacy, "pat.json"), "{\"token\":\"legacy\"}\n");
