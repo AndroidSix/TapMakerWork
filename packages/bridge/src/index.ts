@@ -118,7 +118,8 @@ import {
   readImageCompressSettings,
   resolveDefaultCompressTarget,
   runImageCompress,
-  writeImageCompressSettings
+  writeImageCompressSettings,
+  type ImageCompressProgress
 } from "./image-compress.js";
 import {
   emptyDailyReport,
@@ -728,6 +729,38 @@ function validOrigin(request: IncomingMessage): boolean {
 }
 
 const previewAccountHomes = new Map<string, string>();
+
+let imageCompressJob: { progress: ImageCompressProgress; controller: AbortController } | undefined;
+
+function startImageCompressJob(target: string, recursive: boolean): ImageCompressProgress {
+  const controller = new AbortController();
+  const job = {
+    controller,
+    progress: { ok: false, state: "running", target: path.resolve(target), total: 0, processed: 0, compressed: 0, skipped: 0, failed: 0, savedBytes: 0, tinyEnabled: false, keyCount: 0, engine: "", files: [], aiCopyText: "", startedAt: new Date().toISOString() } as ImageCompressProgress
+  };
+  imageCompressJob = job;
+  broadcast({ type: "log.append", channel: "build", lines: [`图片压缩开始：${job.progress.target}`] });
+  void runImageCompress({
+    target,
+    recursive,
+    signal: controller.signal,
+    onProgress: (progress) => {
+      const finished = progress.files.at(-1);
+      if (finished?.error && progress.files.length > job.progress.files.length) {
+        broadcast({ type: "log.append", channel: "build", lines: [`压缩失败：${path.relative(progress.target, finished.path) || finished.path} · ${finished.error}`] });
+      }
+      job.progress = progress;
+    }
+  }).then((result) => {
+    const summary = result.state === "failed"
+      ? `图片压缩失败：${result.error}`
+      : `图片压缩${result.state === "cancelled" ? "已停止" : "完成"}：处理 ${result.processed}/${result.total}，压缩 ${result.compressed}，跳过 ${result.skipped}，失败 ${result.failed}，节省 ${(result.savedBytes / 1024).toFixed(1)} KB`;
+    broadcast({ type: "log.append", channel: "build", lines: [summary] });
+  }).catch((error: unknown) => {
+    job.progress = { ...job.progress, state: "failed", error: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() };
+  });
+  return job.progress;
+}
 
 /** Prefer explicit projectRoot from client; fall back to Bridge 当前打开的项目。 */
 function resolveAccountsProjectRoot(candidate?: string | null): string | undefined {
@@ -2008,6 +2041,8 @@ const server = http.createServer(async (request, response) => {
     } else if (request.method === "GET" && url.pathname === "/api/community") {
       const force = url.searchParams.get("force") === "1";
       sendJson(response, 200, { community: await loadCommunityConfig(force) });
+    } else if (request.method === "GET" && url.pathname === "/api/tools/image-compress/job") {
+      sendJson(response, 200, { job: imageCompressJob?.progress ?? null });
     } else if (request.method === "GET" && url.pathname === "/api/tools/image-compress") {
       const settings = imageCompressPublicSettings();
       const stored = readImageCompressSettings();
@@ -2043,16 +2078,14 @@ const server = http.createServer(async (request, response) => {
         const target = typeof body.target === "string" ? body.target.trim() : "";
         if (!target) {
           sendJson(response, 400, { error: "target_required" });
+        } else if (imageCompressJob?.progress.state === "running") {
+          sendJson(response, 409, { error: "已有压缩任务在进行中", job: imageCompressJob.progress });
         } else {
-          const runOpts: { target: string; projectRoot?: string; recursive?: boolean } = {
-            target,
-            recursive: body.recursive !== false
-          };
-          const projectRoot = typeof body.projectRoot === "string" ? body.projectRoot : project?.root;
-          if (projectRoot) runOpts.projectRoot = projectRoot;
-          const result = await runImageCompress(runOpts);
-          sendJson(response, result.error && result.total === 0 ? 400 : 200, result);
+          sendJson(response, 202, { job: startImageCompressJob(target, body.recursive !== false) });
         }
+      } else if (body.action === "cancel") {
+        imageCompressJob?.controller.abort();
+        sendJson(response, 200, { job: imageCompressJob?.progress ?? null });
       } else {
         sendJson(response, 400, { error: "unknown_action" });
       }

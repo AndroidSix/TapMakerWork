@@ -27,21 +27,31 @@ export interface ImageCompressFileResult {
   engine?: string;
   beforeBytes?: number;
   afterBytes?: number;
+  durationMs?: number;
   error?: string;
 }
 
-export interface ImageCompressRunResult {
+export type ImageCompressJobState = "running" | "done" | "failed" | "cancelled";
+
+export interface ImageCompressProgress {
   ok: boolean;
+  state: ImageCompressJobState;
   target: string;
   total: number;
+  processed: number;
+  /** 正在压缩的文件绝对路径。 */
+  current?: string;
   compressed: number;
   skipped: number;
   failed: number;
   savedBytes: number;
   tinyEnabled: boolean;
   keyCount: number;
+  engine: string;
   files: ImageCompressFileResult[];
   aiCopyText: string;
+  startedAt: string;
+  finishedAt?: string;
   error?: string;
 }
 
@@ -334,95 +344,97 @@ export function resolveDefaultCompressTarget(projectRoot: string): string {
   return projectRoot;
 }
 
+type CompressAttempt = { ok: boolean; skipped?: boolean; engine?: string; error?: string; bytes?: Buffer };
+
+async function compressOne(filePath: string, tiny: TinySession | null): Promise<CompressAttempt> {
+  if (!tiny?.available) return compressLocal(filePath);
+  const result = await tiny.compress(filePath);
+  if (result.ok || result.skipped) return result;
+  const local = await compressLocal(filePath);
+  return local.ok || local.skipped ? local : result;
+}
+
 export async function runImageCompress(options: {
   target: string;
   projectRoot?: string;
   recursive?: boolean;
-}): Promise<ImageCompressRunResult> {
+  signal?: AbortSignal;
+  onProgress?: (progress: ImageCompressProgress) => void;
+  compress?: (filePath: string) => Promise<CompressAttempt>;
+}): Promise<ImageCompressProgress> {
   const settings = readImageCompressSettings();
   const target = path.resolve(options.target);
   const recursive = options.recursive !== false;
-  const aiCopyText =
-    "我将游戏内图片压缩了一遍，你分批次多次的提交上去吧，我怕一次性提交太多太大被拦截了";
+  const progress: ImageCompressProgress = {
+    ok: false,
+    state: "running",
+    target,
+    total: 0,
+    processed: 0,
+    compressed: 0,
+    skipped: 0,
+    failed: 0,
+    savedBytes: 0,
+    tinyEnabled: settings.tinyEnabled,
+    keyCount: settings.tinyKeys.length,
+    engine: settings.tinyEnabled ? "TinyPNG 优先，失败回退本地" : `本地压缩（${detectLocalEngines().label}）`,
+    files: [],
+    aiCopyText: "我将游戏内图片压缩了一遍，你分批次多次的提交上去吧，我怕一次性提交太多太大被拦截了",
+    startedAt: new Date().toISOString()
+  };
+  const emit = () => options.onProgress?.({ ...progress, files: [...progress.files] });
+  const finish = (state: ImageCompressJobState, error?: string): ImageCompressProgress => {
+    delete progress.current;
+    progress.state = state;
+    progress.ok = state === "done" && progress.failed === 0;
+    progress.finishedAt = new Date().toISOString();
+    if (error) progress.error = error;
+    emit();
+    return progress;
+  };
 
   const targetError = !fs.existsSync(target)
     ? `路径不存在：${target}`
     : isTooBroadCompressTarget(target)
       ? `目录范围过大，请选择具体的图片目录：${target}`
       : undefined;
-  if (targetError) {
-    return {
-      ok: false,
-      target,
-      total: 0,
-      compressed: 0,
-      skipped: 0,
-      failed: 0,
-      savedBytes: 0,
-      tinyEnabled: settings.tinyEnabled,
-      keyCount: settings.tinyKeys.length,
-      files: [],
-      aiCopyText,
-      error: targetError
-    };
-  }
+  if (targetError) return finish("failed", targetError);
 
   const files = collectImages(target, recursive);
-  const tiny = settings.tinyEnabled
-    ? new TinySession(settings.tinyKeys, settings.useWebFallback)
-    : null;
-  const results: ImageCompressFileResult[] = [];
-  let compressed = 0;
-  let skipped = 0;
-  let failed = 0;
-  let savedBytes = 0;
+  progress.total = files.length;
+  emit();
+  const tiny = settings.tinyEnabled ? new TinySession(settings.tinyKeys, settings.useWebFallback) : null;
+  const compress = options.compress ?? ((filePath: string) => compressOne(filePath, tiny));
 
   for (const filePath of files) {
+    if (options.signal?.aborted) return finish("cancelled");
+    progress.current = filePath;
+    emit();
+    const startedAt = Date.now();
     const beforeBytes = fs.statSync(filePath).size;
-    let result: { ok: boolean; skipped?: boolean; engine?: string; error?: string; bytes?: Buffer } | undefined;
-
-    if (tiny?.available) {
-      result = await tiny.compress(filePath);
-      if (!result.ok && !result.skipped) {
-        const local = await compressLocal(filePath);
-        if (local.ok || local.skipped) result = local;
-      }
-    } else {
-      result = await compressLocal(filePath);
+    let result: CompressAttempt;
+    try {
+      result = await compress(filePath);
+    } catch (error) {
+      result = { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
+    const timing = { beforeBytes, durationMs: Date.now() - startedAt };
 
     if (result.ok && result.bytes) {
       writeFileAtomic(filePath, result.bytes, fs.statSync(filePath).mode);
-      const afterBytes = result.bytes.length;
-      compressed += 1;
-      savedBytes += Math.max(0, beforeBytes - afterBytes);
-      results.push({
-        path: filePath,
-        success: true,
-        ...(result.engine ? { engine: result.engine } : {}),
-        beforeBytes,
-        afterBytes
-      });
+      progress.compressed += 1;
+      progress.savedBytes += Math.max(0, beforeBytes - result.bytes.length);
+      progress.files.push({ path: filePath, success: true, ...(result.engine ? { engine: result.engine } : {}), ...timing, afterBytes: result.bytes.length });
     } else if (result.skipped) {
-      skipped += 1;
-      results.push({ path: filePath, success: false, skipped: true, beforeBytes, afterBytes: beforeBytes });
+      progress.skipped += 1;
+      progress.files.push({ path: filePath, success: false, skipped: true, ...(result.engine ? { engine: result.engine } : {}), ...timing, afterBytes: beforeBytes });
     } else {
-      failed += 1;
-      results.push({ path: filePath, success: false, beforeBytes, error: result.error || "压缩失败" });
+      progress.failed += 1;
+      progress.files.push({ path: filePath, success: false, ...timing, error: result.error || "压缩失败" });
     }
+    progress.processed += 1;
+    emit();
   }
 
-  return {
-    ok: failed === 0,
-    target,
-    total: files.length,
-    compressed,
-    skipped,
-    failed,
-    savedBytes,
-    tinyEnabled: settings.tinyEnabled,
-    keyCount: settings.tinyKeys.length,
-    files: results,
-    aiCopyText
-  };
+  return finish("done");
 }
