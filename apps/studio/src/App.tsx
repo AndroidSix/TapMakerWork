@@ -139,7 +139,6 @@ import type {
   AssetEntry,
   ToastKind,
   ToastItem,
-  WorkspaceLayout,
   CenterTab,
   DocumentTab,
   FloatingWorkspace
@@ -163,10 +162,8 @@ import {
   loadSyncUiEditsToCode,
   loadOpenProjects,
   DEFAULT_LAYOUT,
-  LAYOUT_STORAGE_KEY,
   DOCUMENT_TABS_STORAGE_KEY,
   loadDocumentTabs,
-  loadWorkspaceLayout,
   terminalMaxHeight,
   clamp
 } from "./app/workspace-storage";
@@ -180,6 +177,7 @@ import { DesktopPermissionsCard, DesktopTelemetryCard, DesktopUpdateCard, MakerV
 import { useDesktopSystem } from "./app/use-desktop-system";
 import { useMakerVersions } from "./app/use-maker-versions";
 import { useGitPanel } from "./app/use-git-panel";
+import { useWorkspaceLayout } from "./app/use-workspace-layout";
 
 declare const __APP_VERSION__: string;
 
@@ -410,8 +408,7 @@ export function App() {
   const documentTabsRef = useRef<HTMLElement | null>(null);
   const floatingWorkspaceDragRef = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null);
   const floatingWorkspaceResizeRef = useRef<{ startX: number; startY: number; width: number; height: number } | null>(null);
-  const [layout, setLayout] = useState<WorkspaceLayout>(() => loadWorkspaceLayout());
-  const layoutDragRef = useRef<{ key: keyof WorkspaceLayout; base: number; originX: number; originY: number } | null>(null);
+  const { layout, persistLayout, resetLayout, beginLayoutDrag } = useWorkspaceLayout({ toast });
   const rootLayout = snapshot ? runtimeLayoutBox(snapshot.root.props) : {};
   const previewWidth = snapshot?.viewport?.width && snapshot.viewport.width > 0
     ? snapshot.viewport.width
@@ -634,49 +631,6 @@ export function App() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [nodeContextMenu]);
-
-  const persistLayout = useCallback((next: WorkspaceLayout) => {
-    setLayout(next);
-    try { localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-  }, []);
-
-  const resetLayout = useCallback(() => {
-    persistLayout({ ...DEFAULT_LAYOUT });
-    toast("已还原默认 IDE 布局", "success");
-  }, [persistLayout, toast]);
-
-  const beginLayoutDrag = useCallback((key: keyof WorkspaceLayout, invertX = false, invertY = false) => (event: React.PointerEvent) => {
-    event.preventDefault();
-    layoutDragRef.current = {
-      key,
-      base: layout[key],
-      originX: event.clientX,
-      originY: event.clientY
-    };
-    document.body.classList.add(key === "terminal" ? "resizing-row" : "resizing-col");
-    const onMove = (moveEvent: PointerEvent) => {
-      const drag = layoutDragRef.current;
-      if (!drag) return;
-      const dx = moveEvent.clientX - drag.originX;
-      const dy = moveEvent.clientY - drag.originY;
-      const delta = key === "terminal" ? dy : dx;
-      const signed = (invertX || invertY) ? -delta : delta;
-      setLayout((current) => {
-        const raw = drag.base + signed;
-        const next = { ...current, [key]: clamp(raw, key === "terminal" ? 40 : key === "previewDock" ? 220 : key === "right" ? 200 : 160, key === "terminal" ? terminalMaxHeight() : key === "previewDock" ? 520 : key === "right" ? 480 : 420) };
-        try { localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-        return next;
-      });
-    };
-    const onUp = () => {
-      layoutDragRef.current = null;
-      document.body.classList.remove("resizing-row", "resizing-col");
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  }, [layout]);
 
   useEffect(() => {
     if (!toolsMenuOpen) return;
