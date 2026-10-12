@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EditorState } from "./state.js";
+import { EditorState, MAX_UNDO_STEPS } from "./state.js";
 
 describe("editor history", () => {
   it("undoes and redoes visual patches without reusing revisions", () => {
@@ -16,6 +16,25 @@ describe("editor history", () => {
     const redone = state.redo();
     expect(redone.revision).toBe(changed.revision + 2);
     expect(redone.root.children[1]?.children[0]?.props.text).toBe("临时预览");
+  });
+
+  it("keeps at most MAX_UNDO_STEPS undo entries", () => {
+    const state = new EditorState();
+    for (let index = 0; index < MAX_UNDO_STEPS + 20; index += 1) {
+      state.apply({
+        requestId: `change-${index}`,
+        baseRevision: state.getSnapshot().revision,
+        nodeId: "home.single-player",
+        props: { text: `第 ${index} 次` }
+      });
+    }
+    let undone = 0;
+    let previousRevision = state.getSnapshot().revision;
+    while (state.undo().revision !== previousRevision) {
+      previousRevision = state.getSnapshot().revision;
+      undone += 1;
+    }
+    expect(undone).toBe(MAX_UNDO_STEPS);
   });
 
   it("keeps the current selection when a runtime refresh omits selectedId", () => {

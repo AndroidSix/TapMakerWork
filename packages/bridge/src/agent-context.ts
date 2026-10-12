@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { LogChannel, UiSnapshot, UiValue } from "@tapmakerwork/protocol";
-import { resolveInsideProject } from "./project.js";
+import { resolveInsideProject, writeFileAtomic } from "./project.js";
 
 export const AGENT_AI_RELATIVE_DIR = ".tapmakerwork/ai";
 const AGENTS_MARKER_BEGIN = "<!-- tapmakerwork-ai-begin -->";
@@ -101,9 +101,10 @@ function aiDir(projectRoot: string): string {
   return resolveInsideProject(projectRoot, AGENT_AI_RELATIVE_DIR);
 }
 
+export const MAX_PREVIEW_FRAME_BYTES = 10 * 1024 * 1024;
+
 function writeJson(filename: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filename), { recursive: true });
-  fs.writeFileSync(filename, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  writeFileAtomic(filename, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 export function agentPreviewPngPath(projectRoot: string): string {
@@ -123,11 +124,11 @@ export function writeAgentPreviewFrame(projectRoot: string, dataUrlOrBase64: str
   const raw = dataUrlOrBase64.trim();
   const match = /^data:image\/(png|jpeg|jpg);base64,(.+)$/i.exec(raw);
   const base64 = match?.[2] || raw.replace(/\s+/g, "");
+  if (base64.length * 0.75 > MAX_PREVIEW_FRAME_BYTES) throw new Error("preview_frame_too_large");
   const buffer = Buffer.from(base64, "base64");
   if (buffer.length < 32) throw new Error("preview_frame_too_small");
   const filename = agentPreviewPngPath(projectRoot);
-  fs.mkdirSync(path.dirname(filename), { recursive: true });
-  fs.writeFileSync(filename, buffer);
+  writeFileAtomic(filename, buffer);
   return { bytes: buffer.length, path: path.relative(projectRoot, filename).replaceAll("\\", "/") };
 }
 
@@ -289,8 +290,8 @@ export function publishAgentContext(input: PublishAgentContextInput): void {
     channels: input.recentLogs || {}
   });
   const publishInput = { ...input, previewPng: hasPreview, errorCount: errors.length };
-  fs.writeFileSync(path.join(root, "STATUS.md"), `${renderStatusMarkdown(publishInput)}\n`, "utf8");
-  fs.writeFileSync(path.join(root, "CONTEXT.md"), `${renderAgentContextMarkdown(publishInput)}\n`, "utf8");
+  writeFileAtomic(path.join(root, "STATUS.md"), `${renderStatusMarkdown(publishInput)}\n`);
+  writeFileAtomic(path.join(root, "CONTEXT.md"), `${renderAgentContextMarkdown(publishInput)}\n`);
   try {
     upsertAgentsMdPointer(input.projectRoot);
   } catch {

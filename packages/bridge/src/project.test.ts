@@ -68,6 +68,34 @@ describe("project boundary", () => {
     expect(readProjectText(root, "scripts/ui/screen.ui.json")).toBe("{\"formatVersion\":1}");
   });
 
+  it("keeps an existing UTF-8 BOM when the editor saves text without it", () => {
+    const root = tapProject();
+    fs.writeFileSync(path.join(root, "main.lua"), Buffer.from("\uFEFFreturn 1", "utf8"));
+    writeProjectText(root, "main.lua", "return 2");
+    expect(fs.readFileSync(path.join(root, "main.lua")).subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
+    expect(readProjectText(root, "main.lua")).toBe("\uFEFFreturn 2");
+  });
+
+  it("refuses to overwrite a file that is not valid UTF-8", () => {
+    const root = tapProject();
+    const gbk = Buffer.from([0x2d, 0x2d, 0x20, 0xd6, 0xd0, 0xce, 0xc4]);
+    fs.writeFileSync(path.join(root, "gbk.lua"), gbk);
+    expect(readProjectSource(root, "gbk.lua").utf8).toBe(false);
+    expect(() => writeProjectText(root, "gbk.lua", "-- 中文")).toThrow("project_file_not_utf8");
+    expect(fs.readFileSync(path.join(root, "gbk.lua"))).toEqual(gbk);
+  });
+
+  it("rejects a save whose base version no longer matches the file on disk", () => {
+    const root = tapProject();
+    fs.writeFileSync(path.join(root, "main.lua"), "return 1");
+    const opened = readProjectSource(root, "main.lua");
+    fs.writeFileSync(path.join(root, "main.lua"), "return 'changed by agent'");
+    expect(() => writeProjectText(root, "main.lua", "return 2", undefined, { baseVersion: opened.version })).toThrow("project_file_changed_externally");
+    const reopened = readProjectSource(root, "main.lua");
+    writeProjectText(root, "main.lua", "return 3", undefined, { baseVersion: reopened.version });
+    expect(readProjectText(root, "main.lua")).toBe("return 3");
+  });
+
   it("resolves NanoVG require-style chunk names to scripts/*.lua", () => {
     const root = tapProject();
     fs.mkdirSync(path.join(root, "scripts", "pool", "ui"), { recursive: true });
@@ -75,7 +103,7 @@ describe("project boundary", () => {
     expect(candidateProjectSourcePaths("pool/ui/DrawUtil")).toContain("scripts/pool/ui/DrawUtil.lua");
     expect(resolveProjectSourcePath(root, "pool/ui/DrawUtil")).toBe("scripts/pool/ui/DrawUtil.lua");
     expect(resolveProjectSourcePath(root, "@pool/ui/DrawUtil")).toBe("scripts/pool/ui/DrawUtil.lua");
-    expect(readProjectSource(root, "pool/ui/DrawUtil")).toEqual({
+    expect(readProjectSource(root, "pool/ui/DrawUtil")).toMatchObject({
       path: "scripts/pool/ui/DrawUtil.lua",
       text: "-- draw\n"
     });

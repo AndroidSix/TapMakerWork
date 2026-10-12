@@ -4,6 +4,7 @@ import path from "node:path";
 import https from "node:https";
 import type { IncomingHttpHeaders } from "node:http";
 import { compressLocal, detectLocalEngines, localInstallHint } from "./local-compress.js";
+import { writeFileAtomic } from "./project.js";
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const TINYPNG_API_HOST = "api.tinify.com";
@@ -107,7 +108,7 @@ export function writeImageCompressSettings(patch: Partial<ImageCompressSettings>
       "# 申请地址：https://tinypng.com/developers",
       ...cleaned
     ].join("\n");
-    fs.writeFileSync(keysPath(), `${body}\n`, "utf8");
+    fs.writeFileSync(keysPath(), `${body}\n`, { encoding: "utf8", mode: 0o600 });
   }
   return readImageCompressSettings();
 }
@@ -322,6 +323,11 @@ class TinySession {
   }
 }
 
+export function isTooBroadCompressTarget(target: string): boolean {
+  const resolved = path.resolve(target);
+  return resolved === path.parse(resolved).root || resolved === path.resolve(os.homedir());
+}
+
 export function resolveDefaultCompressTarget(projectRoot: string): string {
   const assets = path.join(projectRoot, "assets");
   if (fs.existsSync(assets) && fs.statSync(assets).isDirectory()) return assets;
@@ -339,7 +345,12 @@ export async function runImageCompress(options: {
   const aiCopyText =
     "我将游戏内图片压缩了一遍，你分批次多次的提交上去吧，我怕一次性提交太多太大被拦截了";
 
-  if (!fs.existsSync(target)) {
+  const targetError = !fs.existsSync(target)
+    ? `路径不存在：${target}`
+    : isTooBroadCompressTarget(target)
+      ? `目录范围过大，请选择具体的图片目录：${target}`
+      : undefined;
+  if (targetError) {
     return {
       ok: false,
       target,
@@ -352,7 +363,7 @@ export async function runImageCompress(options: {
       keyCount: settings.tinyKeys.length,
       files: [],
       aiCopyText,
-      error: `路径不存在：${target}`
+      error: targetError
     };
   }
 
@@ -381,7 +392,7 @@ export async function runImageCompress(options: {
     }
 
     if (result.ok && result.bytes) {
-      fs.writeFileSync(filePath, result.bytes);
+      writeFileAtomic(filePath, result.bytes, fs.statSync(filePath).mode);
       const afterBytes = result.bytes.length;
       compressed += 1;
       savedBytes += Math.max(0, beforeBytes - afterBytes);

@@ -69,6 +69,8 @@ export function initialUiSnapshot(): UiSnapshot {
   };
 }
 
+export const MAX_UNDO_STEPS = 100;
+
 export class EditorState {
   private snapshot: UiSnapshot;
   private undoStack: UiSnapshot[] = [];
@@ -104,9 +106,14 @@ export class EditorState {
     return this.snapshot;
   }
 
+  private pushUndo(snapshot: UiSnapshot): void {
+    this.undoStack.push(snapshot);
+    if (this.undoStack.length > MAX_UNDO_STEPS) this.undoStack.splice(0, this.undoStack.length - MAX_UNDO_STEPS);
+  }
+
   apply(patch: UiPatch): UiSnapshot {
     if (!patch.historyGroup || patch.historyGroup !== this.activeHistoryGroup) {
-      this.undoStack.push(this.snapshot);
+      this.pushUndo(this.snapshot);
       this.redoStack = [];
     }
     this.activeHistoryGroup = patch.historyGroup;
@@ -115,7 +122,7 @@ export class EditorState {
   }
 
   applyTreeOp(op: UiTreeOp): UiSnapshot {
-    this.undoStack.push(this.snapshot);
+    this.pushUndo(this.snapshot);
     this.redoStack = [];
     this.activeHistoryGroup = undefined;
     this.snapshot = applyUiTreeOp(this.snapshot, op);
@@ -135,7 +142,7 @@ export class EditorState {
     this.activeHistoryGroup = undefined;
     const next = this.redoStack.pop();
     if (!next) return this.snapshot;
-    this.undoStack.push(this.snapshot);
+    this.pushUndo(this.snapshot);
     this.snapshot = { ...next, revision: this.snapshot.revision + 1 };
     return this.snapshot;
   }

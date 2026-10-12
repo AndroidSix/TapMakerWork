@@ -48,7 +48,7 @@ import {
   type MakerRuntimeMode
 } from "./maker.js";
 import { scanUiScreens, uiNodeCount, type UiScreenSummary } from "./ui-screens.js";
-import { listProjectEntries, readProjectSource, resolveInsideProject, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
+import { listProjectEntries, projectFileVersion, readProjectSource, resolveInsideProject, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
@@ -1069,12 +1069,20 @@ const server = http.createServer(async (request, response) => {
       const sourceFile = url.searchParams.get("path");
       if (!sourceFile) throw new Error("project_file_path_required");
       const opened = readProjectSource(project.root, sourceFile);
-      sendJson(response, 200, { path: opened.path, text: opened.text, readOnly: false });
+      sendJson(response, 200, { path: opened.path, text: opened.text, version: opened.version, readOnly: !opened.utf8, encodingWarning: opened.utf8 ? undefined : "project_file_not_utf8" });
     } else if (request.method === "POST" && url.pathname === "/api/project/file") {
       if (!project) throw new Error("project_not_open");
-      const body = await readJson(request, 5_500_000) as { path?: string; text?: string };
+      const body = await readJson(request, 5_500_000) as { path?: string; text?: string; baseVersion?: string };
       if (!body.path || typeof body.text !== "string") throw new Error("project_file_content_required");
-      writeProjectText(project.root, body.path, body.text);
+      try {
+        writeProjectText(project.root, body.path, body.text, undefined, { baseVersion: body.baseVersion });
+      } catch (error) {
+        if (error instanceof Error && error.message === "project_file_changed_externally") {
+          sendJson(response, 409, { error: error.message, currentVersion: projectFileVersion(project.root, body.path) });
+          return;
+        }
+        throw error;
+      }
       let snapshot;
       if (body.path.endsWith(".lua")) {
         uiScreens = scanUiScreens(project.root);
@@ -1085,7 +1093,7 @@ const server = http.createServer(async (request, response) => {
           broadcast({ type: "ui.snapshot", snapshot });
         }
       }
-      sendJson(response, 200, { ok: true, path: body.path, snapshot });
+      sendJson(response, 200, { ok: true, path: body.path, version: projectFileVersion(project.root, body.path), snapshot });
     } else if (request.method === "GET" && url.pathname === "/api/project/asset") {
       if (!project) throw new Error("project_not_open");
       const assetPath = url.searchParams.get("path");

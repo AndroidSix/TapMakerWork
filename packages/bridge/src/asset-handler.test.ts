@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   adoptWindowsMimeForFile,
   assetMimeType,
+  externalAssetName,
   resolveProjectAsset,
   sendProjectAsset
 } from "./asset-handler.js";
@@ -58,13 +59,29 @@ describe("adoptWindowsMimeForFile", () => {
   it("strips @image: prefix and validates file existence on Windows", () => {
     if (process.platform !== "win32") return;
     const root = makeProject();
-    const source = writePng(root, path.join("seed", "external.png"));
-    // 走盘符风格路径：vitest 在 Windows 上 process.cwd() 通常是仓库根
-    const drivePath = source.replace(/\\/g, "\\\\");
-    const adopted = adoptWindowsMimeForFile(root, "@image:" + drivePath);
+    const source = writePng(makeProject(), path.join("seed", "external.png"));
+    const adopted = adoptWindowsMimeForFile(root, "@image:" + source);
     expect(adopted).toBeTruthy();
-    expect(path.basename(adopted!)).toBe("external.png");
+    expect(path.basename(adopted!)).toBe(externalAssetName(source));
     expect(fs.existsSync(adopted!)).toBe(true);
+  });
+
+  it("returns files that already live inside the project without copying", () => {
+    if (process.platform !== "win32") return;
+    const root = makeProject();
+    const source = writePng(root, path.join("assets", "hero.png"));
+    expect(adoptWindowsMimeForFile(root, source)).toBe(path.resolve(source));
+    expect(fs.existsSync(path.join(root, "assets", "_external"))).toBe(false);
+  });
+
+  it("refuses to copy non-image files into the project", () => {
+    if (process.platform !== "win32") return;
+    const root = makeProject();
+    const outside = makeProject();
+    const secret = path.join(outside, "secret.txt");
+    fs.writeFileSync(secret, "token");
+    expect(() => adoptWindowsMimeForFile(root, secret)).toThrowError(/unsupported_asset_type/);
+    expect(fs.existsSync(path.join(root, "assets", "_external"))).toBe(false);
   });
 
   it("throws when Windows absolute path does not exist", () => {
@@ -92,12 +109,22 @@ describe("resolveProjectAsset", () => {
   it("delegates to adoptWindowsMimeForFile when the path is Windows absolute", () => {
     if (process.platform !== "win32") return;
     const root = makeProject();
-    const source = writePng(root, path.join("seed", "external.png"));
-    const drivePath = source.replace(/\\/g, "\\\\");
-    const resolved = resolveProjectAsset(root, "@image:" + drivePath);
+    const source = writePng(makeProject(), path.join("seed", "external.png"));
+    const resolved = resolveProjectAsset(root, "@image:" + source);
     expect(resolved).toBeTruthy();
-    expect(path.basename(resolved)).toBe("external.png");
+    expect(path.basename(resolved)).toBe(externalAssetName(source));
     expect(path.dirname(resolved)).toBe(path.join(root, "assets", "_external"));
+  });
+});
+
+describe("externalAssetName", () => {
+  it("gives same-named images from different folders different names", () => {
+    const first = externalAssetName("C:\\art\\a\\icon.png");
+    const second = externalAssetName("C:\\art\\b\\icon.png");
+    expect(first).toMatch(/^icon-[0-9a-f]{8}\.png$/);
+    expect(second).toMatch(/^icon-[0-9a-f]{8}\.png$/);
+    expect(first).not.toBe(second);
+    expect(externalAssetName("c:\\ART\\a\\icon.png")).toBe(first);
   });
 });
 

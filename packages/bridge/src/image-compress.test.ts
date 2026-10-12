@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   defaultImageCompressSettings,
+  isTooBroadCompressTarget,
   readImageCompressSettings,
   writeImageCompressSettings
 } from "./image-compress.js";
@@ -40,5 +41,13 @@ describe("image compress settings", () => {
     expect(saved.tinyKeys).toEqual(["key-one", "key-two"]);
     expect(fs.existsSync(path.join(dir, ".tapmakerwork", "tiny_keys.txt"))).toBe(true);
     expect(fs.existsSync(path.join(dir, ".tapmakerwork", "image-compress.json"))).toBe(true);
+  });
+});
+
+describe("image compress target guard", () => {
+  it("rejects the filesystem root and the home directory", () => {
+    expect(isTooBroadCompressTarget(path.parse(process.cwd()).root)).toBe(true);
+    expect(isTooBroadCompressTarget(os.homedir())).toBe(true);
+    expect(isTooBroadCompressTarget(path.join(os.homedir(), "game", "assets"))).toBe(false);
   });
 });

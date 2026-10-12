@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -121,7 +122,19 @@ export function readProjectText(projectRoot: string, relativePath: string, maxBy
   return readProjectSource(projectRoot, relativePath, maxBytes).text;
 }
 
-export function readProjectSource(projectRoot: string, relativePath: string, maxBytes = 5_242_880): { path: string; text: string } {
+export interface ProjectSource {
+  path: string;
+  text: string;
+  version: string;
+  utf8: boolean;
+}
+
+function loadProjectSource(relative: string, filename: string): ProjectSource {
+  const bytes = fs.readFileSync(filename);
+  return { path: relative, text: bytes.toString("utf8"), version: contentVersion(bytes), utf8: isValidUtf8(bytes) };
+}
+
+export function readProjectSource(projectRoot: string, relativePath: string, maxBytes = 5_242_880): ProjectSource {
   const cleaned = relativePath.replaceAll("\\", "/").replace(/^@/, "").replace(/^\.\//, "");
   if (!path.isAbsolute(cleaned)) {
     try {
@@ -129,7 +142,7 @@ export function readProjectSource(projectRoot: string, relativePath: string, max
       if (fs.existsSync(filename) && fs.statSync(filename).isFile()) {
         const stat = fs.statSync(filename);
         if (stat.size > maxBytes) throw new Error("project_file_too_large");
-        return { path: cleaned, text: fs.readFileSync(filename, "utf8") };
+        return loadProjectSource(cleaned, filename);
       }
     } catch (error) {
       // Keep boundary errors strict; only remap missing / absolute / module-style paths.
@@ -142,23 +155,83 @@ export function readProjectSource(projectRoot: string, relativePath: string, max
   const stat = fs.statSync(filename);
   if (!stat.isFile()) throw new Error("project_path_not_file");
   if (stat.size > maxBytes) throw new Error("project_file_too_large");
-  return { path: resolvedPath, text: fs.readFileSync(filename, "utf8") };
+  return loadProjectSource(resolvedPath, filename);
 }
 
-export function writeProjectText(projectRoot: string, relativePath: string, text: string, maxBytes = 5_242_880): void {
+const UTF8_BOM = "\uFEFF";
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+
+export function isValidUtf8(bytes: Uint8Array): boolean {
+  try {
+    strictUtf8.decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function contentVersion(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+}
+
+/** Hash of the file as currently on disk; undefined when it does not exist yet. */
+export function projectFileVersion(projectRoot: string, relativePath: string): string | undefined {
+  const filename = resolveInsideProject(projectRoot, relativePath);
+  if (!fs.existsSync(filename) || !fs.statSync(filename).isFile()) return undefined;
+  return contentVersion(fs.readFileSync(filename));
+}
+
+const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+
+function sleepSync(milliseconds: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+/** Windows 上杀毒/编辑器短暂占用目标文件时 rename 会 EPERM/EBUSY，稍等重试即可。 */
+export function renameWithRetry(from: string, to: string, attempts = 6): void {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (attempt >= attempts || !RETRYABLE_RENAME_CODES.has(code)) throw error;
+      sleepSync(40 * attempt);
+    }
+  }
+}
+
+export function writeFileAtomic(filename: string, data: string | Uint8Array, mode = 0o644): void {
+  fs.mkdirSync(path.dirname(filename), { recursive: true });
+  const temporary = path.join(path.dirname(filename), `.${path.basename(filename)}.tapmakerwork-${process.pid}-${randomBytes(4).toString("hex")}.tmp`);
+  try {
+    fs.writeFileSync(temporary, data, { mode });
+    renameWithRetry(temporary, filename);
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
+}
+
+export function writeProjectText(
+  projectRoot: string,
+  relativePath: string,
+  text: string,
+  maxBytes = 5_242_880,
+  options: { baseVersion?: string | undefined } = {}
+): void {
   const filename = resolveInsideProject(projectRoot, relativePath);
   if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error("project_file_too_large");
   const exists = fs.existsSync(filename);
   if (exists && !fs.statSync(filename).isFile()) throw new Error("project_path_not_file");
-  const mode = exists ? fs.statSync(filename).mode : 0o644;
-  fs.mkdirSync(path.dirname(filename), { recursive: true });
-  const temporary = path.join(path.dirname(filename), `.${path.basename(filename)}.tapmakerwork-${process.pid}.tmp`);
-  try {
-    fs.writeFileSync(temporary, text, { encoding: "utf8", mode });
-    fs.renameSync(temporary, filename);
-  } finally {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  let nextText = text;
+  if (exists) {
+    const current = fs.readFileSync(filename);
+    if (options.baseVersion && options.baseVersion !== contentVersion(current)) throw new Error("project_file_changed_externally");
+    if (!isValidUtf8(current)) throw new Error("project_file_not_utf8");
+    const hadBom = current[0] === 0xef && current[1] === 0xbb && current[2] === 0xbf;
+    if (hadBom && !nextText.startsWith(UTF8_BOM)) nextText = UTF8_BOM + nextText;
   }
+  writeFileAtomic(filename, Buffer.from(nextText, "utf8"), exists ? fs.statSync(filename).mode : 0o644);
 }
 
 export function listProjectEntries(projectRoot: string, relativePath = "."): Array<{

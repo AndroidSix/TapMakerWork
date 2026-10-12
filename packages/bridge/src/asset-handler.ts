@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ServerResponse } from "node:http";
@@ -28,17 +29,27 @@ export function adoptWindowsMimeForFile(projectRoot: string, rawAssetPath: strin
   if (!isWindowsAbsolute) return undefined;
   if (!fs.existsSync(stripped)) throw new Error("project_asset_not_found:" + stripped);
   if (!fs.statSync(stripped).isFile()) throw new Error("project_asset_not_a_file:" + stripped);
+  if (!assetMimeType(path.extname(stripped))) throw new Error("unsupported_asset_type");
+  const insideProject = path.relative(path.resolve(projectRoot), path.resolve(stripped));
+  if (insideProject && !insideProject.startsWith("..") && !path.isAbsolute(insideProject)) return path.resolve(stripped);
   const externalDir = path.join(projectRoot, "assets", "_external");
   fs.mkdirSync(externalDir, { recursive: true });
-  const target = path.join(externalDir, path.basename(stripped));
-  if (path.resolve(stripped) !== path.resolve(target)) {
-    try {
-      fs.copyFileSync(stripped, target);
-    } catch {
-      return undefined;
-    }
+  const target = path.join(externalDir, externalAssetName(stripped));
+  try {
+    fs.copyFileSync(stripped, target);
+  } catch {
+    return undefined;
   }
   return target;
+}
+
+/** 不同目录下的同名图片映射到不同文件，避免互相覆盖。 */
+export function externalAssetName(sourcePath: string): string {
+  const resolved = path.win32.resolve(sourcePath).toLowerCase();
+  const extension = path.win32.extname(sourcePath);
+  const stem = path.win32.basename(sourcePath, extension);
+  const digest = createHash("sha1").update(resolved).digest("hex").slice(0, 8);
+  return `${stem}-${digest}${extension}`;
 }
 
 export function resolveProjectAsset(projectRoot: string, assetPath: string): string {
