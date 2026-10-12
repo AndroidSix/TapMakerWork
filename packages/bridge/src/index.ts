@@ -214,6 +214,7 @@ const sandbox = sandboxStatus();
 let project: ProjectBinding | undefined;
 let lastAgentPublishAt = 0;
 let lastAgentPublishKey = "";
+let lastAgentPublishError: string | undefined;
 let agentInboxBusy = false;
 let agentErrors: AgentErrorEntry[] = [];
 const recentAgentLogs: Partial<Record<LogChannel, string[]>> = {};
@@ -249,8 +250,11 @@ function publishAgentContextNow(force = false): void {
       ...(runtimeSessionId ? { runtimeSessionId } : {}),
       alive: true
     });
+    lastAgentPublishError = undefined;
   } catch (error) {
-    process.stderr.write(`[TapMakerWork] agent context publish failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== lastAgentPublishError) process.stderr.write(`[TapMakerWork] agent context publish failed: ${message}\n`);
+    lastAgentPublishError = message;
   }
 }
 
@@ -1968,7 +1972,7 @@ const agentChannelTimer = setInterval(() => {
   } catch {
     // ignore periodic sync failures
   }
-  void processAgentInbox();
+  processAgentInbox().catch(() => undefined);
 }, 500);
 
 function shutdown(): void {
@@ -1985,3 +1989,6 @@ function shutdown(): void {
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(`[TapMakerWork] unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}\n`);
+});
