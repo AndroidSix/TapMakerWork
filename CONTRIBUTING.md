@@ -51,6 +51,14 @@ CHROME_PATH=/path/to/chrome npm run smoke        # 指定 Chrome
 SMOKE_HOME=/path/to/home npm run smoke           # 指定 Bridge 使用的 HOME（Maker 装在别处时）
 ```
 
+改动 Bridge 访问校验、请求方式或桌面端加载方式时，再跑打包版冒烟。它会以打包模式（`TAPMAKERWORK_PACKAGED=1`，临时 HOME）启动 Bridge，用 Electron 从 `file://` 加载构建好的 Studio 并打开测试项目，Bridge 拒绝任何请求即失败。CI 的两个校验任务都会跑这一步。运行前需先 `npm run build`，并停掉本机 43121 端口上的 Bridge：
+
+```bash
+npm run build && npm run smoke:packaged
+xvfb-run -a npm run smoke:packaged               # Linux 无图形界面时
+SMOKE_SCREENSHOT=/tmp/packaged.png npm run smoke:packaged   # 保存截图
+```
+
 桌面打包说明见 `docs/DESKTOP_RELEASE.md`。
 
 ## 许可证

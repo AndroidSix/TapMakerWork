@@ -21,6 +21,8 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      - name: Packaged-mode smoke (Electron loads Studio from file://)
+        run: xvfb-run -a npm run smoke:packaged
   verify-windows:
     runs-on: windows-latest
     timeout-minutes: 20
@@ -34,3 +36,5 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Packaged-mode smoke (Electron loads Studio from file://)
+        run: npm run smoke:packaged

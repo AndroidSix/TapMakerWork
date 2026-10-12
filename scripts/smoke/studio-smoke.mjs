@@ -2,84 +2,23 @@
 // Studio UI smoke test: boots Bridge + Vite (unless already running), opens a fixture project
 // and drives the IDE with Playwright. Usage: CHROME_PATH=/path/to/chrome npm run smoke
 // Bridge uses your real HOME (or SMOKE_HOME) so the installed Maker MCP passes the version gate.
-import { spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import { BRIDGE, createFixtureProject, createReport, isUp, startProcess, stopProcessTree, waitUntilUp } from "./smoke-utils.mjs";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const BRIDGE = "http://127.0.0.1:43121";
 const STUDIO = "http://127.0.0.1:4173";
-const ONE_PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-
-const report = [];
-const check = (name, ok, detail = "") => report.push({ name, ok, detail });
+const report = createReport();
+const check = report.check;
 const children = [];
-
-async function isUp(url) {
-  try {
-    return (await fetch(url, { signal: AbortSignal.timeout(1500) })).ok;
-  } catch {
-    return false;
-  }
-}
-
-async function waitUntilUp(url, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await isUp(url)) return;
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  throw new Error(`timed out waiting for ${url}`);
-}
-
-const isWindows = process.platform === "win32";
-
-function startProcess(command, args, env = {}) {
-  const child = spawn(command, args, { cwd: repoRoot, env: { ...process.env, ...env }, stdio: "ignore", shell: isWindows, detached: !isWindows });
-  children.push(child);
-  return child;
-}
-
-function stopProcessTree(child) {
-  if (!child.pid) return;
-  try {
-    if (isWindows) spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-    else process.kill(-child.pid, "SIGTERM");
-  } catch {
-    // already exited
-  }
-}
-
-function createFixtureProject() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tmw-smoke-"));
-  fs.mkdirSync(path.join(root, ".project"), { recursive: true });
-  fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
-  fs.mkdirSync(path.join(root, "assets", "images"), { recursive: true });
-  fs.writeFileSync(path.join(root, ".project", "project.json"), JSON.stringify({ project_id: "smoke", entry: "scripts/main.lua" }));
-  fs.writeFileSync(path.join(root, "scripts", "main.lua"), [
-    "local UI = require(\"urhox-libs/UI\")",
-    "local root = UI.Panel { width = 720, height = 1280, children = {",
-    "  UI.Label { id = \"title\", text = \"Smoke\", fontSize = 32 },",
-    "  UI.Button { id = \"start\", text = \"开始\", width = 200, height = 64 },",
-    "} }",
-    "UI.SetRoot(root)",
-    ""
-  ].join("\n"));
-  fs.writeFileSync(path.join(root, "assets", "images", "pixel.png"), Buffer.from(ONE_PIXEL_PNG, "base64"));
-  return root;
-}
 
 async function run() {
   if (!(await isUp(`${BRIDGE}/api/health`))) {
     const home = process.env.SMOKE_HOME;
-    startProcess("npx", ["tsx", "packages/bridge/src/index.ts"], home ? { HOME: home, USERPROFILE: home } : {});
+    startProcess(children, "npx", ["tsx", "packages/bridge/src/index.ts"], { env: home ? { HOME: home, USERPROFILE: home } : {} });
     await waitUntilUp(`${BRIDGE}/api/health`, 30_000);
   }
   if (!(await isUp(STUDIO))) {
-    startProcess("npm", ["run", "dev", "-w", "@tapmakerwork/studio"]);
+    startProcess(children, "npm", ["run", "dev", "-w", "@tapmakerwork/studio"]);
     await waitUntilUp(STUDIO, 60_000);
   }
   const projectRoot = createFixtureProject();
@@ -178,5 +117,4 @@ try {
 } finally {
   for (const child of children) stopProcessTree(child);
 }
-for (const item of report) console.log(`${item.ok ? "PASS" : "FAIL"} ${item.name}${item.detail ? ` — ${item.detail}` : ""}`);
-process.exit(report.every((item) => item.ok) ? 0 : 1);
+process.exit(report.print() ? 0 : 1);
