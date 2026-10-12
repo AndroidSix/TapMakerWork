@@ -4,7 +4,6 @@ export interface RuntimeWindowBounds {
   width: number;
   height: number;
   pid: number;
-  executablePath?: string;
 }
 
 export interface RuntimeViewportPoint {

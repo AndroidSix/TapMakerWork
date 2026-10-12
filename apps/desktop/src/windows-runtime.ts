@@ -375,10 +375,18 @@ export class WindowsRuntime {
   private queue: Promise<void> = Promise.resolve();
   private nextId = 1;
 
+  private scriptDirectory: string | undefined;
+
   close(): void {
     this.child?.kill();
     this.child = undefined;
     this.helperReady = false;
+    try {
+      if (this.scriptDirectory) fs.rmSync(this.scriptDirectory, { recursive: true, force: true });
+    } catch {
+      // 系统清理临时目录时会回收
+    }
+    this.scriptDirectory = undefined;
   }
 
   list(): Promise<ListedWindow[]> {
@@ -447,8 +455,10 @@ export class WindowsRuntime {
     if (process.platform !== "win32") return Promise.reject(new Error("windows_runtime_unavailable"));
     this.close();
     const executable = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const scriptFile = path.join(os.tmpdir(), "tapmakerwork-windows-runtime.ps1");
-    fs.writeFileSync(scriptFile, WINDOWS_RUNTIME_SCRIPT, "utf8");
+    // 每次启动用独立的随机目录，避免共享 %TEMP% 下的固定文件名被其它进程替换或多实例互相覆盖
+    this.scriptDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-runtime-"));
+    const scriptFile = path.join(this.scriptDirectory, "windows-runtime.ps1");
+    fs.writeFileSync(scriptFile, WINDOWS_RUNTIME_SCRIPT, { encoding: "utf8", flag: "wx" });
     const child = spawn(executable, [
       "-NoProfile",
       "-NonInteractive",

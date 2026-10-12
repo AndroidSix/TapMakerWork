@@ -19,6 +19,7 @@ import {
   type UpdateReminder
 } from "./app-update-manifest.js";
 import { GITEE_LATEST_RELEASE_API, GITEE_RELEASES_URL, giteeReleaseDownloadBase, isVersionNewer, normalizeReleaseVersion, type GiteeRelease } from "./release-update.js";
+import { bridgeExitMessage, isHttpsUrl, isWebUrl, safeExternalUrl } from "./url-guard.js";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -232,6 +233,16 @@ let updateConfigured = false;
 let updaterReleaseReady = false;
 let updateCheckTimer: NodeJS.Timeout | undefined;
 
+function startUpdateCheckTimer(): void {
+  if (updateCheckTimer) return;
+  updateCheckTimer = setInterval(() => void checkForDesktopUpdates(true), 30 * 60_000);
+}
+
+function stopUpdateCheckTimer(): void {
+  if (updateCheckTimer) clearInterval(updateCheckTimer);
+  updateCheckTimer = undefined;
+}
+
 function desktopLog(message: string): void {
   try {
     const logDirectory = app.getPath("logs");
@@ -417,9 +428,9 @@ async function checkForDesktopUpdates(silent = false): Promise<DesktopUpdateStat
   try {
     const manifest = await loadAppUpdateManifest(!silent);
     const availableVersion = normalizeReleaseVersion(manifest.latest);
-    const releaseUrl = manifest.downloads.page || manifest.downloads.githubPage || GITEE_RELEASES_URL;
-    const downloadUrl = pickPlatformDownloadUrl(manifest.downloads) || releaseUrl;
-    const siteUrl = manifest.downloads.site;
+    const releaseUrl = safeExternalUrl(manifest.downloads.page || manifest.downloads.githubPage, GITEE_RELEASES_URL);
+    const downloadUrl = safeExternalUrl(pickPlatformDownloadUrl(manifest.downloads), releaseUrl);
+    const siteUrl = isHttpsUrl(manifest.downloads.site) ? manifest.downloads.site : undefined;
     const prefs = updatePreferenceState();
     const reminder = resolveUpdateReminder({
       currentVersion: app.getVersion(),
@@ -521,8 +532,20 @@ function installUpdaterEvents(): void {
   });
 }
 
+const BRIDGE_START_TIMEOUT_MS = 20_000;
+const BRIDGE_MAX_AUTO_RESTARTS = 3;
+let bridgeStopping = false;
+let bridgeAutoRestarts = 0;
+
+function stopPackagedBridge(): void {
+  bridgeStopping = true;
+  bridgeProcess?.kill();
+  bridgeProcess = null;
+}
+
 async function startPackagedBridge(): Promise<void> {
   if (!app.isPackaged) return;
+  bridgeStopping = false;
   const bridgeEntry = path.join(process.resourcesPath, "bridge", "index.mjs");
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [bridgeEntry], {
@@ -536,46 +559,86 @@ async function startPackagedBridge(): Promise<void> {
       windowsHide: true
     });
     bridgeProcess = child;
+    let ready = false;
     let settled = false;
+    let stdoutTail = "";
+    let stderrTail = "";
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (error) reject(error); else resolve();
     };
-    const timer = setTimeout(() => finish(), 5_000);
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(new Error(`Bridge 在 ${BRIDGE_START_TIMEOUT_MS / 1000} 秒内没有启动完成。${stderrTail.trim() ? `\n\n${stderrTail.trim().split(/\r?\n/).slice(-3).join("\n")}` : ""}`));
+    }, BRIDGE_START_TIMEOUT_MS);
     child.once("error", (error) => finish(error));
     child.once("exit", (code) => {
-      if (code && code !== 0) finish(new Error(`bridge_exit_${code}`));
+      if (bridgeProcess === child) bridgeProcess = null;
+      if (!ready) {
+        finish(new Error(bridgeExitMessage(code, stderrTail)));
+        return;
+      }
+      if (!bridgeStopping) void recoverCrashedBridge(code, stderrTail);
     });
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
+    // 日志可能被拆成多个 chunk，拼接后再匹配，避免 "Bridge listening" 被截断时误判超时
     child.stdout?.on("data", (message: string) => {
-      if (message.includes("Bridge listening")) finish();
+      stdoutTail = `${stdoutTail}${message}`.slice(-4_096);
+      if (!ready && stdoutTail.includes("Bridge listening")) {
+        ready = true;
+        finish();
+      }
     });
-    child.stderr?.on("data", (message: string) => process.stderr.write(message));
+    child.stderr?.on("data", (message: string) => {
+      stderrTail = `${stderrTail}${message}`.slice(-4_096);
+      process.stderr.write(message);
+    });
   });
+}
+
+async function recoverCrashedBridge(code: number | null, stderrTail: string): Promise<void> {
+  desktopLog(`bridge exited unexpectedly: ${code}`);
+  if (bridgeAutoRestarts >= BRIDGE_MAX_AUTO_RESTARTS) {
+    dialog.showErrorBox("TapMakerWork Bridge 已停止", `${bridgeExitMessage(code, stderrTail)}\n\n已连续自动重启 ${BRIDGE_MAX_AUTO_RESTARTS} 次仍失败，请重启 TapMakerWork。`);
+    return;
+  }
+  bridgeAutoRestarts += 1;
+  try {
+    await startPackagedBridge();
+    desktopLog(`bridge restarted (${bridgeAutoRestarts}/${BRIDGE_MAX_AUTO_RESTARTS})`);
+  } catch (error) {
+    dialog.showErrorBox("TapMakerWork Bridge 重启失败", error instanceof Error ? error.message : String(error));
+  }
 }
 
 const runtimeWindowBoundsScript = `
 ObjC.import("Foundation");
 ObjC.import("CoreGraphics");
-ObjC.import("AppKit");
 ObjC.bindFunction("CGWindowListCopyWindowInfo", ["id", ["uint32", "uint32"]]);
 function run(argv) {
   const windowId = Number(argv[0]);
   const windows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo($.kCGWindowListOptionIncludingWindow, windowId));
   const target = windows.find((item) => Number(item.kCGWindowNumber) === windowId);
   if (!target || !target.kCGWindowBounds) return "";
-  const running = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(target.kCGWindowOwnerPID));
   return JSON.stringify({
     pid: Number(target.kCGWindowOwnerPID),
     x: Number(target.kCGWindowBounds.X),
     y: Number(target.kCGWindowBounds.Y),
     width: Number(target.kCGWindowBounds.Width),
-    height: Number(target.kCGWindowBounds.Height),
-    executablePath: ObjC.unwrap(running.executableURL.path)
+    height: Number(target.kCGWindowBounds.Height)
   });
+}`;
+
+const runtimeActivateScript = `
+ObjC.import("AppKit");
+function run(argv) {
+  const running = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(argv[0]));
+  if (!running || !running.processIdentifier) throw new Error("runtime_input_process_not_found");
+  running.activateWithOptions(3);
+  return "ok";
 }`;
 
 const runtimeMouseEventScript = `
@@ -620,10 +683,28 @@ function ensurePreviewView(): { view: WebContentsView; window: BrowserWindow } |
         partition: "persist:tapmakerwork-preview"
       }
     });
+    previewView.webContents.setWindowOpenHandler(({ url }) => {
+      if (isHttpsUrl(url)) void shell.openExternal(url);
+      return { action: "deny" };
+    });
+    previewView.webContents.on("will-navigate", (event, url) => {
+      if (!isWebUrl(url)) event.preventDefault();
+    });
     window.contentView.addChildView(previewView);
   }
   previewView.setVisible(false);
   return { view: previewView, window };
+}
+
+function destroyPreviewView(): void {
+  const view = previewView;
+  previewView = null;
+  if (!view || view.webContents.isDestroyed()) return;
+  try {
+    view.webContents.close();
+  } catch {
+    // already closing
+  }
 }
 
 function createWindow(): void {
@@ -656,14 +737,14 @@ function createWindow(): void {
   });
   window.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://")) void shell.openExternal(url);
+    if (isHttpsUrl(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
   window.on("focus", () => ensureTelemetry().setFocused(true));
   window.on("blur", () => ensureTelemetry().setFocused(false));
   window.on("closed", () => {
     mainWindow = null;
-    previewView = null;
+    destroyPreviewView();
     if (makerConsoleMode !== "popout") {
       destroyMakerConsoleView();
       makerConsoleMode = "hidden";
@@ -696,6 +777,10 @@ ipcMain.handle("tapmakerwork:permissions-open", async (_event, permission: Permi
   return permissionState();
 });
 ipcMain.handle("tapmakerwork:app-restart", () => {
+  // app.exit 不会触发 before-quit，必须先停 Bridge，否则旧进程占着端口让新实例启动失败
+  stopPackagedBridge();
+  windowsRuntime?.close();
+  windowsRuntime = undefined;
   app.relaunch();
   app.exit(0);
 });
@@ -743,7 +828,7 @@ ipcMain.handle("tapmakerwork:update-get", () => updateState);
 ipcMain.handle("tapmakerwork:update-check", () => checkForDesktopUpdates(false));
 ipcMain.handle("tapmakerwork:update-download", async () => {
   if (updateState.phase !== "available" && updateState.phase !== "downloaded") return updateState;
-  const target = updateState.downloadUrl || updateState.releaseUrl || GITEE_RELEASES_URL;
+  const target = safeExternalUrl(updateState.downloadUrl || updateState.releaseUrl, GITEE_RELEASES_URL);
   if (!app.isPackaged || !updaterReleaseReady) {
     await shell.openExternal(target);
     return sendUpdateState({ message: "已打开对应平台安装包下载页，请安装后重启应用" });
@@ -765,6 +850,7 @@ ipcMain.handle("tapmakerwork:update-restart", () => {
   return updateState;
 });
 ipcMain.handle("tapmakerwork:update-snooze", () => {
+  if (updateState.force) return sendUpdateState({ reminder: "show", message: "该版本为强制更新，无法暂缓，请尽快安装" });
   const until = nextSnoozeUntil();
   writeDesktopSettings({ snoozeUpdateUntil: until });
   const state = sendUpdateState({
@@ -776,6 +862,7 @@ ipcMain.handle("tapmakerwork:update-snooze", () => {
   return state;
 });
 ipcMain.handle("tapmakerwork:update-mute", () => {
+  if (updateState.force) return sendUpdateState({ reminder: "show", message: "该版本为强制更新，无法关闭提醒，请尽快安装" });
   const version = updateState.availableVersion || "";
   writeDesktopSettings({
     mutedUpdateVersion: version || undefined,
@@ -787,7 +874,7 @@ ipcMain.handle("tapmakerwork:update-mute", () => {
   });
 });
 ipcMain.handle("tapmakerwork:update-open-site", async () => {
-  const target = updateState.siteUrl || updateState.releaseUrl || GITEE_RELEASES_URL;
+  const target = safeExternalUrl(updateState.siteUrl || updateState.releaseUrl, GITEE_RELEASES_URL);
   await shell.openExternal(target);
   return updateState;
 });
@@ -837,6 +924,7 @@ ipcMain.handle("tapmakerwork:preview-mount", async (_event, opts: {
   if ("error" in ensured) return { ok: false, error: ensured.error };
   const { view } = ensured;
   if (!opts?.url) return { ok: false, error: "preview_url_required" };
+  if (!isWebUrl(opts.url)) return { ok: false, error: "preview_url_must_be_http" };
   const width = Math.max(120, Math.round(opts.width));
   const height = Math.max(160, Math.round(opts.height));
   view.setBounds({ x: Math.round(opts.x), y: Math.round(opts.y), width, height });
@@ -943,7 +1031,7 @@ async function ensureMakerConsoleView(accountId: string, site: TapConsoleSite = 
   makerConsoleAccountId = id;
   makerConsoleSite = site;
   makerConsoleView.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url);
+    if (isHttpsUrl(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
   try {
@@ -1112,6 +1200,7 @@ ipcMain.handle("tapmakerwork:maker-console-pop-out", async (_event, opts?: { acc
   pop.on("closed", () => {
     makerConsoleWindow = null;
     if (makerConsoleMode === "popout") {
+      destroyMakerConsoleView();
       makerConsoleMode = "hidden";
       notifyMakerConsoleMode();
       mainWindow?.webContents.send("tapmakerwork:maker-console-popout-closed");
@@ -1278,10 +1367,10 @@ ipcMain.handle("tapmakerwork:runtime-interact", async (_event, opts?: {
       Number(opts?.normalizedX || 0),
       Number(opts?.normalizedY || 0)
     );
-    if (!bounds.executablePath) return { ok: false, error: "runtime_input_executable_not_found" };
     // Runtime engines ignore background mouse events. Briefly make the native
     // game key, send a real click, then restore the editor immediately.
-    await execFileAsync("/usr/bin/open", ["-a", bounds.executablePath], { timeout: 2_000 });
+    // Activate by PID: `open -a` with the bundle's inner executable can spawn a second instance.
+    await execFileAsync("/usr/bin/osascript", ["-l", "JavaScript", "-e", runtimeActivateScript, String(bounds.pid)], { timeout: 2_000 });
     await execFileAsync("/usr/bin/osascript", [
       "-l", "JavaScript", "-e", runtimeMouseEventScript,
       String(point.x), String(point.y)
@@ -1399,13 +1488,13 @@ function installApplicationMenu(): void {
         {
           label: "打开官网",
           click: () => {
-            void shell.openExternal(updateState.siteUrl || "https://androidsix.github.io/tapmakerwork-site/");
+            void shell.openExternal(safeExternalUrl(updateState.siteUrl, "https://androidsix.github.io/tapmakerwork-site/"));
           }
         },
         {
           label: "打开发行版页面",
           click: () => {
-            void shell.openExternal(updateState.releaseUrl || GITEE_RELEASES_URL);
+            void shell.openExternal(safeExternalUrl(updateState.releaseUrl, GITEE_RELEASES_URL));
           }
         }
       ]
@@ -1450,7 +1539,7 @@ app.whenReady().then(async () => {
       void checkForDesktopUpdates(true);
       mainWindow?.webContents.send("tapmakerwork:telemetry-track", "update.check", { silent: true });
     }, 8_000);
-    updateCheckTimer = setInterval(() => void checkForDesktopUpdates(true), 30 * 60_000);
+    startUpdateCheckTimer();
   } else if (updateConfigured) {
     setTimeout(() => {
       void checkForDesktopUpdates(true);
@@ -1458,8 +1547,12 @@ app.whenReady().then(async () => {
   }
   installApplicationMenu();
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    else sendPermissionState();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+      if (app.isPackaged && updateConfigured) startUpdateCheckTimer();
+    } else {
+      sendPermissionState();
+    }
   });
 }).catch((error) => {
   desktopLog(`startup failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
@@ -1467,8 +1560,8 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
-  if (updateCheckTimer) clearInterval(updateCheckTimer);
-  previewView = null;
+  stopUpdateCheckTimer();
+  destroyPreviewView();
   mainWindow = null;
   if (process.platform !== "darwin") app.quit();
 });
@@ -1479,8 +1572,7 @@ app.on("before-quit", () => {
   } catch {
     // never block quit on telemetry
   }
-  bridgeProcess?.kill();
-  bridgeProcess = null;
+  stopPackagedBridge();
   windowsRuntime?.close();
   windowsRuntime = undefined;
 });
