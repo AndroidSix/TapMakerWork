@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
-import Editor, { DiffEditor, type OnMount } from "@monaco-editor/react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
+import type { OnMount } from "@monaco-editor/react";
 import {
   Box,
   ChevronRight,
@@ -107,8 +107,7 @@ import { ProjectCockpit } from "./ProjectCockpit";
 import { RuntimeMirror } from "./RuntimeMirror";
 import { Tip } from "./Tip";
 import { DevTipsPanel } from "./DevTipsPanel";
-import { ImageCompressPanel } from "./ImageCompressPanel";
-import { markNewGameRadarSeen, NewGameRadarPanel, readNewGameRadarSeen } from "./NewGameRadarPanel";
+import { markNewGameRadarSeen, readNewGameRadarSeen } from "./new-game-radar-seen";
 import {
   CoachMark,
   COACH_LIVE_EDIT_KEY,
@@ -179,6 +178,12 @@ import { useWorkspaceLayout } from "./app/use-workspace-layout";
 import { useDocumentTabs } from "./app/use-document-tabs";
 
 declare const __APP_VERSION__: string;
+
+const CodeEditor = lazy(() => import("./code-editors").then((module) => ({ default: module.CodeEditor })));
+const CodeDiffEditor = lazy(() => import("./code-editors").then((module) => ({ default: module.CodeDiffEditor })));
+const ImageCompressPanel = lazy(() => import("./ImageCompressPanel").then((module) => ({ default: module.ImageCompressPanel })));
+const NewGameRadarPanel = lazy(() => import("./NewGameRadarPanel").then((module) => ({ default: module.NewGameRadarPanel })));
+const editorFallback = <div className="editor-loading">正在加载编辑器…</div>;
 
 export function App() {
   const [connected, setConnected] = useState(false);
@@ -2946,17 +2951,17 @@ export function App() {
       )}
 
       {compressOpen && (
-        <ImageCompressPanel
+        <Suspense fallback={null}><ImageCompressPanel
           apiBase={API}
           {...(project.root ? { projectRoot: project.root } : {})}
           onClose={() => setCompressOpen(false)}
           onCopy={(text) => void copyText(text)}
           onOpenExternal={openExternalUrl}
-        />
+        /></Suspense>
       )}
 
       {radarOpen && (
-        <NewGameRadarPanel
+        <Suspense fallback={null}><NewGameRadarPanel
           apiBase={API}
           onOpenExternal={openExternalUrl}
           onClose={() => {
@@ -2964,7 +2969,7 @@ export function App() {
             markNewGameRadarSeen();
             setRadarSeen(true);
           }}
-        />
+        /></Suspense>
       )}
 
       {makerConsoleOpen && (
@@ -3371,7 +3376,7 @@ export function App() {
                     {gitDiff.loading ? <div className="git-diff-message"><RefreshCw className="spin" size={22} /><strong>正在读取修改内容…</strong><span>正在准备原始版本与当前版本。</span></div>
                       : gitDiff.error ? <div className="git-diff-message error"><AlertTriangle size={22} /><strong>无法显示更改</strong><span>{gitDiff.error}</span></div>
                         : gitDiff.binary ? <div className="git-diff-message"><FileCode2 size={22} /><strong>二进制文件无法进行文本比较</strong><span>文件状态仍可在左侧源代码管理中操作。</span></div>
-                          : <DiffEditor
+                          : <Suspense fallback={editorFallback}><CodeDiffEditor
                             theme="vs-dark"
                             language={languageForFile(gitDiff.path)}
                             original={gitDiff.original}
@@ -3388,7 +3393,7 @@ export function App() {
                               scrollBeyondLastLine: false,
                               diffAlgorithm: "advanced"
                             }}
-                          />}
+                          /></Suspense>}
                   </div>
                 </section>
               ) : centerTab === "runtime" ? (
@@ -3543,14 +3548,14 @@ export function App() {
                   </div>
                 </div>
               ) : (
-                <Editor
+                <Suspense fallback={editorFallback}><CodeEditor
                   theme="vs-dark"
                   language={languageForFile(selectedFile)}
                   value={code}
                   onChange={(value) => { setCode(value ?? ""); setCodeDirty(true); setSaveState("idle"); }}
                   onMount={onEditorMount}
                   options={{ readOnly: codeReadOnly, minimap: { enabled: false }, fontSize: 13, padding: { top: 14 }, automaticLayout: true }}
-                />
+                /></Suspense>
               )}
             </div>
             {previewDockOpen && centerTab !== "runtime" && (

@@ -1,25 +1,8 @@
 import React, { StrictMode, Component, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { loader } from "@monaco-editor/react";
-import * as monaco from "monaco-editor/editor/editor.api";
-import "monaco-editor/languages/definitions/lua/register";
-import "monaco-editor/language/json/monaco.contribution";
-import "monaco-editor/language/typescript/monaco.contribution";
-import EditorWorker from "monaco-editor/editor/editor.worker?worker";
-import JsonWorker from "monaco-editor/language/json/json.worker?worker";
-import TsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 import { App } from "./App";
 import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopTelemetryState, DesktopUpdateState } from "./desktop-api";
 import "./styles.css";
-
-self.MonacoEnvironment = {
-  getWorker(_moduleId: string, label: string) {
-    if (label === "json") return new JsonWorker();
-    if (label === "typescript" || label === "javascript") return new TsWorker();
-    return new EditorWorker();
-  }
-};
-loader.config({ monaco });
 
 declare global {
   interface Window {
