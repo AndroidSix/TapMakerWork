@@ -2,7 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findRuntimeFileStatus, MAX_SNAPSHOT_PARTS, writeIdeCommandsFile } from "./runtime-file-channel.js";
+import {
+  classifyRuntimeProject,
+  findRuntimeFileStatus,
+  listRunningPreviewProjects,
+  MAX_SNAPSHOT_PARTS,
+  writeIdeCommandsFile
+} from "./runtime-file-channel.js";
 
 const temporary: string[] = [];
 
@@ -145,5 +151,36 @@ describe("runtime file channel", () => {
     const status = findRuntimeFileStatus([root], { previewProjects: new Map() });
     expect(status?.sessionId).toBe("huge");
     expect(status?.snapshot).toBeUndefined();
+  });
+
+  it("classifies HTTP runtime traffic by the reported project name", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-project-"));
+    temporary.push(projectRoot);
+    fs.mkdirSync(path.join(projectRoot, "scripts"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "scripts", "Config.lua"), 'Config.TITLE = "修仙之路"\n', "utf8");
+    const options = { projectRoot, projectName: path.basename(projectRoot) };
+
+    expect(classifyRuntimeProject("修仙之路", options)).toBe("match");
+    expect(classifyRuntimeProject(path.basename(projectRoot), options)).toBe("match");
+    expect(classifyRuntimeProject("另一个项目", options)).toBe("mismatch");
+    expect(classifyRuntimeProject(undefined, options)).toBe("unknown");
+    expect(classifyRuntimeProject("另一个项目", undefined)).toBe("unknown");
+  });
+
+  it("lists projects whose preview runtime is still alive", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-home-"));
+    temporary.push(home);
+    const previewDir = path.join(home, "preview");
+    const writeSession = (hash: string, session: Record<string, unknown>) => {
+      fs.mkdirSync(path.join(previewDir, hash), { recursive: true });
+      fs.writeFileSync(path.join(previewDir, hash, "session.json"), JSON.stringify(session), "utf8");
+    };
+    writeSession("a".repeat(64), { project_realpath: "/p/a", state: "running", runtime_pid: 11 });
+    writeSession("b".repeat(64), { project_realpath: "/p/b", state: "running", runtime_pid: 22 });
+    writeSession("c".repeat(64), { project_realpath: "/p/c", state: "stopped", runtime_pid: 11 });
+    writeSession("d".repeat(64), { project_realpath: "/p/d", state: "running", runtime_pid: 33 });
+
+    const running = listRunningPreviewProjects((pid) => pid === 11 || pid === 22, [previewDir, previewDir]);
+    expect(running.sort()).toEqual(["/p/a", "/p/b"]);
   });
 });

@@ -291,6 +291,42 @@ function classifyStatusProject(
   return identities.some((identity) => normalizedHints.has(identity)) ? "match" : "mismatch";
 }
 
+/** HTTP 通道的 Runtime 自报项目名；未上报或未打开项目时视为 unknown，保持旧版适配器可用。 */
+export function classifyRuntimeProject(runtimeProjectName: string | undefined, options?: FindRuntimeFileStatusOptions): ProjectMatch {
+  if (!runtimeProjectName?.trim() || !options) return "unknown";
+  const hints = new Set(projectMatchHints(options).map(normalizeIdentity));
+  if (!hints.size) return "unknown";
+  return hints.has(normalizeIdentity(runtimeProjectName)) ? "match" : "mismatch";
+}
+
+/** 当前仍在运行 Maker 预览（runtime 进程存活）的项目 realpath 列表。 */
+export function listRunningPreviewProjects(isAlive: (pid: number) => boolean, roots = runtimeFileSearchRoots()): string[] {
+  const running = new Set<string>();
+  for (const root of roots.filter((candidate) => path.basename(candidate) === "preview")) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!/^[a-f0-9]{64}$/.test(entry.name)) continue;
+      try {
+        const session = JSON.parse(fs.readFileSync(path.join(root, entry.name, "session.json"), "utf8")) as {
+          project_realpath?: unknown;
+          state?: unknown;
+          runtime_pid?: unknown;
+        };
+        if (typeof session.project_realpath !== "string" || session.state === "stopped") continue;
+        if (isAlive(Number(session.runtime_pid ?? 0))) running.add(session.project_realpath);
+      } catch {
+        // 没有会话或会话损坏即视为未运行
+      }
+    }
+  }
+  return [...running];
+}
+
 export function findRuntimeFileStatus(
   roots = runtimeFileSearchRoots(),
   options?: FindRuntimeFileStatusOptions

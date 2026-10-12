@@ -47,6 +47,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .project-tab > button:first-child { min-width: 0; flex: 1; height: 100%; display: flex; align-items: center; gap: 6px; overflow: hidden; padding: 0 4px 0 9px; color: inherit; border: 0; background: transparent; cursor: pointer; }
 .project-tab > button:first-child > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-tab small { color: var(--muted); white-space: nowrap; }
+.project-tab-runtime { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 2px #1f8a5a44; }
 .project-tab-close { width: 26px; height: 26px; flex: none; display: grid; place-items: center; padding: 0; color: #8794a8; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
 .project-tab-close:hover:not(:disabled) { color: #fff; background: #3b4658; }
 .project-tab-add { width: 30px; height: 30px; flex: 0 0 30px; display: grid; place-items: center; padding: 0; color: #aab7c9; border: 1px dashed #3b475b; border-radius: 6px; background: transparent; cursor: pointer; }

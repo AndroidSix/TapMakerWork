@@ -38,6 +38,7 @@ import {
   runMakerPreviewStartWithRecovery,
   formatMakerPreviewError,
   isPreviewSupervisorUnreachable,
+  probeProcessPresence,
   runMakerConsoleOpen,
   runMakerDoctor,
   runMakerQrcode,
@@ -56,7 +57,13 @@ import { commitGitProject, listProjectAssets, mutateGitProject, projectHasRuntim
 import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
 import { ensureTapMakerWorkGitIgnored } from "./git-ignore.js";
 import { detectUiBackend } from "./ui-backend.js";
-import { findRuntimeFileStatus, normalizeUiTree, writeIdeCommandsFile } from "./runtime-file-channel.js";
+import {
+  classifyRuntimeProject,
+  findRuntimeFileStatus,
+  listRunningPreviewProjects,
+  normalizeUiTree,
+  writeIdeCommandsFile
+} from "./runtime-file-channel.js";
 import {
   adoptWindowsMimeForFile,
   resolveProjectAsset,
@@ -1010,6 +1017,9 @@ const server = http.createServer(async (request, response) => {
         runtimeCommands.length = 0;
         runtimeConnectedAt = undefined;
         runtimeSessionId = undefined;
+        runtimeFileSessionId = undefined;
+        lastAppliedRuntimeRevision = -1;
+        appliedRuntimeOverrideKeys.clear();
         runtimeScene = "idle";
       }
       project = nextProject;
@@ -1641,16 +1651,24 @@ const server = http.createServer(async (request, response) => {
       syncRuntimeFileChannel();
       sendJson(response, 200, snapshot);
     } else if (request.method === "POST" && url.pathname === "/api/runtime/hello") {
-      const body = await readJson(request) as { sessionId?: string; frames?: boolean };
-      process.stderr.write(`[TapMakerWork] runtime hello session=${body.sessionId} host=${request.headers.host}\n`);
+      const body = await readJson(request) as { sessionId?: string; frames?: boolean; projectName?: string };
+      process.stderr.write(`[TapMakerWork] runtime hello session=${body.sessionId} project=${body.projectName ?? ""} host=${request.headers.host}\n`);
+      if (classifyRuntimeProject(body.projectName, runtimeFileChannelOptions()) === "mismatch") {
+        sendJson(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION, ignored: "other_project" });
+        return;
+      }
       runtimeSessionId = body.sessionId || crypto.randomUUID();
       appliedRuntimeOverrideKeys.clear();
       runtimeConnectedAt = new Date().toISOString();
       capabilities.runtimeFrames = body.frames === true;
       sendJson(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION, sessionId: runtimeSessionId });
     } else if (request.method === "POST" && url.pathname === "/api/runtime/snapshot") {
-      const body = await readJson(request, 10_485_760) as { snapshot?: import("@tapmakerwork/protocol").UiSnapshot };
+      const body = await readJson(request, 10_485_760) as { snapshot?: import("@tapmakerwork/protocol").UiSnapshot; projectName?: string };
       if (!body.snapshot) throw new Error("runtime_snapshot_required");
+      if (classifyRuntimeProject(body.projectName, runtimeFileChannelOptions()) === "mismatch") {
+        sendJson(response, 200, { ok: true, ignored: "other_project" });
+        return;
+      }
       runtimeConnectedAt = new Date().toISOString();
       const snapshot = editor.replaceFromRuntime(body.snapshot);
       snapshotSource = "runtime";
@@ -1658,8 +1676,12 @@ const server = http.createServer(async (request, response) => {
       broadcast({ type: "ui.snapshot", snapshot, source: "runtime" });
       sendJson(response, 200, { ok: true, revision: snapshot.revision });
     } else if (request.method === "GET" && url.pathname === "/api/runtime/commands") {
-      syncRuntimeFileChannel();
       const cursor = Number(url.searchParams.get("cursor") || 0);
+      if (classifyRuntimeProject(url.searchParams.get("project") ?? undefined, runtimeFileChannelOptions()) === "mismatch") {
+        sendJson(response, 200, { commands: [], cursor, ignored: "other_project" });
+        return;
+      }
+      syncRuntimeFileChannel();
       const commands = runtimeCommands.filter((command) => command.id > cursor).slice(0, 100);
       sendJson(response, 200, { commands, cursor: commands.at(-1)?.id ?? cursor });
     } else if (request.method === "POST" && url.pathname === "/api/runtime/event") {
@@ -1886,24 +1908,29 @@ const server = http.createServer(async (request, response) => {
       }
       const logs = readMakerPreviewLogs(project.root, supervisorLogPath);
       sendJson(response, 200, { ...logs, supervisorLogPath });
+    } else if (request.method === "GET" && url.pathname === "/api/maker/preview/running") {
+      sendJson(response, 200, { projects: listRunningPreviewProjects((pid) => probeProcessPresence(pid) === "alive") });
     } else if (request.method === "POST" && ["start", "stop", "refresh"].some((command) => url.pathname === `/api/maker/preview/${command}`)) {
-      if (!project) throw new Error("project_not_open");
       if (!makerRuntime) throw new Error("maker_cli_not_found");
+      const body = await readJson(request) as { projectRoot?: string };
+      const previewRoot = resolveAccountsProjectRoot(body.projectRoot);
+      if (!previewRoot) throw new Error("project_not_open");
       const command = url.pathname.split("/").at(-1) as "start" | "stop" | "refresh";
-      const previewKey = projectAccountKey(project.root);
-      const account = command === "start" ? await accountFor(project.root) : undefined;
+      const previewKey = projectAccountKey(previewRoot);
+      const account = command === "start" ? await accountFor(previewRoot) : undefined;
       if (account) {
         previewAccountHomes.set(previewKey, account.home);
         broadcast({ type: "log.append", channel: "runtime", lines: [accountNote(account)] });
       }
-      const home = account?.home ?? await previewHome(project.root);
-      broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command}…`] });
+      const home = account?.home ?? await previewHome(previewRoot);
+      const target = previewRoot === project?.root ? "" : `（${path.basename(previewRoot)}）`;
+      broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command}${target}…`] });
       try {
         const result = command === "start"
-          ? await runMakerPreviewStartWithRecovery(makerRuntime, project.root, 60_000, (message) => {
+          ? await runMakerPreviewStartWithRecovery(makerRuntime, previewRoot, 60_000, (message) => {
             broadcast({ type: "log.append", channel: "runtime", lines: [message] });
           }, home)
-          : await runMakerCommand(makerRuntime, project.root, command, undefined, home);
+          : await runMakerCommand(makerRuntime, previewRoot, command, undefined, home);
         if (command === "stop") previewAccountHomes.delete(previewKey);
         const failed = result && typeof result === "object" && "ok" in result && (result as { ok?: boolean }).ok === false;
         if (failed) {

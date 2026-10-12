@@ -209,6 +209,11 @@ type RecentProject = { root: string; name: string };
 const OPEN_PROJECTS_STORAGE_KEY = "tapmakerwork.openProjects";
 const SYNC_UI_CODE_STORAGE_KEY = "tapmakerwork.syncUiEditsToCode";
 
+function sameProjectPath(left: string, right: string): boolean {
+  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return normalize(left) === normalize(right);
+}
+
 function loadSyncUiEditsToCode(): boolean {
   try {
     return localStorage.getItem(SYNC_UI_CODE_STORAGE_KEY) !== "0";
@@ -1503,6 +1508,7 @@ export function App() {
   const [sidecarEditRevision, setSidecarEditRevision] = useState(0);
   const [makerMeta, setMakerMeta] = useState<MakerProjectMeta>({});
   const [makerPreviewStatus, setMakerPreviewStatus] = useState<MakerPreviewStatus>();
+  const [runningPreviewRoots, setRunningPreviewRoots] = useState<string[]>([]);
   const [makerBusy, setMakerBusy] = useState<"" | "build" | "qrcode" | "doctor">("");
   const [makerVersions, setMakerVersions] = useState<MakerVersionState>();
   const [nodeVersions, setNodeVersions] = useState<NodeVersionState>();
@@ -2545,7 +2551,6 @@ export function App() {
       if (project?.root && project.root !== projectPath) {
         if (runtimeEditSyncTimerRef.current) window.clearTimeout(runtimeEditSyncTimerRef.current);
         await flushPendingSidecarRef.current().catch(() => undefined);
-        if (makerPreviewStatus?.process_alive) await fetch(`${API}/api/maker/preview/stop`, { method: "POST" }).catch(() => undefined);
         await window.tapMakerWork?.preview?.unmount().catch(() => undefined);
         setPreviewDockOpen(false);
         setSelectedNodeIds([]);
@@ -2629,7 +2634,7 @@ export function App() {
         setProjectOpening(false);
       }
     }
-  }, [codeDirty, loadProjectContents, loadWorkflow, makerPreviewStatus?.process_alive, project?.root, projectLoaded, trackTelemetry]);
+  }, [codeDirty, loadProjectContents, loadWorkflow, project?.root, projectLoaded, trackTelemetry]);
 
   const chooseProject = useCallback(async () => {
     if (window.tapMakerWork?.chooseProject) {
@@ -2713,12 +2718,20 @@ export function App() {
       void closeCurrentProject();
       return;
     }
+    if (runningPreviewRoots.some((root) => sameProjectPath(root, projectPath))) {
+      setRunningPreviewRoots((current) => current.filter((root) => !sameProjectPath(root, projectPath)));
+      void fetch(`${API}/api/maker/preview/stop`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectRoot: projectPath })
+      }).catch(() => undefined);
+    }
     setOpenProjects((current) => {
       const next = current.filter((item) => item.root !== projectPath);
       localStorage.setItem(OPEN_PROJECTS_STORAGE_KEY, JSON.stringify(next));
       return next;
     });
-  }, [closeCurrentProject, project?.root]);
+  }, [closeCurrentProject, project?.root, runningPreviewRoots]);
 
   const removeRecentProject = useCallback((projectPath: string) => {
     setRecentProjects((current) => {
@@ -3929,6 +3942,9 @@ export function App() {
       void fetch(`${API}/api/maker/preview/status`).then(async (response) => {
         if (response.ok) setMakerPreviewStatus(await response.json() as MakerPreviewStatus);
       }).catch(() => undefined);
+      void fetch(`${API}/api/maker/preview/running`).then(async (response) => {
+        if (response.ok) setRunningPreviewRoots(((await response.json()) as { projects?: string[] }).projects ?? []);
+      }).catch(() => undefined);
     };
     refreshStatus();
     const timer = window.setInterval(refreshStatus, 5_000);
@@ -3968,7 +3984,11 @@ export function App() {
     setLogs((current) => ({ ...current, runtime: [...current.runtime, phaseLabel] }));
     upsertPreviewToast(phaseLabel, "info", { busy: true });
     try {
-      const response = await fetch(`${API}/api/maker/preview/${action}`, { method: "POST" });
+      const response = await fetch(`${API}/api/maker/preview/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectRoot: project?.root })
+      });
       const result = await response.json() as { error?: string; state?: string; message?: string };
       if (!response.ok) {
         const detail = result.error ?? response.statusText;
@@ -4355,7 +4375,7 @@ export function App() {
             const active = item.root === project.root;
             return <div key={item.root} className={`project-tab ${active ? "active" : ""}`} title={item.root}>
               <button type="button" role="tab" aria-selected={active} disabled={projectOpening} onClick={() => void openProjectPath(item.root)}>
-                <Folder size={14} aria-hidden="true" /><span>{item.name}</span>{active && <><GitBranch size={12} aria-hidden="true" /><small>{gitStatus?.branch || "—"}</small>{gitStatus?.dirty ? <small className="dirty-branch">•</small> : null}</>}
+                <Folder size={14} aria-hidden="true" /><span>{item.name}</span>{runningPreviewRoots.some((root) => sameProjectPath(root, item.root)) && <i className="project-tab-runtime" title="该项目的 Runtime 正在运行" aria-label="Runtime 运行中" />}{active && <><GitBranch size={12} aria-hidden="true" /><small>{gitStatus?.branch || "—"}</small>{gitStatus?.dirty ? <small className="dirty-branch">•</small> : null}</>}
               </button>
               <button type="button" className="project-tab-close" aria-label={`关闭项目 ${item.name}`} disabled={projectOpening} onClick={() => closeProjectTab(item.root)}><X size={13} /></button>
             </div>;
