@@ -26,22 +26,22 @@ export interface AppUpdateManifest {
 }
 
 export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
-  latest: "0.1.6",
-  title: "TapMakerWork 0.1.6",
+  latest: "0.1.7",
+  title: "TapMakerWork 0.1.7",
   notes: [
-    "【Windows 升级 MCP】修复 Windows 上切换/升级 Maker MCP 版本失败；切换账号后不再「丢失」已安装的 MCP 版本。",
-    "【实时编辑桥注入】支持任意 TimeStep 变量名；保留入口文件 BOM 与 CRLF，修复 Windows 编辑器保存的 main.lua 注入后报 Lua 语法错误。",
-    "【失败原因可见】注入失败、Runtime 自动重启失败会弹出中文原因并写入 Runtime 日志。",
-    "【Git 忽略】打开项目时自动把 .tapmakerwork/ 写入项目 .gitignore。",
-    "【防丢改动】保存时检测外部修改并提示，切换文件前确认未保存内容；非 UTF-8 文件只读打开，避免中文乱码；视觉改动写回 Lua 更安全。",
-    "【多项目 Runtime】多个项目可同时运行各自的 Runtime，切换项目不再停止预览；项目标签绿点表示运行中。",
-    "【Node.js 升级】设置页支持一键升级 Node.js；无法自动升级时提供可一键复制的升级命令。",
-    "【新游雷达】每日上线新增「今日」「近3天」快捷范围。"
+    "【Lua 智能编辑】Lua 语法错误实时标红；补全项目与 urhox-libs 符号，悬停查看文档；编辑器补齐查找、折叠等功能。",
+    "【资源体检】包体报告（按类型占比、最大文件、可压缩候选）；未引用素材一键移入项目回收站，可恢复或清空。",
+    "【图片增量压缩】按内容哈希跳过已压缩过的图片，可强制重压；点击结果查看压缩前后对比，可单张还原原图。",
+    "【安全区检查】画布显示刘海 / Home 条安全区，越界或超出画布的节点高亮，点击即可定位。",
+    "【Runtime 管理】集中查看所有项目的本地预览进程（PID、运行时长、日志），可切换项目或停止；状态栏显示运行数量。",
+    "【一键反馈包】汇总版本、系统、项目、Runtime / Bridge 日志与最近错误并自动脱敏，可复制或保存；运行时错误弹窗可直接生成。",
+    "【更快更省】查询预览状态不再反复启动 Maker CLI；减少重复轮询，窗口隐藏时暂停截图；编辑器与工具面板按需加载。",
+    "【更稳更安全】打包版收紧本机 Bridge 访问来源；修复改 Lua 后颜色/文本回写读到旧值；打开中的项目目录被删除时 Bridge 不再崩溃。"
   ],
   links: [
     {
       label: "完整更新日志",
-      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.6"
+      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.7"
     },
     {
       label: "macOS 安装说明",
@@ -55,10 +55,10 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
   publishedAt: "2026-10-12",
   force: false,
   downloads: {
-    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.6/TapMakerWork-0.1.6-windows-x64.exe",
-    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.6",
+    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.7/TapMakerWork-0.1.7-windows-x64.exe",
+    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.7",
     site: "https://androidsix.github.io/tapmakerwork-site/",
-    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.6"
+    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.7"
   }
 };
 
