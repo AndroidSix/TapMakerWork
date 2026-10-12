@@ -1,5 +1,23 @@
 # Change log
 
+<a id="release-0.1.6"></a>
+
+## 2026-10-12 — TapMakerWork 0.1.6
+
+### 双端对齐修复
+- **Windows 切换/升级 Maker MCP**：不再直接启动 `npx.cmd`（新版 Node 会报 `EINVAL`），改用 npm 自带的 CLI 入口，必要时通过 `cmd.exe` 转义调用；Maker CLI 子进程不再弹控制台窗口。
+- **切换账号后 MCP 版本不丢失**：`~/.taptap-maker` 指向当前账号目录，现会扫描所有账号目录下的 `mcp-runtime`。
+- **实时编辑桥注入**：Update 钩子支持任意 TimeStep 变量名与事件参数名；保留入口文件 UTF-8 BOM 与 CRLF，并自动修复此前被挤到文件中间的 BOM。
+- **失败原因可见**：注入失败给出中文原因（保留错误码），打开项目时弹出提示并写入 Runtime 日志；自动重启 Runtime 失败也会提示。
+- **Runtime 匹配**：项目绑定非全局账号时，也能匹配到该账号预览目录下的 Runtime 状态。
+
+### 项目与 Git
+- 打开项目时自动把 `.tapmakerwork/` 写入项目 `.gitignore`（幂等，保留 CRLF）。
+
+### 打包与发布
+- 版本号同步至 **0.1.6**（GitHub Release 标签 **`v0.1.6`**）。
+- CI 发布改为仅构建 Windows；`version.json` 不再提供 macOS 直链，mac 用户会被引导到发行页（可本地构建后手动上传 `.pkg`）。
+
 <a id="release-0.1.5"></a>
 
 ## 2026-10-06 — TapMakerWork 0.1.5
