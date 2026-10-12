@@ -64,6 +64,7 @@ import {
   normalizeUiTree,
   writeIdeCommandsFile
 } from "./runtime-file-channel.js";
+import { planNodeUpgrade, publicNodeUpgradePlan, runNodeUpgrade } from "./node-upgrade.js";
 import {
   adoptWindowsMimeForFile,
   resolveProjectAsset,
@@ -233,6 +234,7 @@ const bridgeUrl = `http://${host}:${port}`;
 let makerRuntime = discoverMakerRuntime();
 let makerRemoteVersions: MakerRemoteVersions | undefined;
 let nodeRemoteVersion: NodeRemoteVersion | undefined;
+let nodeUpgradeRunning = false;
 const sandbox = sandboxStatus();
 let project: ProjectBinding | undefined;
 let lastAgentPublishAt = 0;
@@ -686,6 +688,8 @@ function nodeVersionsPayload() {
       latest,
       updateAvailable: Boolean(latest && compareMakerVersions(latest, active.version) > 0)
     },
+    upgrade: publicNodeUpgradePlan(planNodeUpgrade(active, { latestLts: latest })),
+    upgrading: nodeUpgradeRunning,
     checkedAt: nodeRemoteVersion?.checkedAt
   };
 }
@@ -1726,6 +1730,28 @@ const server = http.createServer(async (request, response) => {
       refreshSelectedMakerRuntime();
       broadcast({ type: "log.append", channel: "build", lines: [`Maker CLI ${target} 安装完成，TapMakerWork 已切换。`] });
       sendJson(response, 200, { ok: true, result, ...makerVersionsPayload() });
+    } else if (request.method === "POST" && url.pathname === "/api/node/upgrade") {
+      if (nodeUpgradeRunning) throw new Error("node_upgrade_in_progress");
+      const plan = planNodeUpgrade(discoverNodeRuntime(), { latestLts: nodeRemoteVersion?.stable });
+      if (!plan.run) {
+        sendJson(response, 400, { error: `当前安装方式（${plan.label}）不支持在 IDE 内直接升级，请复制命令到${plan.terminal}执行。`, upgrade: publicNodeUpgradePlan(plan) });
+        return;
+      }
+      nodeUpgradeRunning = true;
+      broadcast({ type: "log.append", channel: "build", lines: [`正在通过 ${plan.label} 升级 Node.js：${plan.command}`] });
+      try {
+        await runNodeUpgrade(plan, (line) => broadcast({ type: "log.append", channel: "build", lines: [line] }));
+        refreshSelectedMakerRuntime();
+        const node = discoverNodeRuntime();
+        broadcast({ type: "log.append", channel: "build", lines: [`Node.js 升级完成，当前使用 ${node.version}（${node.executable}）`] });
+        sendJson(response, 200, { ok: true, ...nodeVersionsPayload(), maker: makerVersionsPayload() });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        broadcast({ type: "log.append", channel: "build", lines: [message] });
+        sendJson(response, 400, { error: message, upgrade: publicNodeUpgradePlan(plan) });
+      } finally {
+        nodeUpgradeRunning = false;
+      }
     } else if (request.method === "POST" && url.pathname === "/api/node/version/sync") {
       refreshSelectedMakerRuntime();
       const node = discoverNodeRuntime();

@@ -196,6 +196,7 @@ interface NodeVersionState {
   active: { version: string; executable: string; source: "device" | "managed" | "embedded" };
   installed: Array<{ version: string; executable: string; source: "managed" }>;
   stable: { installed?: string; latest?: string; updateAvailable: boolean };
+  upgrade?: { manager: string; label: string; command: string; terminal: string; note?: string; oneClick: boolean };
   checkedAt?: string;
 }
 
@@ -1512,7 +1513,7 @@ export function App() {
   const [makerBusy, setMakerBusy] = useState<"" | "build" | "qrcode" | "doctor">("");
   const [makerVersions, setMakerVersions] = useState<MakerVersionState>();
   const [nodeVersions, setNodeVersions] = useState<NodeVersionState>();
-  const [makerVersionBusy, setMakerVersionBusy] = useState<"" | "check" | "switch" | "stable" | "beta" | "node">("");
+  const [makerVersionBusy, setMakerVersionBusy] = useState<"" | "check" | "switch" | "stable" | "beta" | "node" | "node-upgrade">("");
   const [desktopPermissions, setDesktopPermissions] = useState<DesktopPermissionState>();
   const [permissionGuideOpen, setPermissionGuideOpen] = useState(false);
   const [permissionBusy, setPermissionBusy] = useState("");
@@ -3066,6 +3067,24 @@ export function App() {
       toast(`已同步系统 Node.js ${result.active.version}`, "success");
     } catch (error) {
       toast(`同步 Node.js 失败：${error instanceof Error ? error.message : String(error)}`, "error");
+    } finally {
+      setMakerVersionBusy("");
+    }
+  }, [refreshMakerHealth, toast]);
+
+  const upgradeSystemNode = useCallback(async () => {
+    setMakerVersionBusy("node-upgrade");
+    setActiveTerminal("build");
+    try {
+      const response = await fetch(`${API}/api/node/upgrade`, { method: "POST" });
+      const result = await response.json() as NodeVersionState & { error?: string; maker?: MakerVersionState };
+      if (!response.ok) throw new Error(result.error || "Node.js 升级失败");
+      setNodeVersions(result);
+      if (result.maker) setMakerVersions(result.maker);
+      await refreshMakerHealth();
+      toast(`Node.js 已升级到 ${result.active.version}`, "success");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
     } finally {
       setMakerVersionBusy("");
     }
@@ -5085,7 +5104,34 @@ export function App() {
                   <RefreshCw size={13} className={makerVersionBusy === "node" ? "spin" : ""} aria-hidden="true" />
                   {makerVersionBusy === "node" ? "同步中…" : "重新同步系统版本"}
                 </button>
-                {nodeVersions?.stable.updateAvailable && <small className="node-update-hint">系统 Node.js 低于最新 LTS {nodeVersions.stable.latest}，请用系统包管理器升级后重新同步。</small>}
+                {nodeVersions?.upgrade && (nodeVersions.stable.updateAvailable || !nodeVersions.device) && (
+                  <div className="node-upgrade">
+                    <small className="node-update-hint">
+                      {nodeVersions.device
+                        ? `系统 Node.js 低于最新 LTS ${nodeVersions.stable.latest}，检测到由 ${nodeVersions.upgrade.label} 安装。`
+                        : `未发现系统 Node.js，可通过 ${nodeVersions.upgrade.label} 安装。`}
+                    </small>
+                    <div className="node-upgrade-command">
+                      <code title={nodeVersions.upgrade.command}>{nodeVersions.upgrade.command}</code>
+                      <button type="button" onClick={() => void copyText(nodeVersions.upgrade!.command)}><Copy size={12} aria-hidden="true" />复制</button>
+                      {nodeVersions.upgrade.oneClick && (
+                        <button
+                          type="button"
+                          className="primary"
+                          disabled={Boolean(makerVersionBusy)}
+                          aria-busy={makerVersionBusy === "node-upgrade"}
+                          onClick={() => void upgradeSystemNode()}
+                        >
+                          <Download size={12} aria-hidden="true" />{makerVersionBusy === "node-upgrade" ? "升级中…" : "一键升级"}
+                        </button>
+                      )}
+                    </div>
+                    <small>
+                      {nodeVersions.upgrade.oneClick ? "一键升级的输出会显示在构建终端；" : `请粘贴到${nodeVersions.upgrade.terminal}执行；`}
+                      完成后点「重新同步系统版本」。{nodeVersions.upgrade.note ?? ""}
+                    </small>
+                  </div>
+                )}
               </article>
 
               <details className="maker-installed-list">

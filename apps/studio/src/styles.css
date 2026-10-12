@@ -1205,6 +1205,12 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .node-version-card dd { margin: 0; overflow: hidden; color: #dce7f7; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .settings-grid .node-version-card > button { justify-self: end; display: inline-flex; align-items: center; gap: 5px; color: var(--text); background: #28598d; border: 1px solid #3976b3; }
 .node-update-hint { color: #e9bd7d; font-size: 10px; text-align: right; }
+.node-upgrade { display: grid; gap: 6px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.node-upgrade .node-update-hint { text-align: left; }
+.node-upgrade > small:last-child { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.node-upgrade-command { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.node-upgrade-command code { flex: 1; min-width: 0; padding: 6px 8px; overflow: hidden; color: #dce7f7; background: #0b1018; border: 1px solid var(--border); border-radius: 4px; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; user-select: all; }
+.node-upgrade-command button { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; white-space: nowrap; }
 .maker-installed-list { border-top: 1px solid var(--border-soft); }
 .maker-installed-list summary { padding: 9px 2px 2px; color: var(--muted); font-size: 11px; cursor: pointer; }
 .maker-installed-list > div { max-height: 150px; overflow: auto; display: grid; gap: 4px; padding-top: 7px; }
