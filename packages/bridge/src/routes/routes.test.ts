@@ -1,4 +1,6 @@
+import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
+import { createAssetRoutes } from "./asset-routes.js";
 import { createGitRoutes } from "./git-routes.js";
 import { findRoute, type BridgeRoute } from "./route-table.js";
 import { callRoute } from "./route-test-helpers.js";
@@ -49,5 +51,18 @@ describe("git routes", () => {
 
   it("requires an open project", async () => {
     await expect(callRoute(git, "GET", "/api/git/status")).rejects.toThrow("project_not_open");
+  });
+});
+
+describe("asset routes", () => {
+  it("validates the request body before touching the project", async () => {
+    const assets = createAssetRoutes({ projectRoot: () => os.tmpdir() });
+    await expect(callRoute(assets, "POST", "/api/assets/trash", { paths: "assets/a.png" })).rejects.toThrow("asset_paths_required");
+    await expect(callRoute(assets, "POST", "/api/assets/restore", {})).rejects.toThrow("trash_ids_required");
+  });
+
+  it("requires an open project", async () => {
+    const assets = createAssetRoutes({ projectRoot: () => undefined });
+    await expect(callRoute(assets, "GET", "/api/assets/report")).rejects.toThrow("project_not_open");
   });
 });

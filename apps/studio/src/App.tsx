@@ -25,6 +25,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Sparkles,
+  Stethoscope,
   TerminalSquare,
   Redo2,
   Undo2,
@@ -182,6 +183,7 @@ declare const __APP_VERSION__: string;
 const CodeEditor = lazy(() => import("./code-editors").then((module) => ({ default: module.CodeEditor })));
 const CodeDiffEditor = lazy(() => import("./code-editors").then((module) => ({ default: module.CodeDiffEditor })));
 const ImageCompressPanel = lazy(() => import("./ImageCompressPanel").then((module) => ({ default: module.ImageCompressPanel })));
+const AssetCheckupPanel = lazy(() => import("./AssetCheckupPanel").then((module) => ({ default: module.AssetCheckupPanel })));
 const NewGameRadarPanel = lazy(() => import("./NewGameRadarPanel").then((module) => ({ default: module.NewGameRadarPanel })));
 const editorFallback = <div className="editor-loading">正在加载编辑器…</div>;
 
@@ -249,6 +251,7 @@ export function App() {
   const [guideOpen, setGuideOpen] = useState(false);
   const [tipsOpen, setTipsOpen] = useState(false);
   const [compressOpen, setCompressOpen] = useState(false);
+  const [checkupOpen, setCheckupOpen] = useState(false);
   const [radarOpen, setRadarOpen] = useState(false);
   const [radarSeen, setRadarSeen] = useState(() => readNewGameRadarSeen());
   const [toolkitMenuOpen, setToolkitMenuOpen] = useState(false);
@@ -1221,6 +1224,18 @@ export function App() {
     } catch {
       setAssets([]);
     }
+  }, []);
+
+  const openAssetCheckup = useCallback(() => {
+    setCompressOpen(false);
+    setRadarOpen(false);
+    setTipsOpen(false);
+    setCheckupOpen(true);
+  }, []);
+
+  const refreshFileTree = useCallback(async () => {
+    const response = await fetch(`${API}/api/project/files`);
+    if (response.ok) setFiles(((await response.json()) as { entries?: FileEntry[] }).entries ?? []);
   }, []);
 
   const refreshMakerHealth = useCallback(async () => {
@@ -2695,8 +2710,11 @@ export function App() {
               <section>
                 <h3>工具集</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setRadarOpen(false); setCompressOpen(true); }}>
+                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setRadarOpen(false); setCheckupOpen(false); setCompressOpen(true); }}>
                     <Image size={13} />图片压缩
+                  </button>
+                  <button onClick={() => { setToolkitMenuOpen(false); openAssetCheckup(); }}>
+                    <Stethoscope size={13} />资源体检
                   </button>
                   <button
                     className="tool-entry-with-dot"
@@ -2783,7 +2801,8 @@ export function App() {
               <section>
                 <h3>工具集</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolsMenuOpen(false); setRadarOpen(false); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
+                  <button onClick={() => { setToolsMenuOpen(false); setRadarOpen(false); setCheckupOpen(false); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
+                  <button onClick={() => { setToolsMenuOpen(false); openAssetCheckup(); }}><Stethoscope size={13} />资源体检</button>
                   <button
                     className="tool-entry-with-dot"
                     onClick={() => {
@@ -2932,6 +2951,15 @@ export function App() {
           onClose={() => setCompressOpen(false)}
           onCopy={(text) => void copyText(text)}
           onOpenExternal={openExternalUrl}
+        /></Suspense>
+      )}
+
+      {checkupOpen && (
+        <Suspense fallback={null}><AssetCheckupPanel
+          apiBase={API}
+          onClose={() => setCheckupOpen(false)}
+          onChanged={() => { void loadAssets(); void loadWorkflow(); void refreshFileTree(); }}
+          onOpenCompress={() => { setCheckupOpen(false); setCompressOpen(true); }}
         /></Suspense>
       )}
 
@@ -3164,7 +3192,7 @@ export function App() {
               </button>)}
             </div>}
             {leftTab === "assets" && <div className="asset-list">
-              <div className="screen-list-heading"><span>{assets.length ? `${assets.length} 个游戏素材` : "项目素材"}</span><button onClick={() => { void loadAssets(); void loadWorkflow(); }} aria-label="刷新资源"><RefreshCw size={13} /></button></div>
+              <div className="screen-list-heading"><span>{assets.length ? `${assets.length} 个游戏素材` : "项目素材"}</span><span className="screen-list-actions"><button onClick={openAssetCheckup} aria-label="资源体检" title="资源体检：包体报告与未引用素材清理"><Stethoscope size={13} /></button><button onClick={() => { void loadAssets(); void loadWorkflow(); }} aria-label="刷新资源"><RefreshCw size={13} /></button></span></div>
               {assets.length === 0 ? <p className="empty-state">未发现图片、音频、视频或模型素材。</p> : assets.slice(0, 160).map((asset) => {
                 const status = asset.status ?? "unreferenced";
                 const statusLabel = status === "referenced" ? `已绑定 ${asset.referencedBy?.length || 0}` : status === "external" ? "外部采纳" : "待确认";

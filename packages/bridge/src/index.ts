@@ -4,6 +4,7 @@ import { readJson, sendJson } from "./http-json.js";
 import { findRoute, type BridgeRoute } from "./routes/route-table.js";
 import { createMakerAccountRoutes } from "./routes/maker-account-routes.js";
 import { createLuaRoutes } from "./routes/lua-routes.js";
+import { createAssetRoutes } from "./routes/asset-routes.js";
 import { createToolsRoutes } from "./routes/tools-routes.js";
 import { createGitRoutes } from "./routes/git-routes.js";
 import path from "node:path";
@@ -746,6 +747,7 @@ function makerPreviewStatusDetail(runtime: NonNullable<typeof makerRuntime>, pro
 
 const routeTable: BridgeRoute[] = [
   ...createLuaRoutes({ projectRoot: () => project?.root }),
+  ...createAssetRoutes({ projectRoot: () => project?.root }),
   ...createGitRoutes({ broadcast, currentProject: () => project, currentMakerRuntime: () => makerRuntime, freshAccount, previewHome }),
   ...createToolsRoutes({ projectRoot: () => project?.root, broadcast }),
   ...createMakerAccountRoutes({

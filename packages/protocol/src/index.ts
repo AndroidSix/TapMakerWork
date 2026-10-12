@@ -225,6 +225,31 @@ export interface LuaDiagnostic {
   message: string;
 }
 
+export type AssetKind = "image" | "audio" | "video" | "model" | "font" | "other";
+
+export interface TrashedAsset {
+  id: string;
+  originalPath: string;
+  bytes: number;
+  trashedAt: string;
+}
+
+export interface AssetSizeItem {
+  path: string;
+  bytes: number;
+  kind: AssetKind;
+  referenced: boolean;
+}
+
+export interface AssetSizeReport {
+  totalBytes: number;
+  byKind: Record<AssetKind, { count: number; bytes: number }>;
+  largest: AssetSizeItem[];
+  unreferenced: { count: number; bytes: number };
+  compressCandidates: { count: number; bytes: number };
+  trash: { count: number; bytes: number };
+}
+
 export type SnapshotSource = "conversion" | "sidecar" | "runtime" | "empty";
 
 export type AgentUiRequest =

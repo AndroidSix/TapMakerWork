@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Copy, ExternalLink, FolderOpen, Image as ImageIcon, Loader2, RefreshCw, Square, X } from "lucide-react";
+import { formatBytes } from "./app/format";
 
 interface CompressSettings {
   tinyEnabled: boolean;
@@ -85,12 +86,6 @@ interface ImageCompressPanelProps {
   onClose?: () => void;
   onCopy: (text: string) => void | Promise<void>;
   onOpenExternal: (url: string) => void;
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOpenExternal }: ImageCompressPanelProps) {
