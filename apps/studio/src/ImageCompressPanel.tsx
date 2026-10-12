@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Copy, ExternalLink, FolderOpen, Image as ImageIcon, RefreshCw, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Copy, ExternalLink, FolderOpen, Image as ImageIcon, Loader2, RefreshCw, Square, X } from "lucide-react";
 
 interface CompressSettings {
   tinyEnabled: boolean;
@@ -12,16 +12,71 @@ interface CompressSettings {
   localInstallHint?: string;
 }
 
-interface CompressRunResult {
+interface CompressFileResult {
+  path: string;
+  success: boolean;
+  skipped?: boolean;
+  engine?: string;
+  beforeBytes?: number;
+  afterBytes?: number;
+  durationMs?: number;
+  error?: string;
+}
+
+interface CompressJob {
   ok: boolean;
+  state: "running" | "done" | "failed" | "cancelled";
   target: string;
   total: number;
+  processed: number;
+  current?: string;
   compressed: number;
   skipped: number;
   failed: number;
   savedBytes: number;
+  engine: string;
+  files: CompressFileResult[];
   aiCopyText: string;
+  startedAt: string;
+  finishedAt?: string;
   error?: string;
+}
+
+type FileFilter = "all" | "compressed" | "skipped" | "failed";
+
+const JOB_STATE_LABEL: Record<CompressJob["state"], string> = {
+  running: "压缩中",
+  done: "已完成",
+  failed: "失败",
+  cancelled: "已停止"
+};
+
+const POLL_INTERVAL_MS = 500;
+
+function relativeTo(root: string, filePath: string): string {
+  const normalizedRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  return normalizedPath.startsWith(`${normalizedRoot}/`) ? normalizedPath.slice(normalizedRoot.length + 1) : normalizedPath;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  const seconds = Math.round(ms / 1000);
+  return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
+function fileStatus(file: CompressFileResult): Exclude<FileFilter, "all"> {
+  if (file.success) return "compressed";
+  return file.skipped ? "skipped" : "failed";
+}
+
+function fileDetail(file: CompressFileResult): string {
+  if (file.error) return file.error;
+  const before = file.beforeBytes ?? 0;
+  const after = file.afterBytes ?? before;
+  if (file.skipped) return `${formatBytes(before)} · 已是最优，未改动`;
+  const ratio = before > 0 ? Math.round((1 - after / before) * 100) : 0;
+  return `${formatBytes(before)} → ${formatBytes(after)}（-${ratio}%）`;
 }
 
 interface ImageCompressPanelProps {
@@ -45,9 +100,36 @@ export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOp
   const [useWebFallback, setUseWebFallback] = useState(true);
   const [target, setTarget] = useState("");
   const [defaultTarget, setDefaultTarget] = useState("");
-  const [busy, setBusy] = useState<"load" | "save" | "run" | null>(null);
-  const [result, setResult] = useState<CompressRunResult | null>(null);
+  const [busy, setBusy] = useState<"load" | "save" | null>(null);
+  const [job, setJob] = useState<CompressJob | null>(null);
+  const [fileFilter, setFileFilter] = useState<FileFilter>("all");
+  const [now, setNow] = useState(() => Date.now());
   const [message, setMessage] = useState<string | null>(null);
+  const running = job?.state === "running";
+
+  const fetchJob = useCallback(async () => {
+    const response = await fetch(`${apiBase}/api/tools/image-compress/job`);
+    if (!response.ok) return;
+    const data = await response.json() as { job: CompressJob | null };
+    setJob(data.job);
+  }, [apiBase]);
+
+  useEffect(() => { void fetchJob().catch(() => undefined); }, [fetchJob]);
+
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+      void fetchJob().catch(() => undefined);
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [fetchJob, running]);
+
+  useEffect(() => {
+    if (!job || job.state === "running") return;
+    if (job.state === "failed") setMessage(job.error || "压缩失败");
+    else setMessage(`${JOB_STATE_LABEL[job.state]}：压缩 ${job.compressed} / 扫描 ${job.total}，节省 ${formatBytes(job.savedBytes)}`);
+  }, [job?.state, job?.startedAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     setBusy("load");
@@ -127,31 +209,38 @@ export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOp
       setMessage("请先选择要压缩的目录");
       return;
     }
-    setBusy("run");
     setMessage(null);
-    setResult(null);
+    setFileFilter("all");
     try {
       const response = await fetch(`${apiBase}/api/tools/image-compress`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action: "run",
-          target: target.trim(),
-          projectRoot,
-          recursive: true
-        })
+        body: JSON.stringify({ action: "run", target: target.trim(), recursive: true })
       });
-      const data = await response.json() as CompressRunResult & { error?: string };
-      if (!response.ok && !data.aiCopyText) throw new Error(data.error || `HTTP ${response.status}`);
-      setResult(data);
-      if (data.error) setMessage(data.error);
-      else setMessage(`完成：压缩 ${data.compressed} / 扫描 ${data.total}，节省 ${formatBytes(data.savedBytes)}`);
+      const data = await response.json() as { job?: CompressJob; error?: string };
+      if (data.job) {
+        setNow(Date.now());
+        setJob(data.job);
+      }
+      if (!response.ok) setMessage(data.error || `HTTP ${response.status}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(null);
     }
-  }, [apiBase, projectRoot, target]);
+  }, [apiBase, target]);
+
+  const cancelCompress = useCallback(async () => {
+    await fetch(`${apiBase}/api/tools/image-compress`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "cancel" })
+    }).catch(() => undefined);
+    setMessage("正在停止：当前图片处理完后停止…");
+  }, [apiBase]);
+
+  const visibleFiles = useMemo(() => {
+    const files = job?.files ?? [];
+    return [...files].reverse().filter((file) => fileFilter === "all" || fileStatus(file) === fileFilter);
+  }, [fileFilter, job?.files]);
 
   const body = (
     <div className="image-compress-panel">
@@ -235,30 +324,81 @@ export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOp
           <button type="button" onClick={() => setTarget(defaultTarget)} disabled={!defaultTarget}>恢复默认</button>
         </div>
         <div className="desktop-card-actions">
-          <button
-            type="button"
-            className="primary"
-            disabled={busy === "run"}
-            onClick={() => void runCompress()}
-          >
-            {busy === "run" ? "压缩中…" : "开始压缩"}
+          <button type="button" className="primary" disabled={running} onClick={() => void runCompress()}>
+            {running ? "压缩中…" : "开始压缩"}
           </button>
+          {running && (
+            <button type="button" onClick={() => void cancelCompress()}><Square size={12} />停止</button>
+          )}
           <span className="desktop-card-note">{tinyEnabled ? "优先 Tiny，失败回退本地" : "使用本地压缩（无需 Tiny）"}</span>
         </div>
       </section>
 
       {message && <p className="image-compress-message">{message}</p>}
 
-      {result && (
-        <section className="image-compress-card">
-          <h4>压缩结果</h4>
-          <p>扫描 {result.total} · 压缩 {result.compressed} · 跳过 {result.skipped} · 失败 {result.failed} · 节省 {formatBytes(result.savedBytes || 0)}</p>
-          <div className="tips-copy-preview">
-            <pre className="tips-copy-text">{result.aiCopyText}</pre>
+      {job && (
+        <section className="image-compress-card image-compress-job" aria-live="polite">
+          <div className="image-compress-job-head">
+            <h4>任务详情</h4>
+            <span className={`image-compress-state is-${job.state}`}>
+              {running && <Loader2 size={12} className="spin" aria-hidden="true" />}
+              {JOB_STATE_LABEL[job.state]}
+            </span>
           </div>
-          <button type="button" className="primary tips-copy" onClick={() => void onCopy(result.aiCopyText)}>
-            <Copy size={13} />复制给 AI（分批提交）
-          </button>
+          <div
+            className="image-compress-progress"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={job.total || 1}
+            aria-valuenow={job.processed}
+          >
+            <i style={{ width: `${job.total ? Math.round((job.processed / job.total) * 100) : running ? 0 : 100}%` }} />
+          </div>
+          <p className="image-compress-job-meta">
+            {job.processed} / {job.total} 张
+            {job.total ? ` · ${Math.round((job.processed / job.total) * 100)}%` : ""}
+            {` · 用时 ${formatDuration((job.finishedAt ? Date.parse(job.finishedAt) : now) - Date.parse(job.startedAt))}`}
+            {job.engine ? ` · ${job.engine}` : ""}
+          </p>
+          <p className="image-compress-job-meta" title={job.target}>目录：{job.target}</p>
+          {job.current && <p className="image-compress-current">正在处理：{relativeTo(job.target, job.current)}</p>}
+
+          <nav className="image-compress-filters" aria-label="按结果筛选">
+            {([
+              ["all", "全部", job.files.length],
+              ["compressed", "已压缩", job.compressed],
+              ["skipped", "跳过", job.skipped],
+              ["failed", "失败", job.failed]
+            ] as const).map(([id, label, count]) => (
+              <button key={id} type="button" className={fileFilter === id ? "active" : ""} onClick={() => setFileFilter(id)}>
+                {label} {count}
+              </button>
+            ))}
+            <span>节省 {formatBytes(job.savedBytes || 0)}</span>
+          </nav>
+
+          <ol className="image-compress-files">
+            {visibleFiles.length === 0 ? (
+              <li className="image-compress-empty">{running ? "等待第一张图片处理完成…" : "没有符合条件的文件"}</li>
+            ) : visibleFiles.map((file) => (
+              <li key={file.path} className={`is-${fileStatus(file)}`}>
+                <strong title={file.path}>{relativeTo(job.target, file.path)}</strong>
+                <span>{fileDetail(file)}</span>
+                <small>{[file.engine, file.durationMs != null ? formatDuration(file.durationMs) : ""].filter(Boolean).join(" · ")}</small>
+              </li>
+            ))}
+          </ol>
+
+          {job.state === "done" && job.compressed > 0 && (
+            <>
+              <div className="tips-copy-preview">
+                <pre className="tips-copy-text">{job.aiCopyText}</pre>
+              </div>
+              <button type="button" className="primary tips-copy" onClick={() => void onCopy(job.aiCopyText)}>
+                <Copy size={13} />复制给 AI（分批提交）
+              </button>
+            </>
+          )}
         </section>
       )}
     </div>

@@ -38,6 +38,7 @@ import {
   runMakerPreviewStartWithRecovery,
   formatMakerPreviewError,
   isPreviewSupervisorUnreachable,
+  probeProcessPresence,
   runMakerConsoleOpen,
   runMakerDoctor,
   runMakerQrcode,
@@ -48,14 +49,22 @@ import {
   type MakerRuntimeMode
 } from "./maker.js";
 import { scanUiScreens, uiNodeCount, type UiScreenSummary } from "./ui-screens.js";
-import { listProjectEntries, readProjectSource, resolveInsideProject, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
+import { listProjectEntries, projectFileVersion, readProjectSource, resolveInsideProject, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
 import { commitGitProject, listProjectAssets, mutateGitProject, projectHasRuntimeAdapter, pullGitProject, readGitDiff, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
 import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
+import { ensureTapMakerWorkGitIgnored } from "./git-ignore.js";
 import { detectUiBackend } from "./ui-backend.js";
-import { findRuntimeFileStatus, normalizeUiTree, writeIdeCommandsFile } from "./runtime-file-channel.js";
+import {
+  classifyRuntimeProject,
+  findRuntimeFileStatus,
+  listRunningPreviewProjects,
+  normalizeUiTree,
+  writeIdeCommandsFile
+} from "./runtime-file-channel.js";
+import { planNodeUpgrade, publicNodeUpgradePlan, runNodeUpgrade } from "./node-upgrade.js";
 import {
   adoptWindowsMimeForFile,
   resolveProjectAsset,
@@ -109,7 +118,8 @@ import {
   readImageCompressSettings,
   resolveDefaultCompressTarget,
   runImageCompress,
-  writeImageCompressSettings
+  writeImageCompressSettings,
+  type ImageCompressProgress
 } from "./image-compress.js";
 import {
   emptyDailyReport,
@@ -225,6 +235,7 @@ const bridgeUrl = `http://${host}:${port}`;
 let makerRuntime = discoverMakerRuntime();
 let makerRemoteVersions: MakerRemoteVersions | undefined;
 let nodeRemoteVersion: NodeRemoteVersion | undefined;
+let nodeUpgradeRunning = false;
 const sandbox = sandboxStatus();
 let project: ProjectBinding | undefined;
 let lastAgentPublishAt = 0;
@@ -298,7 +309,7 @@ async function executeAgentFileRequest(request: AgentFileRequest): Promise<unkno
     case "maker_build":
       return bridgeLocalJson("/api/maker/build", { method: "POST" });
     case "maker_doctor":
-      return bridgeLocalJson("/api/maker/doctor");
+      return bridgeLocalJson("/api/maker/doctor", { method: "POST" });
     case "maker_console_open":
       return bridgeLocalJson("/api/maker/console/open", { method: "POST" });
     case "maker_qrcode":
@@ -429,9 +440,18 @@ async function processAgentInbox(): Promise<void> {
   }
 }
 
+function ignoreTapMakerWorkStateInGit(projectRoot: string): { changed: boolean; error?: string } {
+  try {
+    return { changed: ensureTapMakerWorkGitIgnored(projectRoot).changed };
+  } catch (error) {
+    return { changed: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 if (process.env.TAPMAKERWORK_PROJECT) {
   try {
     project = resolveProjectRoot(process.env.TAPMAKERWORK_PROJECT);
+    ignoreTapMakerWorkStateInGit(project.root);
   } catch (error) {
     process.stderr.write(`[TapMakerWork] Project binding failed: ${String(error)}\n`);
   }
@@ -669,6 +689,8 @@ function nodeVersionsPayload() {
       latest,
       updateAvailable: Boolean(latest && compareMakerVersions(latest, active.version) > 0)
     },
+    upgrade: publicNodeUpgradePlan(planNodeUpgrade(active, { latestLts: latest })),
+    upgrading: nodeUpgradeRunning,
     checkedAt: nodeRemoteVersion?.checkedAt
   };
 }
@@ -707,6 +729,38 @@ function validOrigin(request: IncomingMessage): boolean {
 }
 
 const previewAccountHomes = new Map<string, string>();
+
+let imageCompressJob: { progress: ImageCompressProgress; controller: AbortController } | undefined;
+
+function startImageCompressJob(target: string, recursive: boolean): ImageCompressProgress {
+  const controller = new AbortController();
+  const job = {
+    controller,
+    progress: { ok: false, state: "running", target: path.resolve(target), total: 0, processed: 0, compressed: 0, skipped: 0, failed: 0, savedBytes: 0, tinyEnabled: false, keyCount: 0, engine: "", files: [], aiCopyText: "", startedAt: new Date().toISOString() } as ImageCompressProgress
+  };
+  imageCompressJob = job;
+  broadcast({ type: "log.append", channel: "build", lines: [`图片压缩开始：${job.progress.target}`] });
+  void runImageCompress({
+    target,
+    recursive,
+    signal: controller.signal,
+    onProgress: (progress) => {
+      const finished = progress.files.at(-1);
+      if (finished?.error && progress.files.length > job.progress.files.length) {
+        broadcast({ type: "log.append", channel: "build", lines: [`压缩失败：${path.relative(progress.target, finished.path) || finished.path} · ${finished.error}`] });
+      }
+      job.progress = progress;
+    }
+  }).then((result) => {
+    const summary = result.state === "failed"
+      ? `图片压缩失败：${result.error}`
+      : `图片压缩${result.state === "cancelled" ? "已停止" : "完成"}：处理 ${result.processed}/${result.total}，压缩 ${result.compressed}，跳过 ${result.skipped}，失败 ${result.failed}，节省 ${(result.savedBytes / 1024).toFixed(1)} KB`;
+    broadcast({ type: "log.append", channel: "build", lines: [summary] });
+  }).catch((error: unknown) => {
+    job.progress = { ...job.progress, state: "failed", error: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() };
+  });
+  return job.progress;
+}
 
 /** Prefer explicit projectRoot from client; fall back to Bridge 当前打开的项目。 */
 function resolveAccountsProjectRoot(candidate?: string | null): string | undefined {
@@ -1000,6 +1054,9 @@ const server = http.createServer(async (request, response) => {
         runtimeCommands.length = 0;
         runtimeConnectedAt = undefined;
         runtimeSessionId = undefined;
+        runtimeFileSessionId = undefined;
+        lastAppliedRuntimeRevision = -1;
+        appliedRuntimeOverrideKeys.clear();
         runtimeScene = "idle";
       }
       project = nextProject;
@@ -1029,13 +1086,17 @@ const server = http.createServer(async (request, response) => {
         adapter = { installed: true, changed: installed.changed };
       } catch (error) {
         adapter = { installed: false, changed: false, error: error instanceof Error ? error.message : String(error) };
+        broadcast({ type: "log.append", channel: "runtime", lines: [`实时编辑桥自动接入失败：${adapter.error}`] });
       }
+      const gitignore = ignoreTapMakerWorkStateInGit(project.root);
+      if (gitignore.changed) broadcast({ type: "log.append", channel: "agent", lines: ["已把 .tapmakerwork/ 写入项目 .gitignore"] });
       publishAgentContextNow(true);
       sendJson(response, 200, {
         project,
         snapshot,
         activeUiEntry,
         adapter,
+        gitignore,
         agentContext: {
           dir: ".tapmakerwork/ai",
           contextFile: ".tapmakerwork/ai/CONTEXT.md"
@@ -1055,23 +1116,37 @@ const server = http.createServer(async (request, response) => {
       const sourceFile = url.searchParams.get("path");
       if (!sourceFile) throw new Error("project_file_path_required");
       const opened = readProjectSource(project.root, sourceFile);
-      sendJson(response, 200, { path: opened.path, text: opened.text, readOnly: false });
+      sendJson(response, 200, { path: opened.path, text: opened.text, version: opened.version, readOnly: !opened.utf8, encodingWarning: opened.utf8 ? undefined : "project_file_not_utf8" });
     } else if (request.method === "POST" && url.pathname === "/api/project/file") {
       if (!project) throw new Error("project_not_open");
-      const body = await readJson(request, 5_500_000) as { path?: string; text?: string };
+      const body = await readJson(request, 5_500_000) as { path?: string; text?: string; baseVersion?: string };
       if (!body.path || typeof body.text !== "string") throw new Error("project_file_content_required");
-      writeProjectText(project.root, body.path, body.text);
+      try {
+        writeProjectText(project.root, body.path, body.text, undefined, { baseVersion: body.baseVersion });
+      } catch (error) {
+        if (error instanceof Error && error.message === "project_file_changed_externally") {
+          sendJson(response, 409, { error: error.message, currentVersion: projectFileVersion(project.root, body.path) });
+          return;
+        }
+        throw error;
+      }
       let snapshot;
+      let refreshError: string | undefined;
       if (body.path.endsWith(".lua")) {
-        uiScreens = scanUiScreens(project.root);
-        const conversion = convertLuaUiFile(project.root, activeUiEntry);
-        if (conversion) {
-          uiScreens.documents.set(activeUiEntry, conversion);
-          snapshot = editor.reset(snapshotFromConversion(conversion));
-          broadcast({ type: "ui.snapshot", snapshot });
+        // 文件已经写盘；界面刷新失败只影响画布，不能让客户端误以为保存失败
+        try {
+          uiScreens = scanUiScreens(project.root);
+          const conversion = convertLuaUiFile(project.root, activeUiEntry);
+          if (conversion) {
+            uiScreens.documents.set(activeUiEntry, conversion);
+            snapshot = editor.reset(snapshotFromConversion(conversion));
+            broadcast({ type: "ui.snapshot", snapshot });
+          }
+        } catch (error) {
+          refreshError = error instanceof Error ? error.message : String(error);
         }
       }
-      sendJson(response, 200, { ok: true, path: body.path, snapshot });
+      sendJson(response, 200, { ok: true, path: body.path, version: projectFileVersion(project.root, body.path), snapshot, refreshError });
     } else if (request.method === "GET" && url.pathname === "/api/project/asset") {
       if (!project) throw new Error("project_not_open");
       const assetPath = url.searchParams.get("path");
@@ -1613,16 +1688,24 @@ const server = http.createServer(async (request, response) => {
       syncRuntimeFileChannel();
       sendJson(response, 200, snapshot);
     } else if (request.method === "POST" && url.pathname === "/api/runtime/hello") {
-      const body = await readJson(request) as { sessionId?: string; frames?: boolean };
-      process.stderr.write(`[TapMakerWork] runtime hello session=${body.sessionId} host=${request.headers.host}\n`);
+      const body = await readJson(request) as { sessionId?: string; frames?: boolean; projectName?: string };
+      process.stderr.write(`[TapMakerWork] runtime hello session=${body.sessionId} project=${body.projectName ?? ""} host=${request.headers.host}\n`);
+      if (classifyRuntimeProject(body.projectName, runtimeFileChannelOptions()) === "mismatch") {
+        sendJson(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION, ignored: "other_project" });
+        return;
+      }
       runtimeSessionId = body.sessionId || crypto.randomUUID();
       appliedRuntimeOverrideKeys.clear();
       runtimeConnectedAt = new Date().toISOString();
       capabilities.runtimeFrames = body.frames === true;
       sendJson(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION, sessionId: runtimeSessionId });
     } else if (request.method === "POST" && url.pathname === "/api/runtime/snapshot") {
-      const body = await readJson(request, 10_485_760) as { snapshot?: import("@tapmakerwork/protocol").UiSnapshot };
+      const body = await readJson(request, 10_485_760) as { snapshot?: import("@tapmakerwork/protocol").UiSnapshot; projectName?: string };
       if (!body.snapshot) throw new Error("runtime_snapshot_required");
+      if (classifyRuntimeProject(body.projectName, runtimeFileChannelOptions()) === "mismatch") {
+        sendJson(response, 200, { ok: true, ignored: "other_project" });
+        return;
+      }
       runtimeConnectedAt = new Date().toISOString();
       const snapshot = editor.replaceFromRuntime(body.snapshot);
       snapshotSource = "runtime";
@@ -1630,8 +1713,12 @@ const server = http.createServer(async (request, response) => {
       broadcast({ type: "ui.snapshot", snapshot, source: "runtime" });
       sendJson(response, 200, { ok: true, revision: snapshot.revision });
     } else if (request.method === "GET" && url.pathname === "/api/runtime/commands") {
-      syncRuntimeFileChannel();
       const cursor = Number(url.searchParams.get("cursor") || 0);
+      if (classifyRuntimeProject(url.searchParams.get("project") ?? undefined, runtimeFileChannelOptions()) === "mismatch") {
+        sendJson(response, 200, { commands: [], cursor, ignored: "other_project" });
+        return;
+      }
+      syncRuntimeFileChannel();
       const commands = runtimeCommands.filter((command) => command.id > cursor).slice(0, 100);
       sendJson(response, 200, { commands, cursor: commands.at(-1)?.id ?? cursor });
     } else if (request.method === "POST" && url.pathname === "/api/runtime/event") {
@@ -1676,6 +1763,28 @@ const server = http.createServer(async (request, response) => {
       refreshSelectedMakerRuntime();
       broadcast({ type: "log.append", channel: "build", lines: [`Maker CLI ${target} 安装完成，TapMakerWork 已切换。`] });
       sendJson(response, 200, { ok: true, result, ...makerVersionsPayload() });
+    } else if (request.method === "POST" && url.pathname === "/api/node/upgrade") {
+      if (nodeUpgradeRunning) throw new Error("node_upgrade_in_progress");
+      const plan = planNodeUpgrade(discoverNodeRuntime(), { latestLts: nodeRemoteVersion?.stable });
+      if (!plan.run) {
+        sendJson(response, 400, { error: `当前安装方式（${plan.label}）不支持在 IDE 内直接升级，请复制命令到${plan.terminal}执行。`, upgrade: publicNodeUpgradePlan(plan) });
+        return;
+      }
+      nodeUpgradeRunning = true;
+      broadcast({ type: "log.append", channel: "build", lines: [`正在通过 ${plan.label} 升级 Node.js：${plan.command}`] });
+      try {
+        await runNodeUpgrade(plan, (line) => broadcast({ type: "log.append", channel: "build", lines: [line] }));
+        refreshSelectedMakerRuntime();
+        const node = discoverNodeRuntime();
+        broadcast({ type: "log.append", channel: "build", lines: [`Node.js 升级完成，当前使用 ${node.version}（${node.executable}）`] });
+        sendJson(response, 200, { ok: true, ...nodeVersionsPayload(), maker: makerVersionsPayload() });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        broadcast({ type: "log.append", channel: "build", lines: [message] });
+        sendJson(response, 400, { error: message, upgrade: publicNodeUpgradePlan(plan) });
+      } finally {
+        nodeUpgradeRunning = false;
+      }
     } else if (request.method === "POST" && url.pathname === "/api/node/version/sync") {
       refreshSelectedMakerRuntime();
       const node = discoverNodeRuntime();
@@ -1781,7 +1890,7 @@ const server = http.createServer(async (request, response) => {
         makerVersion: makerRuntime?.version,
         meta: readMakerProjectMeta(project.root)
       });
-    } else if (request.method === "GET" && url.pathname === "/api/maker/doctor") {
+    } else if (request.method === "POST" && url.pathname === "/api/maker/doctor") {
       if (!project) throw new Error("project_not_open");
       if (!makerRuntime) throw new Error("maker_cli_not_found");
       broadcast({ type: "log.append", channel: "build", lines: ["Maker doctor…"] });
@@ -1858,24 +1967,29 @@ const server = http.createServer(async (request, response) => {
       }
       const logs = readMakerPreviewLogs(project.root, supervisorLogPath);
       sendJson(response, 200, { ...logs, supervisorLogPath });
+    } else if (request.method === "GET" && url.pathname === "/api/maker/preview/running") {
+      sendJson(response, 200, { projects: listRunningPreviewProjects((pid) => probeProcessPresence(pid) === "alive") });
     } else if (request.method === "POST" && ["start", "stop", "refresh"].some((command) => url.pathname === `/api/maker/preview/${command}`)) {
-      if (!project) throw new Error("project_not_open");
       if (!makerRuntime) throw new Error("maker_cli_not_found");
+      const body = await readJson(request) as { projectRoot?: string };
+      const previewRoot = resolveAccountsProjectRoot(body.projectRoot);
+      if (!previewRoot) throw new Error("project_not_open");
       const command = url.pathname.split("/").at(-1) as "start" | "stop" | "refresh";
-      const previewKey = projectAccountKey(project.root);
-      const account = command === "start" ? await accountFor(project.root) : undefined;
+      const previewKey = projectAccountKey(previewRoot);
+      const account = command === "start" ? await accountFor(previewRoot) : undefined;
       if (account) {
         previewAccountHomes.set(previewKey, account.home);
         broadcast({ type: "log.append", channel: "runtime", lines: [accountNote(account)] });
       }
-      const home = account?.home ?? await previewHome(project.root);
-      broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command}…`] });
+      const home = account?.home ?? await previewHome(previewRoot);
+      const target = previewRoot === project?.root ? "" : `（${path.basename(previewRoot)}）`;
+      broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command}${target}…`] });
       try {
         const result = command === "start"
-          ? await runMakerPreviewStartWithRecovery(makerRuntime, project.root, 60_000, (message) => {
+          ? await runMakerPreviewStartWithRecovery(makerRuntime, previewRoot, 60_000, (message) => {
             broadcast({ type: "log.append", channel: "runtime", lines: [message] });
           }, home)
-          : await runMakerCommand(makerRuntime, project.root, command, undefined, home);
+          : await runMakerCommand(makerRuntime, previewRoot, command, undefined, home);
         if (command === "stop") previewAccountHomes.delete(previewKey);
         const failed = result && typeof result === "object" && "ok" in result && (result as { ok?: boolean }).ok === false;
         if (failed) {
@@ -1927,6 +2041,8 @@ const server = http.createServer(async (request, response) => {
     } else if (request.method === "GET" && url.pathname === "/api/community") {
       const force = url.searchParams.get("force") === "1";
       sendJson(response, 200, { community: await loadCommunityConfig(force) });
+    } else if (request.method === "GET" && url.pathname === "/api/tools/image-compress/job") {
+      sendJson(response, 200, { job: imageCompressJob?.progress ?? null });
     } else if (request.method === "GET" && url.pathname === "/api/tools/image-compress") {
       const settings = imageCompressPublicSettings();
       const stored = readImageCompressSettings();
@@ -1962,16 +2078,14 @@ const server = http.createServer(async (request, response) => {
         const target = typeof body.target === "string" ? body.target.trim() : "";
         if (!target) {
           sendJson(response, 400, { error: "target_required" });
+        } else if (imageCompressJob?.progress.state === "running") {
+          sendJson(response, 409, { error: "已有压缩任务在进行中", job: imageCompressJob.progress });
         } else {
-          const runOpts: { target: string; projectRoot?: string; recursive?: boolean } = {
-            target,
-            recursive: body.recursive !== false
-          };
-          const projectRoot = typeof body.projectRoot === "string" ? body.projectRoot : project?.root;
-          if (projectRoot) runOpts.projectRoot = projectRoot;
-          const result = await runImageCompress(runOpts);
-          sendJson(response, result.error && result.total === 0 ? 400 : 200, result);
+          sendJson(response, 202, { job: startImageCompressJob(target, body.recursive !== false) });
         }
+      } else if (body.action === "cancel") {
+        imageCompressJob?.controller.abort();
+        sendJson(response, 200, { job: imageCompressJob?.progress ?? null });
       } else {
         sendJson(response, 400, { error: "unknown_action" });
       }
@@ -2168,6 +2282,14 @@ try {
 } catch (error) {
   process.stderr.write(`[TapMakerWork] Maker home activate failed: ${error instanceof Error ? error.message : String(error)}\n`);
 }
+
+server.on("error", (error: NodeJS.ErrnoException) => {
+  const reason = error.code === "EADDRINUSE"
+    ? `端口 ${port} 已被占用（可能已有一个 TapMakerWork 在运行，或其它程序占用了该端口）`
+    : error.message;
+  process.stderr.write(`[TapMakerWork] Bridge failed to listen on http://${host}:${port}: ${error.code ?? "error"} ${reason}\n`);
+  process.exit(error.code === "EADDRINUSE" ? 98 : 1);
+});
 
 server.listen(port, host, () => {
   process.stdout.write(`[TapMakerWork] Bridge listening on http://${host}:${port}\n`);

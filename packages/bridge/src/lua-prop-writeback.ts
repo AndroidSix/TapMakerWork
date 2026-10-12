@@ -687,20 +687,38 @@ function replaceExpressionAlias(source: string, from: string, to: string): strin
       result += source.slice(index);
       break;
     }
-    const before = found > 0 ? source[found - 1] ?? "" : "";
-    const after = source[found + needle.length] ?? "";
-    const boundaryBefore = before === "" || /[^A-Za-z0-9_]/.test(before);
-    const boundaryAfter = after === "" || /[^A-Za-z0-9_]/.test(after);
-    if (boundaryBefore && boundaryAfter) result += source.slice(index, found) + replacement;
-    else result += source.slice(index, found + needle.length);
+    const lineStart = source.lastIndexOf("\n", found - 1) + 1;
+    const lineEnd = source.indexOf("\n", found);
+    const linePrefix = source.slice(lineStart, found);
+    const lineSuffix = source.slice(found + needle.length, lineEnd < 0 ? source.length : lineEnd);
+    // Only `local alias = <expr>` declarations; sibling widgets sharing the same math stay untouched.
+    const isLocalAlias = /^[ \t]*local[ \t]+[A-Za-z_]\w*[ \t]*=[ \t]*$/.test(linePrefix)
+      && /^[ \t]*(?:--.*)?\r?$/.test(lineSuffix);
+    result += source.slice(index, found) + (isLocalAlias ? replacement : needle);
     index = found + needle.length;
   }
   return result;
 }
 
+/**
+ * A line-drift match may land on a sibling widget. Accept it only when its current literal
+ * still equals what the Runtime reported for the edited node; without that evidence, skip.
+ */
+function nearbyLiteralMatchesPrevious(currentLiteral: string, previous: UiValue | undefined): boolean {
+  if (previous === undefined || previous === null) return true;
+  const normalize = (text: string) => text.replace(/\s+/g, "");
+  const expected = serializeLiteral(previous);
+  if (expected !== undefined && normalize(expected) === normalize(currentLiteral)) return true;
+  if (typeof previous === "number") {
+    const parsed = Number(currentLiteral);
+    return Number.isFinite(parsed) && Math.abs(parsed - previous) < 1e-6;
+  }
+  return false;
+}
+
 function luaSourceParses(source: string): boolean {
   try {
-    luaparse.parse(source, { luaVersion: "5.1" });
+    luaparse.parse(source, { luaVersion: "5.3", encodingMode: "none" });
     return true;
   } catch {
     return false;
@@ -966,6 +984,10 @@ export function patchLuaWidgetLiterals(
       skipped.push({ key, reason: "unchanged" });
       continue;
     }
+    if (widget.match === "nearby" && literalAst && !nearbyLiteralMatchesPrevious(current, previousProps?.[key])) {
+      skipped.push({ key, reason: "nearby_value_mismatch" });
+      continue;
+    }
     replacements.push({ start, end, text: nextText, key });
   }
 
@@ -1035,6 +1057,8 @@ function listScriptLuaFiles(projectRoot: string): string[] {
   return listLuaFilesUnder(projectRoot, "scripts");
 }
 
+const NON_UI_CALLS = new Set(["require", "print", "error", "assert", "log", "string.format", "string.find", "string.match", "string.gsub"]);
+
 function collectStringLiteralHits(
   projectRoot: string,
   files: string[],
@@ -1055,12 +1079,18 @@ function collectStringLiteralHits(
     } catch {
       continue;
     }
+    // Only direct string arguments of call sites (`makeButton("开始", …)`); literals inside
+    // `opts.text or "确定"`, comparisons or concatenations are shared defaults, not one widget.
     const visit = (expression: Expression) => {
-      if (expression.type !== "StringLiteral") return;
-      const located = expression as Expression & Located;
-      if (!located.range) return;
-      if (source.slice(located.range[0], located.range[1]) !== needle) return;
-      hits.push({ file: relative, start: located.range[0], end: located.range[1] });
+      if (expression.type !== "CallExpression" && expression.type !== "StringCallExpression") return;
+      const callArguments = expression.type === "CallExpression" ? expression.arguments : [expression.argument];
+      if (!callArguments.length || NON_UI_CALLS.has(memberPath(expression.base) ?? "")) return;
+      for (const argument of callArguments) {
+        if (argument.type !== "StringLiteral") continue;
+        const located = argument as Expression & Located;
+        if (!located.range || source.slice(located.range[0], located.range[1]) !== needle) continue;
+        hits.push({ file: relative, start: located.range[0], end: located.range[1] });
+      }
     };
     for (const statement of body) walkStatement(statement, visit);
   }
@@ -1893,7 +1923,7 @@ export function ensureKitOptsPassthrough(
         changed = true;
       }
     }
-    if (changed) {
+    if (changed && luaSourceParses(next)) {
       writeProjectText(projectRoot, relative, next);
       filesTouched.push(relative);
     }
@@ -1920,7 +1950,7 @@ function ensureOptsFieldInFactorySource(
 
   if (field === "color") {
     // Turn the first hardcoded title/body color into an opts-aware expression.
-    const colorLit = /\bcolor\s*=\s*(\{[^}]+\})/.exec(block);
+    const colorLit = /\bcolor\s*=\s*(\{[^{}]+\})/.exec(block);
     if (colorLit && colorLit.index != null && !/opts\./.test(colorLit[0])) {
       const absolute = start + colorLit.index;
       const next = `${source.slice(0, absolute)}color = opts.color or opts.fontColor or ${colorLit[1]}${source.slice(absolute + colorLit[0].length)}`;
@@ -1937,14 +1967,20 @@ function ensureOptsFieldInFactorySource(
     || /text\s*=\s*opts\.title\s*,/.exec(block)
     || /text\s*=\s*opts\.text[^\n]*,/.exec(block);
   if (!fill || fill.index == null) return undefined;
-  const absolute = start + fill.index + fill[0].length;
-  const lineStart = source.lastIndexOf("\n", absolute - 1) + 1;
-  const indentMatch = source.slice(lineStart, absolute).match(/^([ \t]*)/);
-  const indent = indentMatch?.[1] ?? "                ";
+  // Insert after the whole anchor line: anchors like `left = opts.` stop mid-expression.
+  const matchEnd = start + fill.index + fill[0].length;
+  const lineStart = source.lastIndexOf("\n", matchEnd - 1) + 1;
+  const lineBreak = source.indexOf("\n", matchEnd);
+  const lineEnd = lineBreak < 0 ? source.length : source[lineBreak - 1] === "\r" ? lineBreak - 1 : lineBreak;
+  const anchorLine = source.slice(lineStart, lineEnd);
+  if (/\{\s*$/.test(anchorLine)) return undefined;
+  const separator = /,\s*$/.test(anchorLine) ? "" : ",";
+  const indent = anchorLine.match(/^([ \t]*)/)?.[1] ?? "                ";
+  const eol = lineBreak > 0 && source[lineBreak - 1] === "\r" ? "\r\n" : "\n";
   const assignment = field === "color"
     ? `${field} = opts.color or opts.fontColor,`
     : `${field} = opts.${field},`;
-  return `${source.slice(0, absolute)}\n${indent}${assignment}${source.slice(absolute)}`;
+  return `${source.slice(0, lineEnd)}${separator}${eol}${indent}${assignment}${source.slice(lineEnd)}`;
 }
 function resolveFactoryCallSiteProps(
   source: string,

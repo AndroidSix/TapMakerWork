@@ -467,7 +467,7 @@ export async function commitGitProject(projectRoot: string, message: string, pus
       const current = await readGitStatus(projectRoot);
       output += current.upstream
         ? await run("git", ["push"], projectRoot, 180_000)
-        : await run("git", ["push", "-u", "origin", current.branch], projectRoot, 180_000);
+        : await run("git", ["push", "-u", "--", "origin", current.branch], projectRoot, 180_000);
     }
     return { ok: true, action, output: output.trim() || "工作区没有需要提交的修改。", status: await readGitStatus(projectRoot) };
   } catch (commitError) {

@@ -26,18 +26,22 @@ export interface AppUpdateManifest {
 }
 
 export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
-  latest: "0.1.5",
-  title: "TapMakerWork 0.1.5",
+  latest: "0.1.6",
+  title: "TapMakerWork 0.1.6",
   notes: [
-    "【AI 控 IDE】任意 AI（Cursor/Trae/WorkBuddy/Codex…）可像控本地软件一样调试本 IDE 与 Runtime：读活树/错误/画面，改控件、启停预览、构建、doctor、截帧。",
-    "【开箱无 MCP】打开项目即写入 .tapmakerwork/ai/（STATUS、snapshot、errors、preview.png）；也可用 http://127.0.0.1:43121/api/agent。",
-    "【报错置前】运行/预览失败时 IDE 自动抢到前台，避免漏看错误。",
-    "用法：TapMakerWork 打开游戏项目并尽量启动 Runtime → AI 打开同一目录 → 说「按 .tapmakerwork/ai/STATUS.md 闭环调试」。"
+    "【Windows 升级 MCP】修复 Windows 上切换/升级 Maker MCP 版本失败；切换账号后不再「丢失」已安装的 MCP 版本。",
+    "【实时编辑桥注入】支持任意 TimeStep 变量名；保留入口文件 BOM 与 CRLF，修复 Windows 编辑器保存的 main.lua 注入后报 Lua 语法错误。",
+    "【失败原因可见】注入失败、Runtime 自动重启失败会弹出中文原因并写入 Runtime 日志。",
+    "【Git 忽略】打开项目时自动把 .tapmakerwork/ 写入项目 .gitignore。",
+    "【防丢改动】保存时检测外部修改并提示，切换文件前确认未保存内容；非 UTF-8 文件只读打开，避免中文乱码；视觉改动写回 Lua 更安全。",
+    "【多项目 Runtime】多个项目可同时运行各自的 Runtime，切换项目不再停止预览；项目标签绿点表示运行中。",
+    "【Node.js 升级】设置页支持一键升级 Node.js；无法自动升级时提供可一键复制的升级命令。",
+    "【新游雷达】每日上线新增「今日」「近3天」快捷范围。"
   ],
   links: [
     {
       label: "完整更新日志",
-      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.5"
+      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.6"
     },
     {
       label: "macOS 安装说明",
@@ -48,15 +52,13 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
       url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/DESKTOP_RELEASE.md#macos-build-from-source"
     }
   ],
-  publishedAt: "2026-10-06",
+  publishedAt: "2026-10-12",
   force: false,
   downloads: {
-    macArm64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.5/TapMakerWork-0.1.5-mac-arm64.pkg",
-    macX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.5/TapMakerWork-0.1.5-mac-x64.pkg",
-    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.5/TapMakerWork-0.1.5-windows-x64.exe",
-    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.5",
+    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.6/TapMakerWork-0.1.6-windows-x64.exe",
+    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.6",
     site: "https://androidsix.github.io/tapmakerwork-site/",
-    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.5"
+    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.6"
   }
 };
 

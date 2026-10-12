@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
+import { listAccountHomes } from "./maker-accounts.js";
 import { createPrivateBrowserOverride } from "./private-browser.js";
 
 const MAKER_PACKAGE = "@taptap/maker";
@@ -163,18 +164,30 @@ export function discoverNodeRuntime(): NodeRuntime {
   };
 }
 
-export function listInstalledMakerRuntimes(runtimeRoot = makerRuntimeRoot()): MakerRuntime[] {
-  if (!fs.existsSync(runtimeRoot)) return [];
+/**
+ * `~/.taptap-maker` is a link to the active account home, so each account keeps its own
+ * `mcp-runtime`. Scan every account so switching accounts does not hide installed versions.
+ */
+function makerRuntimeRoots(): string[] {
+  try {
+    return [makerRuntimeRoot(), ...listAccountHomes().map((home) => path.join(home, "mcp-runtime"))];
+  } catch {
+    return [makerRuntimeRoot()];
+  }
+}
+
+export function listInstalledMakerRuntimes(runtimeRoots: string | string[] = makerRuntimeRoots()): MakerRuntime[] {
   const node = discoverNodeRuntime().executable;
-  return fs.readdirSync(runtimeRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => ({
-      node,
-      version: entry.name,
-      entry: path.join(runtimeRoot, entry.name, "dist", "maker.js")
-    }))
-    .filter((candidate) => VERSION_PATTERN.test(candidate.version) && fs.existsSync(candidate.entry))
-    .sort((a, b) => compareMakerVersions(b.version, a.version));
+  const byVersion = new Map<string, MakerRuntime>();
+  for (const runtimeRoot of typeof runtimeRoots === "string" ? [runtimeRoots] : runtimeRoots) {
+    if (!fs.existsSync(runtimeRoot)) continue;
+    for (const entry of fs.readdirSync(runtimeRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || byVersion.has(entry.name) || !VERSION_PATTERN.test(entry.name)) continue;
+      const makerEntry = path.join(runtimeRoot, entry.name, "dist", "maker.js");
+      if (fs.existsSync(makerEntry)) byVersion.set(entry.name, { node, version: entry.name, entry: makerEntry });
+    }
+  }
+  return [...byVersion.values()].sort((a, b) => compareMakerVersions(b.version, a.version));
 }
 
 export async function checkNodeRuntimeUpdates(fetchImpl: typeof fetch = fetch): Promise<NodeRemoteVersion> {
@@ -191,6 +204,45 @@ export async function checkNodeRuntimeUpdates(fetchImpl: typeof fetch = fetch): 
   return { stable, checkedAt: new Date().toISOString() };
 }
 
+export interface NpmToolLaunch {
+  command: string;
+  args: string[];
+  windowsVerbatimArguments: boolean;
+}
+
+function quoteForCmd(value: string): string {
+  return /^[\w@.\-/:=\\]+$/.test(value) ? value : `"${value.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Node >= 18.20.2 refuses to spawn `.cmd` shims without a shell (EINVAL), so on Windows
+ * prefer running npm's own JS entry with node, and fall back to an explicitly quoted cmd.exe call.
+ */
+export function resolveNpmToolLaunch(
+  tool: "npm" | "npx",
+  nodeExecutable: string,
+  toolArgs: string[],
+  platform: NodeJS.Platform = process.platform,
+  exists: (candidate: string) => boolean = fs.existsSync,
+  findShim: () => string | undefined = () => tool === "npx" ? resolveNpxExecutable(nodeExecutable) : undefined
+): NpmToolLaunch | undefined {
+  const nodeDirectory = path.dirname(nodeExecutable);
+  const cliEntries = [
+    path.join(nodeDirectory, "node_modules", "npm", "bin", `${tool}-cli.js`),
+    path.join(nodeDirectory, "..", "lib", "node_modules", "npm", "bin", `${tool}-cli.js`)
+  ];
+  const cliEntry = cliEntries.find((candidate) => exists(candidate));
+  if (cliEntry) return { command: nodeExecutable, args: [cliEntry, ...toolArgs], windowsVerbatimArguments: false };
+
+  const shimName = platform === "win32" ? `${tool}.cmd` : tool;
+  const adjacentShim = path.join(nodeDirectory, shimName);
+  const shim = exists(adjacentShim) ? adjacentShim : findShim();
+  if (!shim) return undefined;
+  if (platform !== "win32") return { command: shim, args: toolArgs, windowsVerbatimArguments: false };
+  const commandLine = [shim, ...toolArgs].map(quoteForCmd).join(" ");
+  return { command: "cmd.exe", args: ["/d", "/s", "/c", `"${commandLine}"`], windowsVerbatimArguments: true };
+}
+
 export function installNodeRuntimeVersion(
   requestedVersion: string,
   runtimeRoot = nodeRuntimeRoot(),
@@ -200,11 +252,7 @@ export function installNodeRuntimeVersion(
   if (!VERSION_PATTERN.test(version) || version.includes("-")) return Promise.reject(new Error("invalid_node_version"));
   const target = path.join(runtimeRoot, version);
   fs.mkdirSync(target, { recursive: true });
-  const npmEntry = process.env.npm_execpath;
-  const useNpmEntry = Boolean(npmEntry && fs.existsSync(npmEntry));
-  const command = useNpmEntry ? process.execPath : process.platform === "win32" ? "npm.cmd" : "npm";
-  const args = [
-    ...(useNpmEntry && npmEntry ? [npmEntry] : []),
+  const installArgs = [
     "install",
     "--prefix",
     target,
@@ -214,11 +262,17 @@ export function installNodeRuntimeVersion(
     "--no-audit",
     "--no-fund"
   ];
+  const npmEntry = process.env.npm_execpath;
+  const launch = npmEntry && fs.existsSync(npmEntry)
+    ? { command: process.execPath, args: [npmEntry, ...installArgs], windowsVerbatimArguments: false }
+    : resolveNpmToolLaunch("npm", discoverNodeRuntime().executable, installArgs);
+  if (!launch) return Promise.reject(new Error("未找到 npm。请先安装带 npm 的 Node.js，再重试。"));
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(launch.command, launch.args, {
       cwd: target,
       shell: false,
       windowsHide: true,
+      windowsVerbatimArguments: launch.windowsVerbatimArguments,
       stdio: ["ignore", "pipe", "pipe"]
     });
     let stdout = "";
@@ -317,19 +371,22 @@ export function resolveNpxExecutable(nodeExecutable: string): string | undefined
 export function installMakerRuntimeVersion(version: string, timeoutMs = 10 * 60_000): Promise<unknown> {
   if (!VERSION_PATTERN.test(version)) return Promise.reject(new Error("invalid_maker_version"));
   const node = discoverNodeRuntime();
-  const executable = resolveNpxExecutable(node.executable);
-  if (!executable) return Promise.reject(new Error("未找到 npx。请先安装带 npm 的 Node.js，再重试升级。"));
+  const launch = resolveNpmToolLaunch("npx", node.executable, [
+    "-y", "--package", `${MAKER_PACKAGE}@${version}`, "taptap-maker", "upgrade", "--launcher", "self", "--json"
+  ]);
+  if (!launch) return Promise.reject(new Error("未找到 npx。请先安装带 npm 的 Node.js，再重试升级。"));
   const cache = path.join(os.homedir(), ".taptap-maker", "cache", "npm");
   fs.mkdirSync(cache, { recursive: true });
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, ["-y", "--package", `${MAKER_PACKAGE}@${version}`, "taptap-maker", "upgrade", "--launcher", "self", "--json"], {
+    const child = spawn(launch.command, launch.args, {
       cwd: os.homedir(),
       shell: false,
       windowsHide: true,
+      windowsVerbatimArguments: launch.windowsVerbatimArguments,
       env: {
         ...process.env,
         npm_config_cache: cache,
-        PATH: [path.dirname(node.executable), path.dirname(executable), process.env.PATH].filter(Boolean).join(path.delimiter)
+        PATH: [path.dirname(node.executable), process.env.PATH].filter(Boolean).join(path.delimiter)
       },
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -368,6 +425,7 @@ function runMakerArgs(
     const child = spawn(runtime.node, [runtime.entry, ...cliArgs], {
       cwd: project || process.cwd(),
       shell: false,
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       env
     });

@@ -141,7 +141,19 @@ The desktop IDE exposes the same task from the title bar, **构建 → 一键打
 
 Apple's packaging tools only run on macOS. A Mac can generate both targets in one pass; a Windows workstation builds the Windows target locally and should use the `desktop-release` workflow when both platform artifacts are required.
 
-For a reliable two-platform release, push a `v*` tag or manually run `.github/workflows/desktop-release.yml`. It executes the same build on native macOS and Windows runners and uploads both artifact groups.
+CI（`.github/workflows/desktop-release.yml`）目前只构建 **Windows**；macOS 安装包请在 Mac 上用 `npm run package:ide:mac` 本机打包后手动上传。
+
+<a id="release-process"></a>
+
+### 发版流程（GitHub Release 自动草稿）
+
+1. 升级根目录与各 workspace 的 `package.json` 版本号，同步 `version.json`、`docs/CHANGELOG.md`。
+2. 合并到 `main` 后打标签并推送：`git tag v0.1.6 && git push origin v0.1.6`（标签必须等于 `v` + `package.json` 版本，否则 CI 直接失败）。
+3. CI 构建 Windows 安装包后，自动创建同名 **草稿** GitHub Release，附带 `.exe`、`.blockmap` 与 `latest.yml`。
+4. 在 GitHub 上检查草稿说明与附件，再点击发布；需要 macOS 包时把本机打出的 `.pkg` / ZIP / `latest-mac.yml` 一并上传。
+5. 应用内更新读取 Gitee Release：把同一批文件上传到 Gitee 的同名 Release，并确认 `version.json` 里的下载直链可访问。
+
+手动运行（`workflow_dispatch`）只产出 Actions 构建产物，不会创建 Release。
 
 ### Signing credentials
 
@@ -152,8 +164,8 @@ The scripts disable certificate auto-discovery (`CSC_IDENTITY_AUTO_DISCOVERY=fal
 
 CI mapping in `.github/workflows/desktop-release.yml`:
 
-- macOS runner → `MAC_CSC_LINK` / `MAC_CSC_KEY_PASSWORD` + Apple notarization secrets
 - Windows runner → `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`
+- macOS 本机打包时自行导出 `CSC_LINK` / `CSC_KEY_PASSWORD` 与 Apple 公证变量
 
 **Unsigned artifacts are for local QA only.** Do not publish them as the download that end users should install. A signed (and on macOS, notarized) build is required for a normal install experience, durable Screen Recording / Accessibility consent, and reliable automatic updates.
 

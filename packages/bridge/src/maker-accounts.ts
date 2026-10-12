@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { renameWithRetry, writeFileAtomic } from "./project.js";
 
 export const DEFAULT_MAKER_ACCOUNT_ID = "default";
 export const MAKER_CONSOLE_URL = "https://maker.taptap.cn/";
@@ -140,7 +141,20 @@ function sanitizeProjects(projects: unknown, accounts: MakerAccountRecord[]): Re
 }
 
 function samePath(a: string, b: string): boolean {
-  return path.resolve(a) === path.resolve(b);
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+/** 用户目录与 maker-homes 跨盘（EXDEV）时 rename 会失败，退回复制后删除。 */
+function moveEntry(source: string, dest: string): void {
+  try {
+    renameWithRetry(source, dest);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    fs.cpSync(source, dest, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
+    fs.rmSync(source, { recursive: true, force: true });
+  }
 }
 
 function readLinkTarget(linkPath: string): string | undefined {
@@ -159,7 +173,7 @@ function moveDirectoryContents(from: string, to: string): void {
     const source = path.join(from, name);
     const dest = path.join(to, name);
     if (fs.existsSync(dest)) continue;
-    fs.renameSync(source, dest);
+    moveEntry(source, dest);
   }
 }
 
@@ -268,9 +282,7 @@ export function loadMakerAccounts(): MakerAccountFile {
 }
 
 export function saveMakerAccounts(store: MakerAccountFile): void {
-  const file = accountsFilePath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`);
+  writeFileAtomic(accountsFilePath(), `${JSON.stringify(store, null, 2)}\n`, 0o600);
 }
 
 export function projectAccountKey(projectRoot: string): string {

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import luaparse from "luaparse";
 import { describe, expect, it } from "vitest";
 import {
   collectDirtyLiteralOverrides,
@@ -1105,6 +1106,74 @@ end
     expect(main).not.toContain("contentTop + 546");
   });
 
+  it("syncs only local Layout aliases, not sibling widgets that share the same layout math", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmaker-layout-sibling-"));
+    fs.mkdirSync(path.join(root, "scripts/ui"), { recursive: true });
+    fs.writeFileSync(path.join(root, "scripts/ui/MainHUD.lua"), `
+local contentTop = 100
+UiStyle.PrimaryButton {
+  left = 80,
+  top = contentTop + 546,
+  width = 560,
+  height = 64,
+  text = "多人争霸",
+}
+UiStyle.PrimaryButton { left = 400, top = contentTop + 546, width = 200, height = 64, text = "排行榜" }
+function MainHUD:Layout()
+  local pvpTop = contentTop + 546
+end
+`, "utf8");
+    writeBackUiOverridesToLua(root, [{
+      selector: { sourceFile: "scripts/ui/MainHUD.lua", line: 3, type: "Panel" },
+      scope: "template",
+      props: { top: 600 },
+      previousProps: { text: "多人争霸", top: 646, left: 80, width: 560, height: 64 }
+    }]);
+    const main = fs.readFileSync(path.join(root, "scripts/ui/MainHUD.lua"), "utf8");
+    expect(main).toContain("local pvpTop = contentTop + 500");
+    expect(main).toContain('left = 400, top = contentTop + 546, width = 200, height = 64, text = "排行榜"');
+  });
+
+  it("keeps the syntax guard working for files that use Lua 5.3 operators", () => {
+    const source = `local flags = 6 & 3
+local half = 7 // 2
+UI.Label { text = "hi", fontSize = 20 }
+`;
+    const result = patchLuaWidgetLiterals(source, { line: 3, type: "Label" }, { fontSize: 28 });
+    expect(result.applied).toEqual(["fontSize"]);
+    expect(result.text).toContain("fontSize = 28");
+    expect(result.text).toContain("6 & 3");
+  });
+
+  it("skips a line-drift match whose literal does not match the edited node's previous value", () => {
+    const source = `
+UI.Label { text = "A", fontSize = 20 }
+
+
+UI.Label { text = "B", fontSize = 24 }
+`;
+    const mismatch = patchLuaWidgetLiterals(source, { line: 3, type: "Label" }, { fontSize: 30 }, { previousProps: { fontSize: 24 } });
+    expect(mismatch.changed).toBe(false);
+    expect(mismatch.skipped).toContainEqual({ key: "fontSize", reason: "nearby_value_mismatch" });
+
+    const match = patchLuaWidgetLiterals(source, { line: 3, type: "Label" }, { fontSize: 30 }, { previousProps: { fontSize: 20 } });
+    expect(match.text).toContain('UI.Label { text = "A", fontSize = 30 }');
+  });
+
+  it("does not rewrite a shared default literal such as opts.text or '确定'", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmaker-default-literal-"));
+    fs.mkdirSync(path.join(root, "scripts/ui"), { recursive: true });
+    const kit = `
+function UiStyle.ConfirmButton(opts)
+  return UI.Button { text = opts.text or "确定" }
+end
+`;
+    fs.writeFileSync(path.join(root, "scripts/ui/UiStyle.lua"), kit, "utf8");
+    const summary = writeBackMatchingTextLiterals(root, "确定", "好的");
+    expect(summary.appliedCount).toBe(0);
+    expect(fs.readFileSync(path.join(root, "scripts/ui/UiStyle.lua"), "utf8")).toBe(kit);
+  });
+
   it("rejects measured parent-relative left/width chrome on kit call sites", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmaker-measured-geo-"));
     fs.mkdirSync(path.join(root, "scripts/ui"), { recursive: true });
@@ -1282,7 +1351,9 @@ UiStyle.PrimaryButton { left = 80, top = 100, width = 560, text = "开战", bg =
     }]);
     expect(summary.appliedCount).toBeGreaterThan(0);
     expect(fs.readFileSync(path.join(root, "scripts/ui/MainHUD.lua"), "utf8")).toContain("rotate = 15");
-    expect(fs.readFileSync(path.join(root, "scripts/ui/UiStyle.lua"), "utf8")).toContain("rotate = opts.rotate");
+    const kit = fs.readFileSync(path.join(root, "scripts/ui/UiStyle.lua"), "utf8");
+    expect(kit).toContain("left = opts.left,\n    rotate = opts.rotate,\n    top = opts.top,");
+    expect(() => luaparse.parse(kit, { luaVersion: "5.3" })).not.toThrow();
   });
 
   it("refuses backgroundImage on layout containers like lobbyBlock", () => {

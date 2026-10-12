@@ -141,6 +141,53 @@ end
     );
   });
 
+  it("passes the project's own TimeStep variable name to the update hook", () => {
+    const root = makerProject();
+    fs.writeFileSync(path.join(root, "scripts", "main.lua"), `function Start()
+    UI.Init({})
+end
+
+function HandleUpdate(eventType, data)
+    local timeStep = data["TimeStep"]:GetFloat()
+end
+`, "utf8");
+    const result = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    const entry = fs.readFileSync(result.entryPath, "utf8");
+    expect(entry).toMatch(/GetFloat\(\)\n {4}TapMakerWorkLiveEditorUpdate\(timeStep\) -- TapMakerWork managed/);
+    expect(installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root }).changed).toBe(false);
+  });
+
+  it("keeps a UTF-8 BOM at the top of the file and preserves CRLF line endings", () => {
+    const root = makerProject();
+    const entryPath = path.join(root, "scripts", "main.lua");
+    fs.writeFileSync(entryPath, "\uFEFFfunction Start()\r\n    UI.Init({})\r\nend\r\n\r\nfunction HandleUpdate(eventType, eventData)\r\n    local dt = eventData:GetFloat(\"TimeStep\")\r\nend\r\n", "utf8");
+    installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    const entry = fs.readFileSync(entryPath, "utf8");
+    expect(entry.startsWith("\uFEFF-- >>> TapMakerWork live editor (managed)")).toBe(true);
+    expect(entry.indexOf("\uFEFF", 1)).toBe(-1);
+    expect(entry.replace(/\r\n/g, "")).not.toContain("\n");
+  });
+
+  it("repairs an entry where an earlier install pushed the BOM below the bootstrap", () => {
+    const root = makerProject();
+    installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    const entryPath = path.join(root, "scripts", "main.lua");
+    const managed = fs.readFileSync(entryPath, "utf8");
+    const bootstrapEnd = managed.indexOf("-- <<< TapMakerWork live editor (managed)\n\n") + "-- <<< TapMakerWork live editor (managed)\n\n".length;
+    fs.writeFileSync(entryPath, `${managed.slice(0, bootstrapEnd)}\uFEFF${managed.slice(bootstrapEnd)}`, "utf8");
+
+    const repaired = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    expect(repaired.changed).toBe(true);
+    expect(fs.readFileSync(entryPath, "utf8")).not.toContain("\uFEFF");
+  });
+
+  it("explains a missing TimeStep line in Chinese while keeping the error code", () => {
+    const root = makerProject();
+    fs.writeFileSync(path.join(root, "scripts", "main.lua"), "function Start()\nend\n", "utf8");
+    expect(() => installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root }))
+      .toThrow(/^runtime_adapter_update_hook_not_found：.*TimeStep/);
+  });
+
   it("wires the configured client entry instead of an unused shared entry", () => {
     const root = makerProject({ clientEntry: true });
     const result = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });

@@ -1,15 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { ExternalLink, MonitorPlay, RefreshCw, Save, X } from "lucide-react";
 import type { PreviewPanelState } from "@tapmakerwork/protocol";
-
-const API = "http://127.0.0.1:43121";
-
-export function isEmbeddableGamePreview(url: string): boolean {
-  if (!url || !/^https?:\/\//i.test(url)) return false;
-  if (/\.(png|jpe?g|gif|webp|svg|bmp)(\?|#|$)/i.test(url)) return false;
-  if (/\/qrco|qrcode|qr-code|test_qrcode|\/qr\//i.test(url)) return false;
-  return true;
-}
+import { API, isEmbeddablePreviewUrl } from "./bridge-api";
 
 export interface PreviewDockProps {
   panel: PreviewPanelState | undefined;
@@ -43,7 +35,7 @@ export function PreviewDock({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const transport = panel?.transport || "auto";
   const url = panel?.url || "";
-  const embeddable = isEmbeddableGamePreview(url);
+  const embeddable = isEmbeddablePreviewUrl(url);
   const useNative = desktopAvailable && Boolean(window.tapMakerWork?.preview) && transport !== "iframe" && embeddable;
   const reloadToken = panel?.reloadToken ?? 0;
 

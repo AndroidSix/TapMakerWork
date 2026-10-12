@@ -192,6 +192,15 @@ local function request(method, route, payload, callback)
     return true
 end
 
+local function commandsRoute()
+    local route = "/api/runtime/commands?cursor=" .. tostring(state.cursor)
+    if type(state.projectName) ~= "string" or state.projectName == "" then return route end
+    local encoded = state.projectName:gsub("[^%w%-_%.~]", function(char)
+        return string.format("%%%02X", string.byte(char))
+    end)
+    return route .. "&project=" .. encoded
+end
+
 local function safeValue(value, depth, seen)
     local kind = type(value)
     if kind == "nil" or kind == "string" or kind == "number" or kind == "boolean" then return value end
@@ -658,7 +667,7 @@ function Bridge.PushSnapshot()
     local encodedOk, encoded = pcall(cjson.encode, snapshot)
     local wrote = encodedOk and writeChannelFile("runtime-snapshot.json", encoded)
     writeStatus()
-    local sent = request("POST", "/api/runtime/snapshot", { snapshot = snapshot })
+    local sent = request("POST", "/api/runtime/snapshot", { snapshot = snapshot, projectName = state.projectName })
     return wrote or sent
 end
 
@@ -689,7 +698,7 @@ function Bridge.Update(dt)
     state.elapsed = 0
     local changed = handleFileCommands()
     if not state.requestPending then
-        local polled = request("GET", "/api/runtime/commands?cursor=" .. tostring(state.cursor), nil, function(err, value)
+        local polled = request("GET", commandsRoute(), nil, function(err, value)
             local applied = false
             if not err then applied = handleCommands(value) end
             if applied or changed or state.snapshotElapsed >= state.snapshotInterval then
