@@ -2,11 +2,8 @@ import { CheckCircle2, Clock3, Copy, Download, ExternalLink, RefreshCw, ShieldAl
 import { REQUIRED_MAKER_MCP_VERSION, isRequiredMakerMcpVersion } from "@tapmakerwork/protocol";
 import type { DesktopPermissionState, DesktopTelemetryState, DesktopUpdateState } from "../desktop-api";
 import { OFFICIAL_SITE_URL } from "./constants";
-import type { MakerRuntimeMode, MakerVersionBusy, MakerVersionState, NodeVersionState } from "./types";
+import type { DesktopUpdateAction, MakerRuntimeMode, MakerVersionBusy, MakerVersionState, NodeVersionState, PermissionAction } from "./types";
 import { UpdateDocLinks, UpdateNoteText } from "./update-dialogs";
-
-export type PermissionAction = "screen" | "accessibility" | "restart" | "refresh" | "confirm";
-export type DesktopUpdateAction = "check" | "download" | "restart" | "snooze" | "mute";
 
 export function DesktopTelemetryCard({ telemetry: desktopTelemetry, busy: telemetryBusy, onToggle: setTelemetryEnabled }: {
   telemetry: DesktopTelemetryState;
