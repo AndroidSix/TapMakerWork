@@ -210,6 +210,21 @@ export interface ProjectWorkflowOverview {
   } | undefined;
 }
 
+export interface LuaSymbol {
+  name: string;
+  kind: "function" | "field";
+  signature: string;
+  doc?: string;
+  file: string;
+  line: number;
+}
+
+export interface LuaDiagnostic {
+  line: number;
+  column: number;
+  message: string;
+}
+
 export type SnapshotSource = "conversion" | "sidecar" | "runtime" | "empty";
 
 export type AgentUiRequest =
