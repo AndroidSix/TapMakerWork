@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-
-const API = "http://127.0.0.1:43121";
+import { API } from "./bridge-api";
 
 type AccountSource = "manual" | "auto" | "global";
 

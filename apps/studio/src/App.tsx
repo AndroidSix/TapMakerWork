@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SetStateAction } from "react";
 import Editor, { DiffEditor, type OnMount } from "@monaco-editor/react";
 import {
   Box,
@@ -125,6 +125,7 @@ import { rgbaCss, rgbaFromHex, rgbaFromValue, rgbaToHex, type RgbaColor } from "
 import { angleBetween, resizeRect, scaleRatio, snapValue, toolForShortcut, type TransformTool } from "./runtime-transform";
 import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopTelemetryState, DesktopUpdateState } from "./desktop-api";
 import { extractRuntimeErrorReport, type RuntimeErrorReport } from "./runtime-error";
+import { API, capLogChannels, isEmbeddablePreviewUrl, isWebUrl, readJsonResponse } from "./bridge-api";
 import { flushStudioGameAlgo, initStudioGameAlgo, setStudioGameAlgoEnabled, trackStudioGameAlgo } from "./gamealgo";
 import wechatPayImage from "../../../docs/sponsor/wechat-pay.png";
 
@@ -143,7 +144,6 @@ interface CommunityInfo {
   source?: "gitee" | "github" | "builtin";
 }
 
-const API = "http://127.0.0.1:43121";
 declare const __APP_VERSION__: string;
 
 interface Health {
@@ -536,13 +536,6 @@ function legacyCopyText(text: string): boolean {
 
 function uiChildren(node: UiNode): UiNode[] {
   return Array.isArray(node.children) ? node.children : [];
-}
-
-function isEmbeddablePreviewUrl(url: string): boolean {
-  if (!url || !/^https?:\/\//i.test(url)) return false;
-  if (/\.(png|jpe?g|gif|webp|svg|bmp)(\?|#|$)/i.test(url)) return false;
-  if (/\/qrco|qrcode|qr-code|test_qrcode|\/qr\//i.test(url)) return false;
-  return true;
 }
 
 function visualWeight(node: UiNode): number {
@@ -1428,7 +1421,10 @@ export function App() {
   const [device, setDevice] = useState<DeviceProfile>(DEFAULT_DEVICE_PROFILES[0]!);
   const [fps, setFps] = useState(60);
   const [activeTerminal, setActiveTerminal] = useState<LogChannel>("runtime");
-  const [logs, setLogs] = useState(initialLogs);
+  const [logs, setUncappedLogs] = useState(initialLogs);
+  const setLogs = useCallback((update: SetStateAction<Record<LogChannel, string[]>>) => {
+    setUncappedLogs((current) => capLogChannels(typeof update === "function" ? update(current) : update));
+  }, []);
   const [leftTab, setLeftTab] = useState<"files" | "screens" | "hierarchy" | "assets" | "git">("screens");
   const [centerTab, setCenterTab] = useState<CenterTab>("workflow");
   const [documentTabs, setDocumentTabs] = useState<DocumentTab[]>(loadDocumentTabs);
@@ -1440,6 +1436,12 @@ export function App() {
   const [inspectorTab, setInspectorTab] = useState<"properties" | "events" | "animation">("properties");
   const [code, setCode] = useState("-- 正在读取 scripts/ui/HomePage.lua…");
   const [codeDirty, setCodeDirty] = useState(false);
+  const [codeReadOnly, setCodeReadOnly] = useState(false);
+  const codeDirtyRef = useRef(false);
+  codeDirtyRef.current = codeDirty;
+  const codeVersionRef = useRef<string | undefined>(undefined);
+  const selectedFileRef = useRef(selectedFile);
+  selectedFileRef.current = selectedFile;
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const runtimeBusyRef = useRef(false);
@@ -1604,6 +1606,9 @@ export function App() {
   const selectedNodeIdRef = useRef<string | undefined>(undefined);
   const snapshotRef = useRef<UiSnapshot | undefined>(undefined);
   const runtimeEditSyncTimerRef = useRef<number | null>(null);
+  /** Saves pending visual edits before the bridge switches projects, so they never land in the next project. */
+  const flushPendingSidecarRef = useRef<() => Promise<void>>(async () => undefined);
+  const projectOpenGenerationRef = useRef(0);
   const dismissedRuntimeErrorsRef = useRef(new Set<string>());
   const hierarchyTreeRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -1842,6 +1847,7 @@ export function App() {
     });
     const telemetryTimer = telemetryApi
       ? window.setInterval(() => {
+        if (document.hidden) return;
         void telemetryApi.get().then((state) => {
           if (active) setDesktopTelemetry(state);
         }).catch(() => undefined);
@@ -2138,26 +2144,42 @@ export function App() {
     if (previewPanel?.url && isEmbeddablePreviewUrl(previewPanel.url)) setPreviewDockOpen(true);
   }, [mode, previewPanel?.url]);
 
-  const readFile = useCallback(async (filePath: string, reveal = true) => {
+  /** Returns undefined when the user keeps unsaved edits instead of switching files. */
+  const readFile = useCallback(async (filePath: string, reveal = true): Promise<string | undefined> => {
+    const normalized = filePath.replaceAll("\\", "/").replace(/^\.\//, "");
+    if (codeDirtyRef.current) {
+      if (normalized === selectedFileRef.current) {
+        if (reveal) setCenterTab("code");
+        return selectedFileRef.current;
+      }
+      if (!window.confirm(`「${fileName(selectedFileRef.current)}」还有未保存修改，打开「${fileName(normalized)}」将丢弃这些修改。是否继续？`)) return undefined;
+    }
     const response = await fetch(`${API}/api/project/file?path=${encodeURIComponent(filePath)}`);
-    const result = await response.json() as { path?: string; text?: string; error?: string };
+    const result = await response.json().catch(() => ({})) as { path?: string; text?: string; version?: string; readOnly?: boolean; encodingWarning?: string; error?: string };
     if (!response.ok || result.text == null) throw new Error(result.error || "无法读取文件");
     const resolvedPath = result.path || filePath;
+    selectedFileRef.current = resolvedPath;
+    codeVersionRef.current = result.version;
+    codeDirtyRef.current = false;
     setSelectedFile(resolvedPath);
     setCode(result.text);
     setCodeDirty(false);
+    setCodeReadOnly(Boolean(result.readOnly));
     setSaveState("idle");
+    if (result.encodingWarning === "project_file_not_utf8") {
+      toast(`「${fileName(resolvedPath)}」不是 UTF-8 编码，已只读打开，避免保存时把中文写成乱码`, "warn", 5_000);
+    }
     if (reveal) setCenterTab("code");
     return resolvedPath;
-  }, []);
+  }, [toast]);
 
   const loadProjectContents = useCallback(async () => {
     const [fileResponse, screenResponse] = await Promise.all([
       fetch(`${API}/api/project/files`),
       fetch(`${API}/api/ui/screens`)
     ]);
-    const fileResult = await fileResponse.json() as { entries?: FileEntry[] };
-    const screenResult = await screenResponse.json() as { screens?: UiScreenSummary[]; activePath?: string };
+    const fileResult = await readJsonResponse<{ entries?: FileEntry[] }>(fileResponse, "读取文件列表失败");
+    const screenResult = await readJsonResponse<{ screens?: UiScreenSummary[]; activePath?: string }>(screenResponse, "读取界面列表失败");
     const allScreens = screenResult.screens ?? [];
     const isModulePath = (path: string, summary?: UiScreenSummary) =>
       summary?.confidence === "module" || summary?.error === "module_only" || /AdPrompt|EmergencyReset|CultivationDrawer/i.test(path);
@@ -2223,17 +2245,29 @@ export function App() {
   }, [toast]);
 
   const saveFile = useCallback(async () => {
-    if (!selectedFile || !codeDirty) return;
+    if (!selectedFile || !codeDirty || codeReadOnly) return;
     setSaveState("saving");
     try {
-      const response = await fetch(`${API}/api/project/file`, {
+      const post = (baseVersion: string | undefined) => fetch(`${API}/api/project/file`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: selectedFile, text: code })
+        body: JSON.stringify({ path: selectedFile, text: code, baseVersion })
       });
-      const result = await response.json() as { error?: string; snapshot?: UiSnapshot };
+      let response = await post(codeVersionRef.current);
+      if (response.status === 409) {
+        const overwrite = window.confirm(`「${fileName(selectedFile)}」在你编辑期间已被外部修改（例如 AI 助手或其它编辑器）。\n\n确定：用当前编辑内容覆盖磁盘上的版本\n取消：保留编辑内容，暂不保存`);
+        if (!overwrite) {
+          setSaveState("idle");
+          toast("已取消保存；可另存修改后重新打开文件查看外部改动", "warn", 4_000);
+          return;
+        }
+        response = await post(undefined);
+      }
+      const result = await response.json().catch(() => ({})) as { error?: string; snapshot?: UiSnapshot; version?: string };
       if (!response.ok) throw new Error(result.error || "保存失败");
+      codeVersionRef.current = result.version;
       if (result.snapshot) setSnapshot(result.snapshot);
+      codeDirtyRef.current = false;
       setCodeDirty(false);
       setSaveState("saved");
       window.setTimeout(() => setSaveState("idle"), 1_500);
@@ -2244,7 +2278,7 @@ export function App() {
       setSaveState("error");
       setLogs((current) => ({ ...current, agent: [...current.agent, `保存失败：${error instanceof Error ? error.message : String(error)}`] }));
     }
-  }, [code, codeDirty, selectedFile]);
+  }, [code, codeDirty, codeReadOnly, selectedFile, setLogs, toast]);
 
   const jumpToSource = useCallback(async (node: UiNode) => {
     const file = node.source?.file;
@@ -2255,7 +2289,7 @@ export function App() {
     }
     if (line) setRevealLine(line);
     try {
-      await readFile(file, true);
+      if (!await readFile(file, true)) return;
       setLogs((current) => ({
         ...current,
         agent: [...current.agent, `定位源码 ${file}${line ? `:${line}` : ""} ← ${node.name} (${node.type})`]
@@ -2392,7 +2426,7 @@ export function App() {
     if (!sourceFile || sourceFile === "runtime") return;
     if (node.source?.line) setRevealLine(node.source.line);
     void readFile(sourceFile, false).then((resolved) => {
-      setActiveUiPath(resolved);
+      if (resolved) setActiveUiPath(resolved);
     }).catch((error) => {
       toast(`打开节点对应 UI 文件失败：${error instanceof Error ? error.message : String(error)}`, "error");
     });
@@ -2501,10 +2535,16 @@ export function App() {
   const openProjectPath = useCallback(async (projectPath: string, options?: { skipDirtyCheck?: boolean }) => {
     if (project?.root === projectPath && projectLoaded) return;
     if (!options?.skipDirtyCheck && project?.root !== projectPath && codeDirty && !window.confirm("当前代码文件还有未保存修改。切换项目将丢失这些修改，是否继续？")) return;
+    codeDirtyRef.current = false;
+    setCodeDirty(false);
+    const generation = ++projectOpenGenerationRef.current;
+    const isStale = () => generation !== projectOpenGenerationRef.current;
     setProjectOpening(true);
     setProjectError("");
     try {
       if (project?.root && project.root !== projectPath) {
+        if (runtimeEditSyncTimerRef.current) window.clearTimeout(runtimeEditSyncTimerRef.current);
+        await flushPendingSidecarRef.current().catch(() => undefined);
         if (makerPreviewStatus?.process_alive) await fetch(`${API}/api/maker/preview/stop`, { method: "POST" }).catch(() => undefined);
         await window.tapMakerWork?.preview?.unmount().catch(() => undefined);
         setPreviewDockOpen(false);
@@ -2528,6 +2568,7 @@ export function App() {
         }
         throw new Error(result.error === "not_tapmaker_project" ? "不是 TapTap Maker 项目" : result.error || "无法打开项目");
       }
+      if (isStale()) return;
       setProject(result.project);
       setOpenProjects((current) => {
         const next = current.some((item) => item.root === result.project!.root)
@@ -2538,6 +2579,7 @@ export function App() {
       });
       if (result.snapshot) setSnapshot(result.snapshot);
       await loadProjectContents();
+      if (isStale()) return;
       if (result.adapter?.installed) {
         setHealth((current) => current ? {
           ...current,
@@ -2578,11 +2620,14 @@ export function App() {
         return next;
       });
     } catch (error) {
+      if (isStale()) return;
       setProjectError(error instanceof Error ? error.message : String(error));
       trackTelemetry("project.open_fail", {});
     } finally {
-      setProjectLoaded(true);
-      setProjectOpening(false);
+      if (!isStale()) {
+        setProjectLoaded(true);
+        setProjectOpening(false);
+      }
     }
   }, [codeDirty, loadProjectContents, loadWorkflow, makerPreviewStatus?.process_alive, project?.root, projectLoaded, trackTelemetry]);
 
@@ -2598,6 +2643,9 @@ export function App() {
   const closeCurrentProject = useCallback(async () => {
     if (!project) return;
     if (codeDirty && !window.confirm("当前代码文件还有未保存修改。关闭项目将丢失这些修改，是否继续？")) return;
+    codeDirtyRef.current = false;
+    if (runtimeEditSyncTimerRef.current) window.clearTimeout(runtimeEditSyncTimerRef.current);
+    await flushPendingSidecarRef.current().catch(() => undefined);
     setProjectOpening(true);
     try {
       if (makerPreviewStatus?.process_alive) {
@@ -3163,6 +3211,10 @@ export function App() {
       toast("没有可打开的链接", "warn");
       return;
     }
+    if (!isWebUrl(url)) {
+      toast("只能打开 http/https 链接", "warn");
+      return;
+    }
     window.open(url, "_blank", "noopener,noreferrer");
     toast("已在浏览器打开链接", "success");
   }, [toast]);
@@ -3399,6 +3451,10 @@ export function App() {
     }
   }, [activeUiPath, toast]);
 
+  flushPendingSidecarRef.current = async () => {
+    if (sidecarInfo.dirty) await saveUiSidecar();
+  };
+
   useEffect(() => {
     if (!sidecarInfo.dirty) return;
     const timer = window.setTimeout(() => { void saveUiSidecar(); }, 900);
@@ -3422,8 +3478,8 @@ export function App() {
   };
 
   useEffect(() => {
-    void fetch(`${API}/api/health`).then((response) => response.json()).then(setHealth).catch(() => undefined);
-    void fetch(`${API}/api/project`).then((response) => response.json()).then(async (value: ProjectState) => {
+    void fetch(`${API}/api/health`).then((response) => readJsonResponse<Health>(response, "读取状态失败")).then(setHealth).catch(() => undefined);
+    void fetch(`${API}/api/project`).then((response) => readJsonResponse<ProjectState>(response, "读取项目失败")).then(async (value) => {
       setProject(value.project);
       if (value.project) {
         setOpenProjects((current) => {
@@ -3446,7 +3502,7 @@ export function App() {
       setProjectLoaded(true);
       setProjectError("本地 Bridge 未启动，请先启动 TapMakerWork 服务。");
     });
-    void fetch(`${API}/api/ui/snapshot`).then((response) => response.json()).then(setSnapshot).catch(() => undefined);
+    void fetch(`${API}/api/ui/snapshot`).then((response) => readJsonResponse<UiSnapshot>(response, "读取画布失败")).then(setSnapshot).catch(() => undefined);
     let disposed = false;
     let reconnectTimer: number | undefined;
     const connect = () => {
@@ -3458,7 +3514,12 @@ export function App() {
         if (!disposed) reconnectTimer = window.setTimeout(connect, 1_000);
       };
       socket.onmessage = (message) => {
-        const event = JSON.parse(String(message.data)) as BridgeEvent;
+        let event: BridgeEvent;
+        try {
+          event = JSON.parse(String(message.data)) as BridgeEvent;
+        } catch {
+          return;
+        }
         if (event.type === "ui.snapshot" || event.type === "ui.patch.applied" || event.type === "ui.patch.rejected") {
           if (event.type === "ui.snapshot" && event.source === "runtime" && (modeRef.current === "live-edit" || centerTabRef.current === "visual")) {
             setSnapshotSource("runtime");
@@ -3848,10 +3909,11 @@ export function App() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void fetch(`${API}/api/health`).then((res) => res.json()).then((value: Health) => {
+      if (document.hidden) return;
+      void fetch(`${API}/api/health`).then((res) => readJsonResponse<Health>(res, "读取状态失败")).then((value) => {
         setHealth(value);
         if (value.runtimeSessionId && modeRef.current !== "live-edit" && centerTabRef.current !== "visual") {
-          void fetch(`${API}/api/ui/snapshot`).then((r) => r.json()).then((snap) => {
+          void fetch(`${API}/api/ui/snapshot`).then((r) => readJsonResponse<UiSnapshot>(r, "读取画布失败")).then((snap) => {
             setSnapshot((current) => keepValidSelection(current, snap as UiSnapshot, selectedNodeIdRef.current));
           }).catch(() => undefined);
         }
@@ -3863,6 +3925,7 @@ export function App() {
   useEffect(() => {
     if (!project) return;
     const refreshStatus = () => {
+      if (document.hidden) return;
       void fetch(`${API}/api/maker/preview/status`).then(async (response) => {
         if (response.ok) setMakerPreviewStatus(await response.json() as MakerPreviewStatus);
       }).catch(() => undefined);
@@ -4041,7 +4104,8 @@ export function App() {
   useEffect(() => {
     if (!health?.runtimeSessionId) return;
     const timer = window.setInterval(() => {
-      void fetch(`${API}/api/health`).then((res) => res.json()).then((value: Health) => {
+      if (document.hidden) return;
+      void fetch(`${API}/api/health`).then((res) => readJsonResponse<Health>(res, "读取状态失败")).then((value) => {
         const prevScene = health.runtimeScene;
         setHealth(value);
         if (value.snapshotSource) setSnapshotSource(value.snapshotSource);
@@ -5512,7 +5576,7 @@ export function App() {
                   value={code}
                   onChange={(value) => { setCode(value ?? ""); setCodeDirty(true); setSaveState("idle"); }}
                   onMount={onEditorMount}
-                  options={{ readOnly: false, minimap: { enabled: false }, fontSize: 13, padding: { top: 14 }, automaticLayout: true }}
+                  options={{ readOnly: codeReadOnly, minimap: { enabled: false }, fontSize: 13, padding: { top: 14 }, automaticLayout: true }}
                 />
               )}
             </div>
