@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import Editor, { DiffEditor, type OnMount } from "@monaco-editor/react";
 import {
   Box,
-  Boxes,
-  ChevronDown,
   ChevronRight,
   CircleHelp,
   CirclePlay,
@@ -51,7 +49,6 @@ import {
   Rocket,
   Download,
   CheckCircle2,
-  Pipette,
   Maximize2,
   ZoomIn,
   ZoomOut,
@@ -66,15 +63,12 @@ import {
   Cpu,
   ScrollText,
   AlertTriangle,
-  XCircle,
   X,
   Heart,
   Gamepad2,
   Users,
   MessageCircle,
   Map,
-  Package,
-  ShieldCheck,
   Lightbulb,
   Wrench,
   Clock3,
@@ -84,7 +78,6 @@ import {
   DEFAULT_DEVICE_PROFILES,
   findUiNode,
   findParentInfo,
-  type BridgeCapabilities,
   type BridgeEvent,
   type DeviceProfile,
   type LogChannel,
@@ -101,7 +94,15 @@ import {
   isRequiredMakerMcpVersion,
   type WorkspaceMode
 } from "@tapmakerwork/protocol";
-import { MakerAccountSwitcher, MakerAccountsCard, mutateMakerAccounts, refreshMakerAccounts, resolveConsoleAccount, subscribeMakerAccounts, type AccountsPayload } from "./MakerAccountsCard";
+import {
+  MakerAccountSwitcher,
+  MakerAccountsCard,
+  mutateMakerAccounts,
+  refreshMakerAccounts,
+  resolveConsoleAccount,
+  subscribeMakerAccounts,
+  type AccountsPayload
+} from "./MakerAccountsCard";
 import { MakerConsolePanel, type TapConsoleSite } from "./MakerConsolePanel";
 import { PreviewDock } from "./PreviewDock";
 import { ProjectCockpit } from "./ProjectCockpit";
@@ -121,1284 +122,75 @@ import {
   readCoachMark,
   readOnboardingSeen
 } from "./NewbieGuide";
-import { rgbaCss, rgbaFromHex, rgbaFromValue, rgbaToHex, type RgbaColor } from "./color-utils";
 import { angleBetween, resizeRect, scaleRatio, snapValue, toolForShortcut, type TransformTool } from "./runtime-transform";
-import type { DesktopHardwareAccelerationState, DesktopLegalState, DesktopPermissionState, DesktopTelemetryState, DesktopUpdateState } from "./desktop-api";
+import type {
+  DesktopHardwareAccelerationState,
+  DesktopLegalState,
+  DesktopPermissionState,
+  DesktopTelemetryState,
+  DesktopUpdateState
+} from "./desktop-api";
 import { extractRuntimeErrorReport, type RuntimeErrorReport } from "./runtime-error";
 import { API, capLogChannels, isEmbeddablePreviewUrl, isWebUrl, readJsonResponse } from "./bridge-api";
 import { flushStudioGameAlgo, initStudioGameAlgo, setStudioGameAlgoEnabled, trackStudioGameAlgo } from "./gamealgo";
-import wechatPayImage from "../../../docs/sponsor/wechat-pay.png";
-
-const BUILTIN_QQ_GROUP_ID = "1124103038";
-const BUILTIN_QQ_GROUP_NAME = "TapMakerWork工具交流群";
-const BUILTIN_QQ_GROUP_JOIN_URL = "https://qm.qq.com/q/OCt1HAmHK2";
-const OFFICIAL_SITE_URL = "https://androidsix.github.io/tapmakerwork-site/";
-const PHOTOPEA_URL = "https://www.photopea.com/";
-import alipayImage from "../../../docs/sponsor/alipay.png";
-
-interface CommunityInfo {
-  qqGroupId: string;
-  qqGroupName: string;
-  qqGroupJoinUrl: string;
-  officialSiteUrl?: string;
-  source?: "gitee" | "github" | "builtin";
-}
+import type {
+  CommunityInfo,
+  Health,
+  MakerProjectMeta,
+  MakerPreviewStatus,
+  MakerRuntimeMode,
+  MakerVersionState,
+  NodeVersionState,
+  ProjectState,
+  RecentProject,
+  FileEntry,
+  UiScreenSummary,
+  SearchHit,
+  AssetEntry,
+  GitStatusState,
+  GitChangeState,
+  GitFileDiffState,
+  ToastKind,
+  ToastItem,
+  WorkspaceLayout,
+  CenterTab,
+  DocumentTab,
+  FloatingWorkspace
+} from "./app/types";
+import {
+  BUILTIN_QQ_GROUP_ID,
+  BUILTIN_QQ_GROUP_NAME,
+  BUILTIN_QQ_GROUP_JOIN_URL,
+  OFFICIAL_SITE_URL,
+  PHOTOPEA_URL,
+  WRITEBACK_SKIP_REASON_TEXT,
+  LOG_CHANNELS,
+  INITIAL_LOGS,
+  DEFAULT_DEVICE_HINT
+} from "./app/constants";
+import { sameProjectPath, fileName, languageForFile } from "./app/paths";
+import { legacyCopyText } from "./app/clipboard";
+import {
+  OPEN_PROJECTS_STORAGE_KEY,
+  SYNC_UI_CODE_STORAGE_KEY,
+  loadSyncUiEditsToCode,
+  loadOpenProjects,
+  DEFAULT_LAYOUT,
+  LAYOUT_STORAGE_KEY,
+  DOCUMENT_TABS_STORAGE_KEY,
+  loadDocumentTabs,
+  loadWorkspaceLayout,
+  terminalMaxHeight,
+  clamp
+} from "./app/workspace-storage";
+import { displayValue, runtimeLayoutBox, uiChildren, visualWeight, keepValidSelection } from "./app/ui-values";
+import { ToastStack } from "./app/ToastStack";
+import { iconForType, PanelResizer, RuntimeNode, HierarchyNode, FileTreeEntry } from "./app/tree-nodes";
+import { InspectorField, InspectorColorField, InspectorAssetField } from "./app/inspector-fields";
+import { UpdateNoteText, UpdateDocLinks, UpdatePromptDialog } from "./app/update-dialogs";
+import { PermissionGuide, LegalConsentDialog, RuntimeErrorDialog, ProjectRejectDialog, RoadmapDialog, SponsorDialog } from "./app/dialogs";
 
 declare const __APP_VERSION__: string;
-
-interface Health {
-  ok: boolean;
-  capabilities: BridgeCapabilities & { runtimeBridge?: boolean; makerBuild?: boolean; makerQrcode?: boolean };
-  makerVersion?: string;
-  sandbox: { available: boolean; reason: string };
-  runtimeSessionId?: string;
-  runtimeConnectedAt?: string;
-  runtimeScene?: "idle" | "loading" | "live";
-  snapshotSource?: "conversion" | "sidecar" | "runtime" | "empty";
-  runtimeAdapter?: { installed: boolean; paths: string[]; backend?: "yoga" | "nanovg" };
-  uiBackend?: "yoga" | "nanovg";
-  runtimeFileChannel?: { rootType?: string; wroteSnapshot?: boolean; snapshotError?: string } | null;
-  makerProjectMeta?: MakerProjectMeta | null | undefined;
-}
-
-interface MakerProjectMeta {
-  title?: string | undefined;
-  appId?: string | undefined;
-  orientation?: string | undefined;
-  publishStatus?: number | undefined;
-  qrcodeUrl?: string | undefined;
-  qrcodeGeneratedAt?: string | undefined;
-}
-
-interface MakerPreviewStatus {
-  state?: string;
-  process_alive?: boolean | null;
-  runtime_pid?: number;
-  error?: string;
-}
-
-type MakerRuntimeMode = "device" | "stable" | "beta" | "version";
-
-interface MakerVersionState {
-  preference: { mode: MakerRuntimeMode; version?: string };
-  active?: { version: string; entry: string };
-  installed: Array<{ version: string; entry: string }>;
-  channels: {
-    stable: { installed?: string; latest?: string; updateAvailable: boolean };
-    beta: { installed?: string; latest?: string; updateAvailable: boolean };
-  };
-  checkedAt?: string;
-}
-
-interface NodeVersionState {
-  device: { version: string; executable: string } | null;
-  embedded: { version: string; executable: string };
-  active: { version: string; executable: string; source: "device" | "managed" | "embedded" };
-  installed: Array<{ version: string; executable: string; source: "managed" }>;
-  stable: { installed?: string; latest?: string; updateAvailable: boolean };
-  upgrade?: { manager: string; label: string; command: string; terminal: string; note?: string; oneClick: boolean };
-  checkedAt?: string;
-}
-
-interface ProjectState {
-  project?: { root: string; name: string; makerBound: boolean };
-  snapshot?: UiSnapshot;
-  activeUiEntry?: string;
-}
-
-type RecentProject = { root: string; name: string };
-const OPEN_PROJECTS_STORAGE_KEY = "tapmakerwork.openProjects";
-const SYNC_UI_CODE_STORAGE_KEY = "tapmakerwork.syncUiEditsToCode";
-
-function sameProjectPath(left: string, right: string): boolean {
-  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  return normalize(left) === normalize(right);
-}
-
-function loadSyncUiEditsToCode(): boolean {
-  try {
-    return localStorage.getItem(SYNC_UI_CODE_STORAGE_KEY) !== "0";
-  } catch {
-    return true;
-  }
-}
-
-/** Bridge Lua-writeback skip reasons → what the user should do instead. */
-const WRITEBACK_SKIP_REASON_TEXT: Record<string, string> = {
-  kit_internal_geometry: "共用组件内部节点没有稳定身份，无法按实例保存",
-  opts_passthrough: "该属性由共用组件的 opts 透传，请在调用处修改",
-  widget_not_found: "在 Lua 里找不到对应控件",
-  layout_expression: "位置由布局表达式计算，无法冻结为字面量",
-  measured_geometry: "拖动结果是父级相对测量值，未写入设计值",
-  container_forbidden: "布局容器不接受背景，也不接受把整行缩成单卡尺寸",
-  font_overflow: "字号会撑爆控件高度",
-  call_site_ambiguous: "多个调用处同名，无法确定目标",
-  call_site_no_match: "找不到唯一调用处"
-};
-
-function loadOpenProjects(): RecentProject[] {
-  try {
-    const stored = JSON.parse(localStorage.getItem(OPEN_PROJECTS_STORAGE_KEY) || "[]") as unknown;
-    return Array.isArray(stored)
-      ? stored.filter((item): item is RecentProject => Boolean(item && typeof item.root === "string" && typeof item.name === "string")).slice(0, 8)
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-interface FileEntry {
-  name: string;
-  path: string;
-  kind: "file" | "directory";
-}
-
-interface UiScreenSummary {
-  path: string;
-  name: string;
-  confidence?: "static" | "hybrid" | "runtime" | "module";
-  nodeCount?: number;
-  error?: string;
-}
-
-interface SearchHit {
-  path: string;
-  line: number;
-  preview: string;
-}
-
-interface AssetEntry {
-  name: string;
-  path: string;
-  bytes: number;
-  extension?: string;
-  kind?: "image" | "audio" | "video" | "model" | "font" | "other";
-  referencedBy?: string[];
-  status?: "referenced" | "unreferenced" | "external";
-}
-
-interface GitStatusState {
-  branch: string;
-  upstream?: string;
-  ahead?: number;
-  behind?: number;
-  dirty?: boolean;
-  changes?: GitChangeState[];
-  commits?: Array<{ hash: string; shortHash: string; subject: string; author: string; relativeDate: string; refs: string[] }>;
-}
-
-interface GitChangeState {
-  path: string;
-  status: string;
-  indexStatus: string;
-  workTreeStatus: string;
-  staged: boolean;
-  unstaged: boolean;
-  untracked: boolean;
-  conflicted: boolean;
-}
-
-interface GitFileDiffState {
-  path: string;
-  scope: "worktree" | "staged";
-  status: string;
-  original: string;
-  modified: string;
-  binary: boolean;
-  added: boolean;
-  deleted: boolean;
-  additions: number;
-  deletions: number;
-  loading?: boolean;
-  error?: string;
-}
-
-const channels: Array<{ id: LogChannel; label: string }> = [
-  { id: "runtime", label: "Runtime" },
-  { id: "build", label: "构建" },
-  { id: "lua", label: "Lua 检查" },
-  { id: "shell", label: "Shell" },
-  { id: "repl", label: "Lua REPL" },
-  { id: "qrcode", label: "二维码" },
-  { id: "agent", label: "Agent" }
-];
-
-const initialLogs: Record<LogChannel, string[]> = {
-  runtime: ["等待 Maker 预览或 Runtime 适配器连接…"],
-  build: ["暂无构建任务。"],
-  lua: ["暂无 Lua 诊断。"],
-  shell: ["Shell 已锁定：OS 级项目沙箱尚未通过双平台逃逸测试。"],
-  repl: ["Lua REPL 将在 Runtime Dev Bridge 接入后启用。"],
-  qrcode: ["暂无二维码任务。"],
-  agent: ["AI：读 .tapmakerwork/ai/STATUS.md；inbox 或 POST /api/agent/command 控制；改完再读 snapshot/errors/preview.png。"]
-};
-
-function iconForType(type: string): ReactNode {
-  if (type === "Button") return <Box size={14} />;
-  if (type === "Label") return <Code2 size={14} />;
-  if (type === "Image") return <Image size={14} />;
-  if (type === "Node") return <Box size={14} />;
-  return <Boxes size={14} />;
-}
-
-function labelForType(type: string): string {
-  if (type === "Button") return "按钮";
-  if (type === "Label") return "文字";
-  if (type === "Panel") return "容器";
-  if (type === "Node") return "空节点";
-  return type;
-}
-
-function fileName(filePath: string): string {
-  return filePath.split("/").at(-1) || filePath;
-}
-
-function languageForFile(filePath: string): string {
-  const lower = filePath.toLowerCase();
-  if (lower.endsWith(".lua")) return "lua";
-  if (lower.endsWith(".json") || lower.endsWith(".jsonc")) return "json";
-  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return "typescript";
-  if (lower.endsWith(".js") || lower.endsWith(".jsx")) return "javascript";
-  if (lower.endsWith(".css")) return "css";
-  if (lower.endsWith(".html")) return "html";
-  if (lower.endsWith(".md")) return "markdown";
-  if (lower.endsWith(".yml") || lower.endsWith(".yaml")) return "yaml";
-  return "plaintext";
-}
-
-function rgba(value: UiValue | undefined, fallback = "transparent"): string {
-  if (!Array.isArray(value) || value.length < 3) return typeof value === "string" ? value : fallback;
-  const [r, g, b, a = 255] = value as number[];
-  return `rgba(${r}, ${g}, ${b}, ${a / 255})`;
-}
-
-function displayValue(value: UiValue | undefined, fallback = ""): string {
-  if (value == null) return fallback;
-  if (typeof value === "object" && !Array.isArray(value) && "$expression" in value) {
-    return `{${String(value.$expression)}}`;
-  }
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
-}
-
-function concreteValue(value: UiValue | undefined): UiValue | undefined {
-  if (value && typeof value === "object" && !Array.isArray(value) && "$expression" in value) return undefined;
-  return value;
-}
-
-function dimension(value: UiValue | undefined): CSSProperties["width"] {
-  if (typeof value === "number") return `${value}px`;
-  if (typeof value === "string") return value;
-  return undefined;
-}
-
-function edgeValue(value: UiValue | undefined): string | number | undefined {
-  if (typeof value === "number" || typeof value === "string") return value;
-  if (Array.isArray(value) && value.every((part) => typeof part === "number" || typeof part === "string")) return value.map((part) => typeof part === "number" ? `${part}px` : part).join(" ");
-  if (value && typeof value === "object") {
-    const record = value as Record<string, UiValue>;
-    const top = record.top ?? 0;
-    const right = record.right ?? 0;
-    const bottom = record.bottom ?? 0;
-    const left = record.left ?? 0;
-    return [top, right, bottom, left].map((part) => typeof part === "number" ? `${part}px` : String(part)).join(" ");
-  }
-  return undefined;
-}
-
-function shadowValue(value: UiValue | undefined): string | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.map((shadow) => {
-    if (!shadow || typeof shadow !== "object" || Array.isArray(shadow)) return "";
-    const item = shadow as Record<string, UiValue>;
-    return `${Number(item.x ?? 0)}px ${Number(item.y ?? 0)}px ${Number(item.blur ?? 0)}px ${rgba(item.color, "#000")}`;
-  }).filter(Boolean).join(", ") || undefined;
-}
-
-function runtimeLayoutBox(props: Record<string, UiValue>): { w?: number | undefined; h?: number | undefined; x?: number | undefined; y?: number | undefined } {
-  const layout = props.$layout;
-  if (layout && typeof layout === "object" && !Array.isArray(layout)) {
-    const record = layout as Record<string, UiValue>;
-    const num = (key: string) => typeof record[key] === "number" ? record[key] as number : undefined;
-    const w = num("w");
-    const h = num("h");
-    const x = num("x");
-    const y = num("y");
-    // Yoga 未布局时全是 0，用 0 宽高会把画布压黑，忽略这类 layout
-    const usable = (w != null && w > 0) || (h != null && h > 0) || (x != null && x !== 0) || (y != null && y !== 0);
-    if (!usable) return {};
-    return { x, y, w, h };
-  }
-  return {};
-}
-
-function runtimeStyle(node: UiNode): CSSProperties {
-  const props = node.props;
-  const box = runtimeLayoutBox(props);
-  const transform = props.transform && typeof props.transform === "object" && !Array.isArray(props.transform)
-    ? props.transform as Record<string, UiValue>
-    : {};
-  const rotation = typeof props.rotate === "number" ? props.rotate : 0;
-  const scale = typeof transform.scale === "number" ? transform.scale : 1;
-  const backgroundImage = concreteValue(props.backgroundImage);
-  const width = box.w != null && box.w > 0 ? `${box.w}px` : dimension(props.width);
-  const height = box.h != null && box.h > 0 ? `${box.h}px` : dimension(props.height);
-  const isEmptyFactory = Boolean(props.$factory) && uiChildren(node).length === 0;
-  const isSlot = node.type === "Slot";
-  return {
-    width,
-    height,
-    minWidth: dimension(props.minWidth) ?? (isEmptyFactory || isSlot ? "72px" : "8px"),
-    minHeight: dimension(props.minHeight) ?? (isEmptyFactory || isSlot ? "28px" : "12px"),
-    maxWidth: dimension(props.maxWidth),
-    maxHeight: dimension(props.maxHeight),
-    display: "flex",
-    flexDirection: props.flexDirection === "row" ? "row" : "column",
-    justifyContent: typeof props.justifyContent === "string" ? props.justifyContent as CSSProperties["justifyContent"] : undefined,
-    alignItems: typeof props.alignItems === "string" ? props.alignItems as CSSProperties["alignItems"] : undefined,
-    alignSelf: typeof props.alignSelf === "string" ? props.alignSelf as CSSProperties["alignSelf"] : undefined,
-    gap: typeof props.gap === "number" ? props.gap : undefined,
-    padding: edgeValue(props.padding) ?? (isEmptyFactory ? 8 : undefined),
-    paddingLeft: typeof props.paddingLeft === "number" ? props.paddingLeft : typeof props.paddingHorizontal === "number" ? props.paddingHorizontal : undefined,
-    paddingRight: typeof props.paddingRight === "number" ? props.paddingRight : typeof props.paddingHorizontal === "number" ? props.paddingHorizontal : undefined,
-    paddingTop: typeof props.paddingTop === "number" ? props.paddingTop : undefined,
-    paddingBottom: typeof props.paddingBottom === "number" ? props.paddingBottom : undefined,
-    margin: edgeValue(props.margin),
-    marginLeft: typeof props.marginLeft === "number" ? props.marginLeft : undefined,
-    marginRight: typeof props.marginRight === "number" ? props.marginRight : undefined,
-    marginTop: typeof props.marginTop === "number" ? props.marginTop : undefined,
-    marginBottom: typeof props.marginBottom === "number" ? props.marginBottom : undefined,
-    background: rgba(props.backgroundColor, isEmptyFactory ? "#1a2233cc" : "transparent"),
-    backgroundImage: typeof backgroundImage === "string" ? `url("${API}/api/project/asset?path=${encodeURIComponent(backgroundImage)}")` : undefined,
-    backgroundBlendMode: typeof backgroundImage === "string" && props.color != null ? "multiply" : undefined,
-    ...(typeof backgroundImage === "string" && props.color != null ? { backgroundColor: rgba(props.color, "#fff") } : {}),
-    backgroundSize: props.backgroundFit === "cover" ? "cover" : props.backgroundFit === "contain" ? "contain" : undefined,
-    backgroundPosition: "center",
-    borderRadius: typeof props.borderRadius === "number" ? props.borderRadius : undefined,
-    borderStyle: props.borderWidth != null || isEmptyFactory || isSlot ? "solid" : undefined,
-    borderWidth: edgeValue(props.borderWidth) ?? (isEmptyFactory || isSlot ? 1 : undefined),
-    borderColor: rgba(props.borderColor, isEmptyFactory || isSlot ? "#4b6288" : undefined),
-    boxShadow: shadowValue(props.boxShadow),
-    color: rgba(props.fontColor ?? props.textColor ?? props.color, "#e8edf5"),
-    fontSize: typeof props.fontSize === "number" ? props.fontSize : undefined,
-    fontWeight: props.fontWeight === "bold" ? 700 : undefined,
-    textAlign: typeof props.textAlign === "string" ? props.textAlign as CSSProperties["textAlign"] : undefined,
-    position: (box.x != null && box.x !== 0) || (box.y != null && box.y !== 0) || props.position === "absolute" ? "absolute" : "relative",
-    left: box.x != null && (box.x !== 0 || box.y != null && box.y !== 0) ? box.x : typeof props.left === "number" ? props.left : undefined,
-    top: box.y != null && (box.y !== 0 || box.x != null && box.x !== 0) ? box.y : typeof props.top === "number" ? props.top : undefined,
-    right: typeof props.right === "number" ? props.right : undefined,
-    bottom: typeof props.bottom === "number" ? props.bottom : undefined,
-    flexGrow: typeof props.flexGrow === "number" ? props.flexGrow : (props.position !== "absolute" && !box.x && !box.y ? undefined : undefined),
-    flexShrink: typeof props.flexShrink === "number" ? props.flexShrink : 1,
-    boxSizing: "border-box",
-    opacity: typeof props.opacity === "number" ? props.opacity : undefined,
-    overflow: props.overflow === "hidden" ? "hidden" : "visible",
-    pointerEvents: "auto",
-    cursor: "pointer",
-    transform: rotation || scale !== 1 ? `rotate(${rotation}deg) scale(${scale})` : undefined,
-    transformOrigin: "center"
-  };
-}
-
-type ToastKind = "info" | "success" | "error" | "warn";
-interface ToastItem { id: number; kind: ToastKind; message: string; busy?: boolean }
-
-function ToastStack({ items }: { items: ToastItem[] }) {
-  if (!items.length) return null;
-  return (
-    <div className="toast-stack" aria-live="polite">
-      {items.map((item) => (
-        <div key={item.id} className={`toast-item toast-${item.kind}${item.busy ? " toast-busy" : ""}`}>{item.message}</div>
-      ))}
-    </div>
-  );
-}
-
-function legacyCopyText(text: string): boolean {
-  const active = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-  const field = document.createElement("textarea");
-  field.value = text;
-  field.readOnly = true;
-  field.setAttribute("aria-hidden", "true");
-  Object.assign(field.style, {
-    position: "fixed",
-    left: "-9999px",
-    top: "0",
-    opacity: "0",
-    pointerEvents: "none"
-  });
-  document.body.appendChild(field);
-  field.select();
-  field.setSelectionRange(0, field.value.length);
-  let copied = false;
-  try {
-    copied = document.execCommand("copy");
-  } finally {
-    field.remove();
-    active?.focus();
-  }
-  return copied;
-}
-
-function uiChildren(node: UiNode): UiNode[] {
-  return Array.isArray(node.children) ? node.children : [];
-}
-
-function visualWeight(node: UiNode): number {
-  if (!node || typeof node !== "object") return 0;
-  if (node.props?.visible === false) return 0;
-  const type = node.type || "";
-  let score = 0;
-  if (type === "Button" || type === "Label" || type === "Image") score += 2;
-  else if (type === "Panel") score += node.props?.backgroundColor || node.props?.backgroundImage ? 2 : 0.25;
-  else if (type === "Slot" || type === "Module") score += 0.1;
-  else score += 0.5;
-  const kids = Array.isArray(node.children) ? node.children : [];
-  return score + kids.reduce((sum, child) => sum + visualWeight(child), 0);
-}
-
-const DEFAULT_DEVICE_HINT = "maker-portrait";
-
-const DEFAULT_LAYOUT = {
-  left: 220,
-  right: 280,
-  previewDock: 300,
-  terminal: 120
-};
-
-type WorkspaceLayout = { left: number; right: number; previewDock: number; terminal: number };
-type CenterTab = "workflow" | "visual" | "runtime" | "code" | "git-diff";
-type DocumentTab = Exclude<CenterTab, "git-diff"> | "preview";
-type FloatingWorkspace = { x: number; y: number; width: number; height: number };
-const LAYOUT_STORAGE_KEY = "tapmakerwork.workspaceLayout";
-const DOCUMENT_TABS_STORAGE_KEY = "tapmakerwork.documentTabs";
-const DEFAULT_DOCUMENT_TABS: DocumentTab[] = ["workflow", "visual", "runtime", "code", "preview"];
-
-function loadDocumentTabs(): DocumentTab[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(DOCUMENT_TABS_STORAGE_KEY) || "[]") as unknown;
-    if (!Array.isArray(value)) return [...DEFAULT_DOCUMENT_TABS];
-    const valid = value.filter((item): item is DocumentTab => DEFAULT_DOCUMENT_TABS.includes(item as DocumentTab));
-    return [...new Set([...valid, ...DEFAULT_DOCUMENT_TABS])];
-  } catch {
-    return [...DEFAULT_DOCUMENT_TABS];
-  }
-}
-
-function loadWorkspaceLayout(): WorkspaceLayout {
-  try {
-    const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_LAYOUT };
-    const parsed = JSON.parse(raw) as Partial<WorkspaceLayout>;
-    return {
-      left: clamp(parsed.left ?? DEFAULT_LAYOUT.left, 160, 420),
-      right: clamp(parsed.right ?? DEFAULT_LAYOUT.right, 200, 480),
-      previewDock: clamp(parsed.previewDock ?? DEFAULT_LAYOUT.previewDock, 220, 520),
-      terminal: clamp(parsed.terminal ?? DEFAULT_LAYOUT.terminal, 40, terminalMaxHeight())
-    };
-  } catch {
-    return { ...DEFAULT_LAYOUT };
-  }
-}
-
-function terminalMaxHeight(): number {
-  return Math.max(120, (typeof window === "undefined" ? 800 : window.innerHeight) - 48 - 40 - 22 - 96);
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function PanelResizer({ orientation, onPointerDown, label }: {
-  orientation: "col" | "row";
-  onPointerDown: (event: React.PointerEvent) => void;
-  label: string;
-}) {
-  return (
-    <div
-      className={`pane-resizer pane-resizer-${orientation}`}
-      role="separator"
-      aria-label={label}
-      aria-orientation={orientation === "col" ? "vertical" : "horizontal"}
-      onPointerDown={onPointerDown}
-      title={orientation === "row" ? "拖动调整高度" : "拖动调整宽度"}
-    />
-  );
-}
-
-function imagePathFromProps(props: Record<string, UiValue>): string | undefined {
-  const candidates = [props.path, props.sprite, props.image, props.texture, props.fileName, props.file];
-  for (const value of candidates) {
-    const concrete = concreteValue(value);
-    if (typeof concrete === "string" && concrete.trim()) return concrete.trim();
-  }
-  return undefined;
-}
-
-const CANVAS_RESIZE_HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
-
-function RuntimeNode({ node, rootId, selectedId, selectedIds, onSelect, onDragStart, onPlayClick, onContextMenu, mode, canvasTool = "move", editable = false }: {
-  node: UiNode;
-  rootId: string;
-  selectedId: string | undefined;
-  selectedIds: string[];
-  onSelect: (id: string, additive?: boolean) => void;
-  onDragStart?: ((id: string, event: React.PointerEvent, operation?: string) => void) | undefined;
-  onPlayClick?: ((node: UiNode) => void) | undefined;
-  onContextMenu?: ((id: string, x: number, y: number) => void) | undefined;
-  mode: WorkspaceMode;
-  canvasTool?: TransformTool;
-  editable?: boolean;
-}) {
-  if (!node || typeof node !== "object") return null;
-  if (node.props?.visible === false) return null;
-  const isSlot = node.type === "Slot";
-  const isEmptyFactory = Boolean(node.props?.$factory) && uiChildren(node).length === 0;
-  const className = [
-    "runtime-node",
-    `runtime-${(node.type || "widget").toLowerCase()}`,
-    selectedIds.includes(node.id) ? "selected" : "",
-    isSlot ? "runtime-slot" : "",
-    isEmptyFactory ? "runtime-factory" : "",
-    mode === "play" ? "local-runtime" : "",
-    editable ? "canvas-editable-node" : "",
-    node.id === rootId ? "canvas-root-node" : ""
-  ].join(" ");
-  const imageSource = node.type === "Image" ? imagePathFromProps(node.props) : undefined;
-  return (
-    <div
-      className={className}
-      style={runtimeStyle(node)}
-      data-node-id={node.id}
-      onPointerDown={(event) => {
-        event.stopPropagation();
-        onSelect(node.id, event.shiftKey);
-        if (editable && node.id !== rootId && onDragStart && !event.shiftKey && canvasTool === "move") onDragStart(node.id, event, "move");
-        if (mode === "play" && node.type === "Button" && onPlayClick) onPlayClick(node);
-      }}
-      onContextMenu={(event) => {
-        if (!editable || !onContextMenu) return;
-        event.preventDefault();
-        event.stopPropagation();
-        onSelect(node.id);
-        onContextMenu(node.id, event.clientX, event.clientY);
-      }}
-    >
-      {isSlot && <span className="slot-label">{displayValue(node.props?.expression, "Slot").slice(0, 24)}</span>}
-      {isEmptyFactory && <span className="factory-label">{String(node.props.$factory || node.name).slice(0, 28)}</span>}
-      {node.type === "Label" && <span>{concreteValue(node.props?.text) == null ? (isSlot ? "" : node.name) : String(concreteValue(node.props?.text))}</span>}
-      {node.type === "Button" && <span>{concreteValue(node.props?.text) == null ? "按钮" : String(concreteValue(node.props?.text))}</span>}
-      {node.type === "Image" && (
-        imageSource
-          ? <img className="runtime-image" alt="" src={`${API}/api/project/asset?path=${encodeURIComponent(imageSource)}`} />
-          : <span className="runtime-image-fallback">{node.name || "Image"}</span>
-      )}
-      {node.name && !isSlot && !isEmptyFactory && node.type === "Panel" && !concreteValue(node.props?.text) && (
-        <span className="panel-name">{node.name}</span>
-      )}
-      {uiChildren(node).map((child) => (
-        <RuntimeNode key={child.id} node={child} rootId={rootId} selectedId={selectedId} selectedIds={selectedIds} onSelect={onSelect} onDragStart={onDragStart} onPlayClick={onPlayClick} onContextMenu={onContextMenu} mode={mode} canvasTool={canvasTool} editable={editable} />
-      ))}
-      {selectedId === node.id && mode !== "play" && <span className="node-badge">{labelForType(node.type)}{node.source?.line ? ` :${node.source.line}` : ""}</span>}
-      {editable && selectedId === node.id && node.id !== rootId && canvasTool === "move" && (
-        <button type="button" className="runtime-transform-handle runtime-move-handle" aria-label={`移动 ${node.name || labelForType(node.type)}`} onPointerDown={(event) => onDragStart?.(node.id, event, "move")}><Move size={12} /></button>
-      )}
-      {editable && selectedId === node.id && node.id !== rootId && canvasTool === "rotate" && (
-        <button type="button" className="runtime-transform-handle runtime-rotate-handle" aria-label={`旋转 ${node.name || labelForType(node.type)}`} onPointerDown={(event) => onDragStart?.(node.id, event, "rotate")}><RotateCw size={12} /></button>
-      )}
-      {editable && selectedId === node.id && node.id !== rootId && canvasTool === "scale" && (
-        <button type="button" className="runtime-transform-handle runtime-scale-handle" aria-label={`缩放 ${node.name || labelForType(node.type)}`} onPointerDown={(event) => onDragStart?.(node.id, event, "scale")}><Scaling size={12} /></button>
-      )}
-      {editable && selectedId === node.id && node.id !== rootId && canvasTool === "rect" && CANVAS_RESIZE_HANDLES.map((handle) => (
-        <button
-          type="button"
-          key={handle}
-          className={`runtime-resize-handle handle-${handle}`}
-          aria-label={`从 ${handle} 方向调整 ${node.name || labelForType(node.type)} 大小`}
-          onPointerDown={(event) => onDragStart?.(node.id, event, handle)}
-        />
-      ))}
-    </div>
-  );
-}
-
-function HierarchyNode({ node, selectedId, selectedIds, onSelect, onContextMenuId, depth = 0, renamingId, renameDraft, onRenameDraft, onCommitRename, onCancelRename, dragId, dropHint, onDragStartId, onDragOverId, onDropId }: {
-  node: UiNode;
-  selectedId: string | undefined;
-  selectedIds: string[];
-  onSelect: (id: string, additive?: boolean) => void;
-  onContextMenuId: (id: string, x: number, y: number) => void;
-  depth?: number;
-  renamingId: string | null;
-  renameDraft: string;
-  onRenameDraft: (value: string) => void;
-  onCommitRename: () => void;
-  onCancelRename: () => void;
-  dragId: string | null;
-  dropHint: { id: string; pos: "before" | "after" | "inside" } | null;
-  onDragStartId: (id: string) => void;
-  onDragOverId: (id: string, event: React.DragEvent) => void;
-  onDropId: (id: string, event: React.DragEvent) => void;
-}) {
-  const [expanded, setExpanded] = useState(true);
-  const kids = uiChildren(node);
-  const dropClass = dropHint?.id === node.id ? `drop-${dropHint.pos}` : "";
-  useEffect(() => {
-    if (selectedId && kids.length > 0 && findUiNode(node, selectedId)) setExpanded(true);
-  }, [kids.length, node, selectedId]);
-  return (
-    <>
-      <div
-        data-hierarchy-node-id={node.id}
-        className={`tree-row ${selectedIds.includes(node.id) ? "active" : ""} ${selectedId === node.id ? "primary" : ""} ${dropClass} ${dragId === node.id ? "dragging" : ""} ${node.props.visible === false ? "is-hidden" : ""}`}
-        style={{ paddingLeft: 8 + depth * 14 }}
-        draggable={renamingId !== node.id}
-        onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = "move";
-          event.dataTransfer.setData("text/plain", node.id);
-          onDragStartId(node.id);
-        }}
-        onDragOver={(event) => onDragOverId(node.id, event)}
-        onDrop={(event) => onDropId(node.id, event)}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onSelect(node.id);
-          onContextMenuId(node.id, event.clientX, event.clientY);
-        }}
-      >
-        <button className="tree-expand" aria-label={expanded ? "折叠" : "展开"} onClick={() => setExpanded(!expanded)} disabled={!kids.length}>
-          {kids.length ? expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : <span className="tree-spacer" />}
-        </button>
-        {renamingId === node.id ? (
-          <input
-            className="tree-rename"
-            value={renameDraft}
-            autoFocus
-            onChange={(event) => onRenameDraft(event.target.value)}
-            onBlur={() => onCommitRename()}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") onCommitRename();
-              if (event.key === "Escape") onCancelRename();
-            }}
-          />
-        ) : (
-          <button
-            className="tree-label"
-            onClick={(event) => onSelect(node.id, event.shiftKey)}
-            onDoubleClick={() => {
-              onSelect(node.id);
-              // parent will wire rename via selected; trigger custom event
-              window.dispatchEvent(new CustomEvent("tapmakerwork:rename-node", { detail: { id: node.id, name: node.name } }));
-            }}
-            title="双击可重命名"
-          >
-            {iconForType(node.type)}
-            <span>{node.name}</span>
-            <small>{node.type}</small>
-          </button>
-        )}
-      </div>
-      {expanded && kids.map((child) => (
-        <HierarchyNode
-          key={child.id}
-          node={child}
-          selectedId={selectedId}
-          selectedIds={selectedIds}
-          onSelect={onSelect}
-          onContextMenuId={onContextMenuId}
-          depth={depth + 1}
-          renamingId={renamingId}
-          renameDraft={renameDraft}
-          onRenameDraft={onRenameDraft}
-          onCommitRename={onCommitRename}
-          onCancelRename={onCancelRename}
-          dragId={dragId}
-          dropHint={dropHint}
-          onDragStartId={onDragStartId}
-          onDragOverId={onDragOverId}
-          onDropId={onDropId}
-        />
-      ))}
-    </>
-  );
-}
-
-function FileTreeEntry({ entry, depth, selectedPath, onOpen }: {
-  entry: FileEntry;
-  depth: number;
-  selectedPath: string | undefined;
-  onOpen: (path: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [children, setChildren] = useState<FileEntry[]>();
-  const [loading, setLoading] = useState(false);
-  const toggle = async () => {
-    if (entry.kind === "file") { onOpen(entry.path); return; }
-    const next = !expanded;
-    setExpanded(next);
-    if (!next || children) return;
-    setLoading(true);
-    try {
-      const response = await fetch(`${API}/api/project/files?path=${encodeURIComponent(entry.path)}`);
-      const result = await response.json() as { entries?: FileEntry[] };
-      setChildren(result.entries ?? []);
-    } finally {
-      setLoading(false);
-    }
-  };
-  return <>
-    <button
-      className={`file-row ${selectedPath === entry.path ? "active" : ""}`}
-      style={{ paddingLeft: 8 + depth * 14 }}
-      onClick={() => void toggle()}
-      aria-expanded={entry.kind === "directory" ? expanded : undefined}
-    >
-      {entry.kind === "directory" ? expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : <span className="file-indent" />}
-      {entry.kind === "directory" ? <Folder size={14} /> : <FileCode2 size={14} />}
-      <span>{entry.name}</span>{loading && <small>读取中…</small>}
-    </button>
-    {expanded && children?.map((child) => <FileTreeEntry key={child.path} entry={child} depth={depth + 1} selectedPath={selectedPath} onOpen={onOpen} />)}
-  </>;
-}
-
-function InspectorField({ label, property, value, onCommit, live = false, resetKey }: {
-  label: string;
-  property: string;
-  value: UiValue | undefined;
-  onCommit: (property: string, value: UiValue) => void;
-  live?: boolean;
-  /** Remount/sync token — usually the selected node id so drafts reset on selection change. */
-  resetKey?: string;
-}) {
-  const display = Array.isArray(value) ? value.join(", ") : value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
-  const [draft, setDraft] = useState(display);
-  const focusedRef = useRef(false);
-  const liveTimerRef = useRef<number | null>(null);
-  const displayRef = useRef(display);
-  displayRef.current = display;
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
-  const onCommitRef = useRef(onCommit);
-  onCommitRef.current = onCommit;
-  const propertyRef = useRef(property);
-  propertyRef.current = property;
-
-  const parsedValue = (raw: string): UiValue => {
-    // Keep `text` as a string — "123123" must not become number 123123 or Lua writeback breaks.
-    if (property === "text") return raw;
-    if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
-    if (raw.includes(",") && raw.split(",").every((part) => /^\s*\d+\s*$/.test(part))) return raw.split(",").map(Number);
-    return raw;
-  };
-
-  const flush = useCallback((raw: string) => {
-    if (liveTimerRef.current) {
-      window.clearTimeout(liveTimerRef.current);
-      liveTimerRef.current = null;
-    }
-    if (raw === displayRef.current) return;
-    onCommitRef.current(propertyRef.current, parsedValue(raw));
-  }, []);
-
-  // Selection / property identity changed: always drop stale draft.
-  useEffect(() => {
-    if (liveTimerRef.current) {
-      window.clearTimeout(liveTimerRef.current);
-      liveTimerRef.current = null;
-    }
-    focusedRef.current = false;
-    setDraft(display);
-  }, [resetKey, property]);
-
-  useEffect(() => {
-    if (!focusedRef.current) setDraft(display);
-  }, [display]);
-
-  useEffect(() => () => {
-    if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
-  }, []);
-
-  return (
-    <label className="property-row">
-      <span>{label}</span>
-      <input
-        value={draft}
-        onFocus={() => { focusedRef.current = true; }}
-        onChange={(event) => {
-          const next = event.target.value;
-          setDraft(next);
-          if (live) {
-            if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
-            liveTimerRef.current = window.setTimeout(() => flush(next), 180);
-          }
-        }}
-        onBlur={() => {
-          focusedRef.current = false;
-          flush(draftRef.current);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") event.currentTarget.blur();
-          if (event.key === "Escape") {
-            setDraft(displayRef.current);
-            focusedRef.current = false;
-            event.currentTarget.blur();
-          }
-        }}
-      />
-    </label>
-  );
-}
-
-function InspectorColorField({ label, property, value, onCommit, resetKey }: {
-  label: string;
-  property: string;
-  value: UiValue | undefined;
-  onCommit: (property: string, value: UiValue) => void;
-  /** Selected node id — collapse editor when switching buttons/nodes. */
-  resetKey?: string;
-}) {
-  const parsed = useMemo(() => rgbaFromValue(value), [value]);
-  const [draft, setDraft] = useState<RgbaColor>(parsed);
-  const [expanded, setExpanded] = useState(false);
-  useEffect(() => {
-    setExpanded(false);
-  }, [resetKey, property]);
-  useEffect(() => setDraft(parsed), [parsed[0], parsed[1], parsed[2], parsed[3]]);
-  const update = (next: RgbaColor) => {
-    setDraft(next);
-    onCommit(property, next);
-  };
-  const updateChannel = (index: number, raw: string) => {
-    const next = [...draft] as RgbaColor;
-    next[index] = Math.max(0, Math.min(255, Math.round(Number(raw) || 0)));
-    update(next);
-  };
-  return (
-    <div className={`property-color ${expanded ? "expanded" : ""}`}>
-      <span className="property-color-label">{label}</span>
-      <button
-        type="button"
-        className="property-color-summary"
-        aria-expanded={expanded}
-        aria-label={`${label} ${rgbaToHex(draft, true)}，点击${expanded ? "收起" : "展开"}颜色编辑器`}
-        onClick={() => setExpanded((open) => !open)}
-      >
-        <i className="property-color-swatch" style={{ "--swatch": rgbaCss(draft) } as CSSProperties} />
-        <code>{rgbaToHex(draft, true)}</code>
-        <ChevronDown size={13} aria-hidden="true" />
-      </button>
-      {expanded && (
-        <div className="property-color-editor">
-          <label className="property-color-native">
-            <span><Pipette size={13} aria-hidden="true" />颜色</span>
-            <input
-              type="color"
-              value={rgbaToHex(draft)}
-              aria-label={`${label}系统颜色选择器`}
-              onChange={(event) => update(rgbaFromHex(event.target.value, draft))}
-            />
-          </label>
-          {(["R", "G", "B", "A"] as const).map((channel, index) => (
-            <label key={channel} className="property-color-channel">
-              <span>{channel}</span>
-              <input type="range" min="0" max="255" value={draft[index]} aria-label={`${label} ${channel}`} onChange={(event) => updateChannel(index, event.target.value)} />
-              <input type="number" min="0" max="255" value={draft[index]} aria-label={`${label} ${channel} 数值`} onChange={(event) => updateChannel(index, event.target.value)} />
-            </label>
-          ))}
-          <label className="property-color-hex">
-            <span>Hexadecimal</span>
-            <input
-              key={rgbaToHex(draft, true)}
-              defaultValue={rgbaToHex(draft, true)}
-              aria-label={`${label}十六进制 RGBA`}
-              onBlur={(event) => update(rgbaFromHex(event.target.value, draft))}
-              onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
-            />
-          </label>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function InspectorAssetField({ value, assets, onCommit, onAssetsChanged, toast }: {
-  value: UiValue | undefined;
-  assets: AssetEntry[];
-  onCommit: (property: string, value: UiValue) => void;
-  onAssetsChanged?: () => void;
-  toast?: (message: string, kind?: "info" | "success" | "error" | "warn") => void;
-}) {
-  const current = typeof value === "string" ? value : "";
-  const options = assets
-    .filter((asset) => asset.kind === "image")
-    .map((asset) => ({ label: asset.name, value: asset.path.replace(/^assets\//i, "") }));
-  const isWindows = typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent || navigator.platform || "");
-  const handleAdopt = async () => {
-    const raw = window.prompt("粘贴 Windows 绝对路径（可带或不带 @image: 前缀）", "");
-    if (!raw) return;
-    const candidate = raw.trim();
-    if (!candidate) return;
-    try {
-      const probeUrl = `${API}/api/project/asset?path=${encodeURIComponent("@image:" + candidate)}`;
-      const probe = await fetch(probeUrl);
-      const adoptedHeader = probe.headers.get("x-adopted-path");
-      // eslint-disable-next-line no-console
-      console.log("[adopt asset]", { url: probeUrl, status: probe.status, ok: probe.ok, adoptedHeader });
-      if (!probe.ok) {
-        const text = await probe.text().catch(() => "");
-        toast?.(`采纳失败：${probe.status} ${text.slice(0, 200)}`, "error");
-        return;
-      }
-      if (!adoptedHeader) {
-        toast?.("bridge 未返回 x-adopted-path，请重启 npm run dev", "warn");
-      }
-      const adoptedRelative = adoptedHeader
-        ? adoptedHeader.replace(/^assets\//i, "")
-        : `_external/${candidate.split(/[\\/]/).filter(Boolean).pop() || candidate}`;
-      onAssetsChanged?.();
-      onCommit("backgroundImage", adoptedRelative);
-      toast?.(`已采纳外部图片：${adoptedRelative}`, "success");
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error("[adopt asset] error", error);
-      toast?.(`采纳失败：${error instanceof Error ? error.message : String(error)}`, "error");
-    }
-  };
-  return (
-    <label className="property-row">
-      <span>图片资源</span>
-      <select value={current} onChange={(event) => onCommit("backgroundImage", event.target.value)}>
-        <option value="">无图片</option>
-        {current && !options.some((option) => option.value === current) && <option value={current}>{current}</option>}
-        {options.map((option) => <option key={option.value} value={option.value}>{option.label} · {option.value}</option>)}
-      </select>
-      {isWindows && onAssetsChanged && (
-        <button type="button" className="property-asset-adopt" onClick={handleAdopt}>采纳 Windows 路径</button>
-      )}
-    </label>
-  );
-}
-
-function keepValidSelection(current: UiSnapshot | undefined, incoming: UiSnapshot, preferredId?: string): UiSnapshot {
-  // Runtime layout snapshots are authoritative for geometry, but selection is
-  // editor-owned interaction state. Keep the local selection across frequent
-  // engine ticks, and only fall back when that node was actually destroyed.
-  const localId = preferredId || current?.selectedId;
-  if (localId && findUiNode(incoming.root, localId)) {
-    return { ...incoming, selectedId: localId };
-  }
-  if (incoming.selectedId && findUiNode(incoming.root, incoming.selectedId)) return incoming;
-  const { selectedId: _selectedId, ...withoutSelection } = incoming;
-  return withoutSelection;
-}
-
-function PermissionGuide({ state, busy, confirmed, onAction, onClose }: {
-  state: DesktopPermissionState;
-  busy: string;
-  confirmed: boolean;
-  onAction: (permission: "screen" | "accessibility" | "restart" | "refresh" | "confirm") => void;
-  onClose: () => void;
-}) {
-  const permissionRows = [
-    { key: "screen" as const, title: "屏幕与系统音频录制", description: "用于把 Maker Runtime 的真实窗口并排显示在工作台中。", value: state.screen },
-    { key: "accessibility" as const, title: "辅助功能", description: "用于把你在 Runtime 镜像上的点击准确转发到真实游戏窗口。", value: state.accessibility }
-  ];
-  return (
-    <div className="permission-backdrop" role="presentation">
-      <section className="permission-guide" role="dialog" aria-modal="true" aria-labelledby="permission-guide-title">
-        <div className="permission-guide-head">
-          <div><span className="permission-step">新机器设置 · 1/1</span><h2 id="permission-guide-title">授权 TapMakerWork 完成实时编辑</h2><p>这些权限只用于本机 Runtime 预览和交互，不会自动读取其他窗口内容。</p></div>
-          <ShieldAlert size={28} aria-hidden="true" />
-        </div>
-        {!state.stableIdentity && <div className="permission-warning"><strong>当前为开发模式</strong><span>可以调试权限，但 macOS 会把授权记在 Electron 上。正式签名安装包会使用固定的 TapMakerWork 身份，授权更稳定。</span></div>}
-        <div className="permission-list">
-          {permissionRows.map((item) => {
-            const granted = item.value === "granted";
-            return <article key={item.key} className={granted ? "granted" : "needed"}>
-              <span className="permission-status-icon">{granted ? <CheckCircle2 size={18} /> : <ShieldAlert size={18} />}</span>
-              <div><strong>{item.title}</strong><p>{item.description}</p><small>{granted ? "已授权" : item.value === "not-determined" ? "尚未询问" : "需要在系统设置中开启"}</small></div>
-              <button disabled={granted || Boolean(busy)} onClick={() => onAction(item.key)}>{busy === item.key ? "正在打开…" : granted ? "已完成" : "去授权"}</button>
-            </article>;
-          })}
-        </div>
-        <div className="permission-guide-actions">
-          <button className="secondary" onClick={onClose}>稍后设置</button>
-          <button className="secondary" disabled={Boolean(busy)} onClick={() => onAction("refresh")}><RefreshCw size={14} />重新检测</button>
-          <button className={confirmed ? "secondary confirmed" : "secondary"} disabled={Boolean(busy)} onClick={() => onAction("confirm")}><CheckCircle2 size={14} />{confirmed ? "已确认授权" : "我已授权"}</button>
-          <button className="primary" disabled={(!state.ready && !confirmed) || Boolean(busy)} onClick={() => onAction("restart")}>重启应用并继续</button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function UpdateNoteText({ text, onOpen }: { text: string; onOpen: (url: string) => void }) {
-  const nodes: ReactNode[] = [];
-  const pattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let key = 0;
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
-    const label = match[1] ?? "";
-    const url = match[2] ?? "";
-    if (!url) continue;
-    nodes.push(
-      <button
-        key={`note-link-${key++}`}
-        type="button"
-        className="update-note-link"
-        onClick={() => onOpen(url)}
-      >
-        {label}
-      </button>
-    );
-    lastIndex = match.index + match[0].length;
-  }
-  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
-  return <>{nodes}</>;
-}
-
-function UpdateDocLinks({
-  links,
-  onOpen
-}: {
-  links?: Array<{ label: string; url: string }> | undefined;
-  onOpen: (url: string) => void;
-}) {
-  if (!links || links.length === 0) return null;
-  return (
-    <div className="update-doc-links" role="group" aria-label="发布说明相关文档">
-      {links.map((link) => (
-        <button key={`${link.label}-${link.url}`} type="button" className="update-doc-link" onClick={() => onOpen(link.url)}>
-          <ExternalLink size={12} />
-          {link.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function UpdatePromptDialog({
-  state,
-  busy,
-  onUpdate,
-  onSnooze,
-  onMute,
-  onClose,
-  onOpenExternal
-}: {
-  state: DesktopUpdateState;
-  busy: string;
-  onUpdate: () => void;
-  onSnooze: () => void;
-  onMute: () => void;
-  onClose: () => void;
-  onOpenExternal: (url: string) => void;
-}) {
-  return <div className="legal-backdrop update-prompt-backdrop" role="presentation">
-    <section className="sponsor-dialog update-prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="update-prompt-title">
-      <header>
-        <div>
-          <span>应用更新</span>
-          <h2 id="update-prompt-title">{state.title || `发现新版本 ${state.availableVersion || ""}`}</h2>
-          <p>当前 {state.currentVersion} → 可更新 {state.availableVersion}。立即更新将打开对应平台安装包下载页。</p>
-        </div>
-        <button className="icon-command" aria-label="关闭更新提示" onClick={onClose}><XCircle size={18} /></button>
-      </header>
-      <div className="update-prompt-body">
-        {(state.notes && state.notes.length > 0) ? (
-          <ul className="update-notes">
-            {state.notes.map((note) => (
-              <li key={note}><UpdateNoteText text={note} onOpen={onOpenExternal} /></li>
-            ))}
-          </ul>
-        ) : (
-          <p className="desktop-card-note">请下载并安装新版本后重启 TapMakerWork。</p>
-        )}
-        <UpdateDocLinks links={state.links} onOpen={onOpenExternal} />
-        {state.message && <p className="desktop-card-note" role="status">{state.message}</p>}
-      </div>
-      <footer>
-        <button disabled={Boolean(busy) || Boolean(state.force)} onClick={onMute}>不再提醒</button>
-        <button disabled={Boolean(busy) || Boolean(state.force)} onClick={onSnooze}>暂不更新</button>
-        <button className="primary" disabled={Boolean(busy)} onClick={onUpdate}>
-          <Download size={13} />立即更新
-        </button>
-      </footer>
-    </section>
-  </div>;
-}
-
-function LegalConsentDialog({ state, busy, onAccept, onDecline, onClose }: {
-  state: DesktopLegalState | undefined;
-  busy: "accept" | "decline" | "";
-  onAccept: () => void;
-  onDecline: () => void;
-  onClose: () => void;
-}) {
-  const accepted = Boolean(state?.accepted);
-  return <div className="legal-backdrop" role="presentation">
-    <section className="legal-dialog" role="dialog" aria-modal="true" aria-labelledby="legal-dialog-title">
-      <header>
-        <div><span>首次启动 · EULA 与隐私政策</span><h2 id="legal-dialog-title">使用 TapMakerWork 前请阅读并确认</h2></div>
-        {accepted && <button className="icon-command" aria-label="关闭协议" onClick={onClose}><XCircle size={18} /></button>}
-      </header>
-      <div className="legal-document" tabIndex={0}>
-        <section><h3>最终用户许可协议</h3><p>TapMakerWork 是面向 TapTap Maker 项目可视化编辑与研究验证的本地开发工具。激活、继续使用或点击“同意并激活”即表示你同意本协议与下方隐私政策。</p><p>本项目出于研究与开发辅助目的，不以盗取用户数据、篡改或破坏 TapTap Maker、项目文件及其完整性为目的。工具只会在你主动打开的项目范围内执行编辑、预览、Git 与构建操作。</p></section>
-        <section><h3>屏幕录制与辅助功能权限</h3><p><strong>屏幕录制</strong>仅用于捕获本机 TapTap Maker Runtime 游戏窗口，并将真实运行画面显示在 IDE 中。TapMakerWork 不会自行录制整块屏幕，也不会自行上传捕获的画面。</p><p><strong>辅助功能</strong>仅用于把你在 Runtime 镜像上的点击坐标转发到真实游戏窗口。没有你的交互，不会自动控制其他应用。</p></section>
-        <section><h3>本地数据与网络</h3><p>应用会在本机保存设置、最近项目路径、协议接受状态、预览配置与必要日志。项目修改只发生在你选择的目录中。只有当你主动使用 Maker 构建、二维码、更新检查、Git 推送或外部链接时，才会连接对应服务；这些服务适用其各自条款。</p></section>
-        <section><h3>风险与责任</h3><p>请在编辑和 Git 操作前保留备份。研究工具按现状提供，不承诺适用于所有项目或硬件环境；应用不会在未经确认的情况下执行强制推送、硬重置或删除整个项目。</p></section>
-      </div>
-      {!state && <p className="legal-loading" role="status">正在读取协议状态…</p>}
-      <footer>
-        {accepted ? <button className="primary" onClick={onClose}>我已了解</button> : <>
-          <button className="secondary danger" disabled={Boolean(busy) || !state} onClick={onDecline}>{busy === "decline" ? "正在关闭…" : "不同意并退出"}</button>
-          <button className="primary" autoFocus disabled={Boolean(busy) || !state} onClick={onAccept}>{busy === "accept" ? "正在激活…" : "同意并激活"}</button>
-        </>}
-      </footer>
-    </section>
-  </div>;
-}
-
-function RuntimeErrorDialog({ report, copying, onCopy, onOpenLogs, onDismiss }: {
-  report: RuntimeErrorReport;
-  copying: boolean;
-  onCopy: () => void;
-  onOpenLogs: () => void;
-  onDismiss: () => void;
-}) {
-  return <div className="runtime-error-backdrop" role="presentation">
-    <section className="runtime-error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="runtime-error-title" aria-describedby="runtime-error-description">
-      <header><span><AlertTriangle size={20} /></span><div><h2 id="runtime-error-title">TapTap Maker 运行时错误</h2><p id="runtime-error-description">请修复游戏中的以下错误。请定位根因并修改代码，完成后验证游戏不再报错。</p></div></header>
-      <pre>{report.errorText}</pre>
-      <footer><button onClick={onOpenLogs}>查看 Runtime 日志</button><button onClick={onDismiss}>暂时忽略</button><button className="primary" autoFocus disabled={copying} onClick={onCopy}><Copy size={14} />{copying ? "正在复制…" : "复制错误报告"}</button></footer>
-    </section>
-  </div>;
-}
-
-function ProjectRejectDialog({ path, message, onClose }: { path: string; message: string; onClose: () => void }) {
-  return <div className="project-reject-backdrop" role="presentation">
-    <section className="project-reject-dialog" role="alertdialog" aria-modal="true" aria-labelledby="project-reject-title">
-      <span className="project-reject-icon"><FolderOpen size={24} /></span>
-      <div><h2 id="project-reject-title">无法打开此文件夹</h2><p>{message}</p><code title={path}>{path}</code></div>
-      <button className="primary" autoFocus onClick={onClose}>重新选择</button>
-    </section>
-  </div>;
-}
-
-const ROADMAP_SECTIONS: Array<{ title: string; icon: ReactNode; items: string[] }> = [
-  {
-    title: "资源与构建优化",
-    icon: <Package size={15} aria-hidden="true" />,
-    items: [
-      "无用资源清理：基于引用审计列清单，可撤销",
-      "代码混淆选项：与官方构建链兼容，可开关",
-      "构建包体报告：资源占比与压缩收益"
-    ]
-  },
-  {
-    title: "合规与发布辅助",
-    icon: <ScrollText size={15} aria-hidden="true" />,
-    items: [
-      "自行申请软著教程（材料清单、截图规范、代码鉴别材料整理）"
-    ]
-  },
-  {
-    title: "开发经验与 AI 提效",
-    icon: <Sparkles size={15} aria-hidden="true" />,
-    items: [
-      "IDE 内实践指南：常见坑、排错路径、交付检查清单（标题栏「开发技巧」已提供部分）",
-      "AI 开发技巧库扩展：更多可导入 Skills / 工程模板",
-      "指南写入 .tapmakerwork/ai，便于 Agent 检索"
-    ]
-  },
-  {
-    title: "多平台打包",
-    icon: <Map size={15} aria-hidden="true" />,
-    items: [
-      "H5 / Web 导出工作流（预览与分享）",
-      "Android APK 打包向导（签名、包名、渠道参数）",
-      "iOS 产物导出引导与上架前检查清单",
-      "macOS / Windows 桌面游戏包入口",
-      "抖音小游戏、微信小游戏等目标预设与适配检查",
-      "多平台工程预设切换与打包产物归档"
-    ]
-  },
-  {
-    title: "游戏工程能力参考",
-    icon: <ShieldCheck size={15} aria-hidden="true" />,
-    items: [
-      "UI 安全区域：异形屏可视化与布局检查",
-      "反作弊参考：客户端检测思路与服务端校验配合",
-      "强更新范式：强制升级、维护公告、灰度/分渠道",
-      "游戏数据存档回退：云存档与版本兼容策略",
-      "排行榜标杆实现与防刷参考",
-      "广告接入标杆项目源码模板（供 AI/人工对照）"
-    ]
-  }
-];
-
-function RoadmapDialog({ onClose, onOpenSite, onJoinGroup }: { onClose: () => void; onOpenSite: () => void; onJoinGroup: () => void }) {
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-  return <div className="sponsor-backdrop roadmap-backdrop" role="presentation">
-    <section className="sponsor-dialog roadmap-dialog" role="dialog" aria-modal="true" aria-labelledby="roadmap-dialog-title">
-      <header>
-        <div>
-          <span>规划中 · 尚未全部实现</span>
-          <h2 id="roadmap-dialog-title">TapMakerWork 后续开发规划</h2>
-          <p>下列能力会按迭代推进；具体上线时间以发行说明为准。欢迎在交流群提出优先级建议。部分导出/上架仍依赖 TapTap 官方与各平台规则。</p>
-        </div>
-        <button className="icon-command" aria-label="关闭后续规划" onClick={onClose}><X size={18} /></button>
-      </header>
-      <div className="roadmap-body">
-        {ROADMAP_SECTIONS.map((section) => (
-          <section key={section.title} className="roadmap-section">
-            <h3>{section.icon}{section.title}</h3>
-            <ul>
-              {section.items.map((item) => <li key={item}>{item}</li>)}
-            </ul>
-          </section>
-        ))}
-      </div>
-      <footer>
-        <button onClick={onJoinGroup}><Users size={15} />加入交流群</button>
-        <button onClick={onOpenSite}><ExternalLink size={15} />官网</button>
-        <button className="primary" autoFocus onClick={onClose}>知道了</button>
-      </footer>
-    </section>
-  </div>;
-}
-
-function SponsorDialog({ onClose, onOpenWorks }: { onClose: () => void; onOpenWorks: () => void }) {
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-  return <div className="sponsor-backdrop" role="presentation">
-    <section className="sponsor-dialog" role="dialog" aria-modal="true" aria-labelledby="sponsor-dialog-title">
-      <header>
-        <div><span>自愿支持 · 不影响任何功能</span><h2 id="sponsor-dialog-title">赞赏 TapMakerWork 作者</h2><p>感谢支持研究与持续维护。赞赏完全自愿，与软件功能及开源授权无关。</p></div>
-        <button className="icon-command" aria-label="关闭赞赏窗口" onClick={onClose}><X size={18} /></button>
-      </header>
-      <div className="sponsor-codes">
-        <figure><div><img src={wechatPayImage} alt="作者微信赞赏收款码" /></div><figcaption>微信赞赏</figcaption></figure>
-        <figure><div><img src={alipayImage} alt="作者支付宝赞赏收款码" /></div><figcaption>支付宝赞赏</figcaption></figure>
-      </div>
-      <footer><button onClick={onOpenWorks}><Gamepad2 size={15} />作者游戏品鉴</button><button className="primary" autoFocus onClick={onClose}>完成</button></footer>
-    </section>
-  </div>;
-}
 
 export function App() {
   const [connected, setConnected] = useState(false);
@@ -1427,7 +219,7 @@ export function App() {
   const [device, setDevice] = useState<DeviceProfile>(DEFAULT_DEVICE_PROFILES[0]!);
   const [fps, setFps] = useState(60);
   const [activeTerminal, setActiveTerminal] = useState<LogChannel>("runtime");
-  const [logs, setUncappedLogs] = useState(initialLogs);
+  const [logs, setUncappedLogs] = useState(INITIAL_LOGS);
   const setLogs = useCallback((update: SetStateAction<Record<LogChannel, string[]>>) => {
     setUncappedLogs((current) => capLogChannels(typeof update === "function" ? update(current) : update));
   }, []);
@@ -5879,7 +4671,7 @@ export function App() {
         <PanelResizer orientation="row" label="调节终端高度" onPointerDown={beginLayoutDrag("terminal", false, true)} />
         <nav className="terminal-tabs">
           <span className="terminal-title"><PanelBottom size={14} />终端</span>
-          {channels.map((channel) => <button key={channel.id} aria-pressed={activeTerminal === channel.id} className={activeTerminal === channel.id ? "active" : ""} onClick={() => setActiveTerminal(channel.id)}>{channel.label}</button>)}
+          {LOG_CHANNELS.map((channel) => <button key={channel.id} aria-pressed={activeTerminal === channel.id} className={activeTerminal === channel.id ? "active" : ""} onClick={() => setActiveTerminal(channel.id)}>{channel.label}</button>)}
           <div className="terminal-panel-actions">
             <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: layout.terminal <= 42 ? DEFAULT_LAYOUT.terminal : 40 })}>{layout.terminal <= 42 ? "展开" : "收起"}</button>
             <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: terminalMaxHeight() })}>最大化</button>
@@ -5891,7 +4683,7 @@ export function App() {
             <button
               type="button"
               className="terminal-channel-action"
-              title={`复制「${channels.find((c) => c.id === activeTerminal)?.label ?? "当前"}」全部输出`}
+              title={`复制「${LOG_CHANNELS.find((c) => c.id === activeTerminal)?.label ?? "当前"}」全部输出`}
               onClick={() => {
                 const text = logs[activeTerminal].join("\n");
                 if (!text.trim()) {
@@ -5904,7 +4696,7 @@ export function App() {
             <button
               type="button"
               className="terminal-channel-action"
-              title={`清空「${channels.find((c) => c.id === activeTerminal)?.label ?? "当前"}」输出`}
+              title={`清空「${LOG_CHANNELS.find((c) => c.id === activeTerminal)?.label ?? "当前"}」输出`}
               onClick={() => {
                 setLogs((current) => ({ ...current, [activeTerminal]: [] }));
                 toast("已清空终端", "success");
