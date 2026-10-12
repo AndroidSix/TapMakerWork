@@ -308,7 +308,7 @@ export function RuntimeMirror({
     // Keep both panes on the newest engine frame so property edits and
     // transform commits are visible in the edit view as soon as Runtime paints.
     const timer = window.setInterval(
-      () => void capture(sourceId, false, true, true),
+      () => { if (!document.hidden) void capture(sourceId, false, true, true); },
       mode === "live-edit" ? 220 : 800
     );
     return () => window.clearInterval(timer);

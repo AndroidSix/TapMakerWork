@@ -147,6 +147,8 @@ import {
   BUILTIN_QQ_GROUP_JOIN_URL,
   OFFICIAL_SITE_URL,
   PHOTOPEA_URL,
+  AGENT_FRAME_INTERVAL_MS,
+  AGENT_FRAME_AFTER_EDIT_MS,
   WRITEBACK_SKIP_REASON_TEXT,
   LOG_CHANNELS,
   INITIAL_LOGS,
@@ -784,6 +786,7 @@ export function App() {
   const projectRef = useRef(project);
   projectRef.current = project;
 
+  const lastAgentFrameRef = useRef("");
   const uploadAgentPreviewFrame = useCallback(async () => {
     const capture = window.tapMakerWork?.captureRuntime || window.tapMakerWork?.runtime?.capture;
     const current = projectRef.current;
@@ -793,7 +796,8 @@ export function App() {
         projectName: current.name,
         orientation: previewPanel?.orientation || "portrait"
       });
-      if (!result.ok || !result.dataUrl) return;
+      if (!result.ok || !result.dataUrl || result.dataUrl === lastAgentFrameRef.current) return;
+      lastAgentFrameRef.current = result.dataUrl;
       await fetch(`${API}/api/agent/frame`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -810,9 +814,17 @@ export function App() {
   useEffect(() => {
     if (!project || health?.runtimeScene !== "live") return;
     void uploadAgentPreviewFrame();
-    const timer = window.setInterval(() => { void uploadAgentPreviewFrame(); }, 4_000);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void uploadAgentPreviewFrame();
+    }, AGENT_FRAME_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [project, health?.runtimeScene, uploadAgentPreviewFrame]);
+
+  useEffect(() => {
+    if (!project || health?.runtimeScene !== "live" || !snapshot?.revision) return;
+    const timer = window.setTimeout(() => { void uploadAgentPreviewFrame(); }, AGENT_FRAME_AFTER_EDIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [project, health?.runtimeScene, snapshot?.revision, uploadAgentPreviewFrame]);
 
   const selectNode = useCallback((nodeId: string, additive = false) => {
     setSelectedNodeIds((currentIds) => {
@@ -1902,7 +1914,7 @@ export function App() {
   useEffect(() => {
     if (!runtimeLive || !project) return;
     void refreshRuntimeLogs();
-    const timer = window.setInterval(() => void refreshRuntimeLogs(), 2_000);
+    const timer = window.setInterval(() => { if (!document.hidden) void refreshRuntimeLogs(); }, 2_000);
     return () => window.clearInterval(timer);
   }, [project?.root, refreshRuntimeLogs, runtimeLive]);
   const runtimeScene = health?.runtimeScene || "idle";
@@ -2100,21 +2112,6 @@ export function App() {
   }, [canvasSnapEnabled, markSidecarDirty, scheduleRuntimeEditSync, stageScale, toast]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (document.hidden) return;
-      void fetch(`${API}/api/health`).then((res) => readJsonResponse<Health>(res, "读取状态失败")).then((value) => {
-        setHealth(value);
-        if (value.runtimeSessionId && modeRef.current !== "live-edit" && centerTabRef.current !== "visual") {
-          void fetch(`${API}/api/ui/snapshot`).then((r) => readJsonResponse<UiSnapshot>(r, "读取画布失败")).then((snap) => {
-            setSnapshot((current) => keepValidSelection(current, snap as UiSnapshot, selectedNodeIdRef.current));
-          }).catch(() => undefined);
-        }
-      }).catch(() => undefined);
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
     if (!project) return;
     const refreshStatus = () => {
       if (document.hidden) return;
@@ -2300,22 +2297,24 @@ export function App() {
     }
   }, []);
 
+  const runtimeSceneRef = useRef(health?.runtimeScene);
   useEffect(() => {
-    if (!health?.runtimeSessionId) return;
     const timer = window.setInterval(() => {
       if (document.hidden) return;
       void fetch(`${API}/api/health`).then((res) => readJsonResponse<Health>(res, "读取状态失败")).then((value) => {
-        const prevScene = health.runtimeScene;
+        const prevScene = runtimeSceneRef.current;
+        runtimeSceneRef.current = value.runtimeScene;
         setHealth(value);
+        if (!value.runtimeSessionId) return;
         if (value.snapshotSource) setSnapshotSource(value.snapshotSource);
-        if (value.runtimeScene === "live" && prevScene !== "live") {
+        if (value.runtimeScene === "live" && prevScene !== undefined && prevScene !== "live") {
           void syncFromRuntime();
           toast("真机已进入可同步界面，已拉取活树", "success");
         }
       }).catch(() => undefined);
-    }, 2500);
+    }, 1500);
     return () => window.clearInterval(timer);
-  }, [health?.runtimeSessionId, health?.runtimeScene, syncFromRuntime, toast]);
+  }, [syncFromRuntime, toast]);
 
   const runWorkflowAction = async (action: ProjectWorkflowAction) => {
     setWorkflowBusyAction(action);

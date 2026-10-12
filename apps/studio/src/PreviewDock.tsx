@@ -83,7 +83,10 @@ export function PreviewDock({
       return;
     }
     let active = true;
+    let inFlight = false;
     const capture = async () => {
+      if (inFlight || document.hidden) return;
+      inFlight = true;
       try {
         const result = await captureRuntime({ projectName, orientation: panel?.orientation || "portrait" });
         if (active && result.ok && result.dataUrl) setRuntimeFrame({
@@ -95,6 +98,8 @@ export function PreviewDock({
         });
       } catch {
         // The next capture retries while Runtime remains available.
+      } finally {
+        inFlight = false;
       }
     };
     void capture();

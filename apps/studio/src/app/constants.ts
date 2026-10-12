@@ -5,6 +5,8 @@ export const BUILTIN_QQ_GROUP_NAME = "TapMakerWork工具交流群";
 export const BUILTIN_QQ_GROUP_JOIN_URL = "https://qm.qq.com/q/OCt1HAmHK2";
 export const OFFICIAL_SITE_URL = "https://androidsix.github.io/tapmakerwork-site/";
 export const PHOTOPEA_URL = "https://www.photopea.com/";
+export const AGENT_FRAME_INTERVAL_MS = 10_000;
+export const AGENT_FRAME_AFTER_EDIT_MS = 800;
 
 /** Bridge Lua-writeback skip reasons → what the user should do instead. */
 export const WRITEBACK_SKIP_REASON_TEXT: Record<string, string> = {
