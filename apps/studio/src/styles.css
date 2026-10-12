@@ -526,6 +526,23 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .device-stage { position: relative; flex: 0 0 auto; overflow: hidden; border: 1px solid #465166; border-radius: 5px; background: #111827; box-shadow: 0 18px 60px #0009; }
 .runtime-surface { position: absolute; inset: 0 auto auto 0; transform-origin: top left; overflow: hidden; }
 .safe-area { position: absolute; z-index: 8; border: 1px dashed #e3b34199; pointer-events: none; }
+.safe-area-overlay { position: absolute; inset: 0 auto auto 0; z-index: 7; pointer-events: none; }
+.safe-area-zone { position: absolute; display: flex; align-items: center; justify-content: center; background: repeating-linear-gradient(135deg, #e3b3411f 0 6px, #e3b3410a 6px 12px); }
+.safe-area-zone span { padding: 1px 5px; color: #f0d59a; border-radius: 3px; background: #1a1408cc; font: 9px ui-monospace, monospace; }
+.safe-area-issue { position: absolute; border-radius: 2px; }
+.safe-area-issue.is-unsafe-area { outline: 2px solid #f0a33a; background: #f0a33a22; }
+.safe-area-issue.is-outside-canvas { outline: 2px solid #e5484d; background: #e5484d26; }
+.safe-area-toggle { position: relative; display: inline-flex; align-items: center; gap: 2px; }
+.safe-area-toggle button { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 4px; font: inherit; cursor: pointer; }
+.safe-area-toggle button.active { color: #9ee6bd; border-color: #2a6b4d; }
+.safe-area-toggle button.active.has-issues { color: #f0d59a; border-color: #6b5a2a; }
+.safe-area-toggle .safe-area-count { min-width: 22px; justify-content: center; color: #1a1408; background: #f0a33a; border-color: #f0a33a; font-weight: 700; }
+.safe-area-issue-list { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; display: grid; gap: 2px; width: 280px; max-height: 300px; margin: 0; padding: 4px; overflow: auto; list-style: none; border: 1px solid var(--border); border-radius: 6px; background: #141a24; box-shadow: 0 12px 30px #0009; }
+.safe-area-issue-list button { display: grid; width: 100%; height: auto; gap: 2px; padding: 6px 8px; text-align: left; border: 0; border-left: 3px solid #f0a33a; border-radius: 4px; background: #101620; }
+.safe-area-issue-list button.is-outside-canvas { border-left-color: #e5484d; }
+.safe-area-issue-list button:hover { background: #16263a; }
+.safe-area-issue-list strong { overflow: hidden; color: #dce7f7; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.safe-area-issue-list small { color: var(--muted); font-size: 10px; }
 .runtime-node { min-width: 0; cursor: default; }
 .runtime-node.selected { outline: 2px solid var(--focus); outline-offset: -2px; }
 .runtime-panel { position: relative; outline: 1px dashed #3a465a; outline-offset: -1px; }

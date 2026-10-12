@@ -166,6 +166,8 @@ import {
   clamp
 } from "./app/workspace-storage";
 import { displayValue, runtimeLayoutBox, uiChildren, visualWeight, keepValidSelection } from "./app/ui-values";
+import { findSafeAreaIssues, safeInsetsInCanvas, type SafeAreaIssue } from "./app/safe-area-check";
+import { indexUiNodes, measureCanvasNodes, SafeAreaOverlay, SafeAreaToggle } from "./app/safe-area";
 import { ToastStack } from "./app/ToastStack";
 import { iconForType, PanelResizer, RuntimeNode, HierarchyNode, FileTreeEntry } from "./app/tree-nodes";
 import { InspectorField, InspectorColorField, InspectorAssetField } from "./app/inspector-fields";
@@ -431,6 +433,24 @@ export function App() {
     : rootLayout.h && rootLayout.h > 0
       ? rootLayout.h
       : device.height / device.width * previewWidth;
+  const runtimeSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const [safeAreaCheckEnabled, setSafeAreaCheckEnabled] = useState(true);
+  const [safeAreaIssues, setSafeAreaIssues] = useState<SafeAreaIssue[]>([]);
+  const safeInsets = useMemo(() => safeInsetsInCanvas(device, { width: previewWidth, height: previewHeight }), [device, previewHeight, previewWidth]);
+
+  useEffect(() => {
+    if (!safeAreaCheckEnabled || centerTab !== "visual" || !snapshot) {
+      setSafeAreaIssues((current) => current.length ? [] : current);
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const surface = runtimeSurfaceRef.current;
+      if (!surface) return;
+      const measured = measureCanvasNodes(surface, stageScale, snapshot.root.id, indexUiNodes(snapshot.root));
+      setSafeAreaIssues(findSafeAreaIssues(measured, { width: previewWidth, height: previewHeight }, safeInsets));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [centerTab, previewHeight, previewWidth, safeAreaCheckEnabled, safeInsets, snapshot, stageScale]);
 
   const applyBestCanvasScale = useCallback(() => {
     const viewport = canvasViewportRef.current;
@@ -3436,6 +3456,12 @@ export function App() {
                     <span>{snapshot?.viewport?.physicalWidth && snapshot?.viewport?.physicalHeight ? `物理 ${snapshot.viewport.physicalWidth}×${snapshot.viewport.physicalHeight}` : `DPR ${device.dpr}`}</span>
                     <span>可视化编辑</span>
                     <span className="canvas-source">画布：{canvasSourceLabel}</span>
+                    <SafeAreaToggle
+                      enabled={safeAreaCheckEnabled}
+                      issues={safeAreaIssues}
+                      onToggle={() => setSafeAreaCheckEnabled((enabled) => !enabled)}
+                      onSelectIssue={(id) => selectCanvasNode(id, false)}
+                    />
                     {runtimeLive && (
                       <span className="canvas-source runtime-scene">
                         真机：{runtimeScene === "live" ? "活树可同步" : runtimeScene === "loading" ? "加载/启动画面" : "已连接"}
@@ -3504,7 +3530,8 @@ export function App() {
                         bottom: `${device.safeArea.bottom / device.height * 100}%`,
                         left: `${device.safeArea.left / device.width * 100}%`
                       }} />
-                      <div className="runtime-surface" style={{
+                      {safeAreaCheckEnabled && <SafeAreaOverlay insets={safeInsets} canvas={{ width: previewWidth, height: previewHeight }} scale={stageScale} issues={safeAreaIssues} />}
+                      <div ref={runtimeSurfaceRef} className="runtime-surface" style={{
                         width: previewWidth,
                         height: previewHeight,
                         transform: `scale(${stageScale})`
