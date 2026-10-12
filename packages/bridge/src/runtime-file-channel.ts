@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -325,6 +326,80 @@ export function listRunningPreviewProjects(isAlive: (pid: number) => boolean, ro
     }
   }
   return [...running];
+}
+
+export type PidPresence = "alive" | "missing" | "unknown";
+
+export interface LocalPreviewStatus {
+  state: string;
+  process_alive: boolean | null;
+  runtime_pid?: number;
+  supervisor_pid?: number;
+  session_id?: string;
+  started_at?: string;
+  preview_dir?: string;
+  supervisor_log_path?: string;
+}
+
+interface PreviewSessionFile {
+  state?: unknown;
+  runtime_pid?: unknown;
+  supervisor_pid?: unknown;
+  session_id?: unknown;
+  started_at?: unknown;
+  supervisor_log_path?: unknown;
+}
+
+const STOPPED: LocalPreviewStatus = { state: "stopped", process_alive: false };
+
+function statusFromSession(previewDir: string, session: PreviewSessionFile, presence: (pid: number) => PidPresence): LocalPreviewStatus {
+  if (session.state === "stopped") return { ...STOPPED, preview_dir: previewDir };
+  const runtimePid = Number(session.runtime_pid ?? 0);
+  const supervisorPid = Number(session.supervisor_pid ?? 0);
+  const runtime = presence(runtimePid);
+  const supervisor = presence(supervisorPid);
+  const declared = typeof session.state === "string" && session.state ? session.state : "running";
+  const logPath = typeof session.supervisor_log_path === "string" && session.supervisor_log_path
+    ? session.supervisor_log_path
+    : path.join(previewDir, "supervisor.log");
+  const base: Omit<LocalPreviewStatus, "state" | "process_alive"> = { preview_dir: previewDir, supervisor_log_path: logPath };
+  if (runtimePid > 0) base.runtime_pid = runtimePid;
+  if (supervisorPid > 0) base.supervisor_pid = supervisorPid;
+  if (typeof session.session_id === "string") base.session_id = session.session_id;
+  if (typeof session.started_at === "string") base.started_at = session.started_at;
+  if (runtime === "alive") return { ...base, state: declared, process_alive: true };
+  if (runtime === "unknown") return { ...base, state: declared, process_alive: null };
+  if (supervisor === "alive") return { ...base, state: declared, process_alive: false };
+  return { ...base, state: "stopped", process_alive: false };
+}
+
+/** 直接读本项目的 Maker 预览 session.json 判断状态，不启动 Maker CLI。多个账号目录下取最“活”的一份。 */
+export function readLocalPreviewStatus(
+  projectRoot: string,
+  presence: (pid: number) => PidPresence,
+  roots = runtimeFileSearchRoots()
+): LocalPreviewStatus {
+  let realpath: string;
+  try {
+    realpath = fs.realpathSync(projectRoot);
+  } catch {
+    return STOPPED;
+  }
+  const hash = createHash("sha256").update(realpath).digest("hex");
+  const rank = (status: LocalPreviewStatus) => status.process_alive === true ? 3 : status.process_alive === null ? 2 : status.state !== "stopped" ? 1 : 0;
+  let best: LocalPreviewStatus = STOPPED;
+  for (const root of new Set(roots.filter((candidate) => path.basename(candidate) === "preview"))) {
+    const previewDir = path.join(root, hash);
+    let session: PreviewSessionFile;
+    try {
+      session = JSON.parse(fs.readFileSync(path.join(previewDir, "session.json"), "utf8")) as PreviewSessionFile;
+    } catch {
+      continue;
+    }
+    const status = statusFromSession(previewDir, session, presence);
+    if (rank(status) > rank(best) || (best === STOPPED && status.preview_dir)) best = status;
+  }
+  return best;
 }
 
 export function findRuntimeFileStatus(

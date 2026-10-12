@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
-import Editor, { DiffEditor, type OnMount } from "@monaco-editor/react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
+import type { OnMount } from "@monaco-editor/react";
 import {
   Box,
   ChevronRight,
@@ -107,8 +107,7 @@ import { ProjectCockpit } from "./ProjectCockpit";
 import { RuntimeMirror } from "./RuntimeMirror";
 import { Tip } from "./Tip";
 import { DevTipsPanel } from "./DevTipsPanel";
-import { ImageCompressPanel } from "./ImageCompressPanel";
-import { markNewGameRadarSeen, NewGameRadarPanel, readNewGameRadarSeen } from "./NewGameRadarPanel";
+import { markNewGameRadarSeen, readNewGameRadarSeen } from "./new-game-radar-seen";
 import {
   CoachMark,
   COACH_LIVE_EDIT_KEY,
@@ -147,6 +146,8 @@ import {
   BUILTIN_QQ_GROUP_JOIN_URL,
   OFFICIAL_SITE_URL,
   PHOTOPEA_URL,
+  AGENT_FRAME_INTERVAL_MS,
+  AGENT_FRAME_AFTER_EDIT_MS,
   WRITEBACK_SKIP_REASON_TEXT,
   LOG_CHANNELS,
   INITIAL_LOGS,
@@ -177,6 +178,12 @@ import { useWorkspaceLayout } from "./app/use-workspace-layout";
 import { useDocumentTabs } from "./app/use-document-tabs";
 
 declare const __APP_VERSION__: string;
+
+const CodeEditor = lazy(() => import("./code-editors").then((module) => ({ default: module.CodeEditor })));
+const CodeDiffEditor = lazy(() => import("./code-editors").then((module) => ({ default: module.CodeDiffEditor })));
+const ImageCompressPanel = lazy(() => import("./ImageCompressPanel").then((module) => ({ default: module.ImageCompressPanel })));
+const NewGameRadarPanel = lazy(() => import("./NewGameRadarPanel").then((module) => ({ default: module.NewGameRadarPanel })));
+const editorFallback = <div className="editor-loading">正在加载编辑器…</div>;
 
 export function App() {
   const [connected, setConnected] = useState(false);
@@ -784,6 +791,7 @@ export function App() {
   const projectRef = useRef(project);
   projectRef.current = project;
 
+  const lastAgentFrameRef = useRef("");
   const uploadAgentPreviewFrame = useCallback(async () => {
     const capture = window.tapMakerWork?.captureRuntime || window.tapMakerWork?.runtime?.capture;
     const current = projectRef.current;
@@ -793,7 +801,8 @@ export function App() {
         projectName: current.name,
         orientation: previewPanel?.orientation || "portrait"
       });
-      if (!result.ok || !result.dataUrl) return;
+      if (!result.ok || !result.dataUrl || result.dataUrl === lastAgentFrameRef.current) return;
+      lastAgentFrameRef.current = result.dataUrl;
       await fetch(`${API}/api/agent/frame`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -810,9 +819,17 @@ export function App() {
   useEffect(() => {
     if (!project || health?.runtimeScene !== "live") return;
     void uploadAgentPreviewFrame();
-    const timer = window.setInterval(() => { void uploadAgentPreviewFrame(); }, 4_000);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void uploadAgentPreviewFrame();
+    }, AGENT_FRAME_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [project, health?.runtimeScene, uploadAgentPreviewFrame]);
+
+  useEffect(() => {
+    if (!project || health?.runtimeScene !== "live" || !snapshot?.revision) return;
+    const timer = window.setTimeout(() => { void uploadAgentPreviewFrame(); }, AGENT_FRAME_AFTER_EDIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [project, health?.runtimeScene, snapshot?.revision, uploadAgentPreviewFrame]);
 
   const selectNode = useCallback((nodeId: string, additive = false) => {
     setSelectedNodeIds((currentIds) => {
@@ -1902,7 +1919,7 @@ export function App() {
   useEffect(() => {
     if (!runtimeLive || !project) return;
     void refreshRuntimeLogs();
-    const timer = window.setInterval(() => void refreshRuntimeLogs(), 2_000);
+    const timer = window.setInterval(() => { if (!document.hidden) void refreshRuntimeLogs(); }, 2_000);
     return () => window.clearInterval(timer);
   }, [project?.root, refreshRuntimeLogs, runtimeLive]);
   const runtimeScene = health?.runtimeScene || "idle";
@@ -2100,21 +2117,6 @@ export function App() {
   }, [canvasSnapEnabled, markSidecarDirty, scheduleRuntimeEditSync, stageScale, toast]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (document.hidden) return;
-      void fetch(`${API}/api/health`).then((res) => readJsonResponse<Health>(res, "读取状态失败")).then((value) => {
-        setHealth(value);
-        if (value.runtimeSessionId && modeRef.current !== "live-edit" && centerTabRef.current !== "visual") {
-          void fetch(`${API}/api/ui/snapshot`).then((r) => readJsonResponse<UiSnapshot>(r, "读取画布失败")).then((snap) => {
-            setSnapshot((current) => keepValidSelection(current, snap as UiSnapshot, selectedNodeIdRef.current));
-          }).catch(() => undefined);
-        }
-      }).catch(() => undefined);
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
     if (!project) return;
     const refreshStatus = () => {
       if (document.hidden) return;
@@ -2300,22 +2302,24 @@ export function App() {
     }
   }, []);
 
+  const runtimeSceneRef = useRef(health?.runtimeScene);
   useEffect(() => {
-    if (!health?.runtimeSessionId) return;
     const timer = window.setInterval(() => {
       if (document.hidden) return;
       void fetch(`${API}/api/health`).then((res) => readJsonResponse<Health>(res, "读取状态失败")).then((value) => {
-        const prevScene = health.runtimeScene;
+        const prevScene = runtimeSceneRef.current;
+        runtimeSceneRef.current = value.runtimeScene;
         setHealth(value);
+        if (!value.runtimeSessionId) return;
         if (value.snapshotSource) setSnapshotSource(value.snapshotSource);
-        if (value.runtimeScene === "live" && prevScene !== "live") {
+        if (value.runtimeScene === "live" && prevScene !== undefined && prevScene !== "live") {
           void syncFromRuntime();
           toast("真机已进入可同步界面，已拉取活树", "success");
         }
       }).catch(() => undefined);
-    }, 2500);
+    }, 1500);
     return () => window.clearInterval(timer);
-  }, [health?.runtimeSessionId, health?.runtimeScene, syncFromRuntime, toast]);
+  }, [syncFromRuntime, toast]);
 
   const runWorkflowAction = async (action: ProjectWorkflowAction) => {
     setWorkflowBusyAction(action);
@@ -2947,17 +2951,17 @@ export function App() {
       )}
 
       {compressOpen && (
-        <ImageCompressPanel
+        <Suspense fallback={null}><ImageCompressPanel
           apiBase={API}
           {...(project.root ? { projectRoot: project.root } : {})}
           onClose={() => setCompressOpen(false)}
           onCopy={(text) => void copyText(text)}
           onOpenExternal={openExternalUrl}
-        />
+        /></Suspense>
       )}
 
       {radarOpen && (
-        <NewGameRadarPanel
+        <Suspense fallback={null}><NewGameRadarPanel
           apiBase={API}
           onOpenExternal={openExternalUrl}
           onClose={() => {
@@ -2965,7 +2969,7 @@ export function App() {
             markNewGameRadarSeen();
             setRadarSeen(true);
           }}
-        />
+        /></Suspense>
       )}
 
       {makerConsoleOpen && (
@@ -3372,7 +3376,7 @@ export function App() {
                     {gitDiff.loading ? <div className="git-diff-message"><RefreshCw className="spin" size={22} /><strong>正在读取修改内容…</strong><span>正在准备原始版本与当前版本。</span></div>
                       : gitDiff.error ? <div className="git-diff-message error"><AlertTriangle size={22} /><strong>无法显示更改</strong><span>{gitDiff.error}</span></div>
                         : gitDiff.binary ? <div className="git-diff-message"><FileCode2 size={22} /><strong>二进制文件无法进行文本比较</strong><span>文件状态仍可在左侧源代码管理中操作。</span></div>
-                          : <DiffEditor
+                          : <Suspense fallback={editorFallback}><CodeDiffEditor
                             theme="vs-dark"
                             language={languageForFile(gitDiff.path)}
                             original={gitDiff.original}
@@ -3389,7 +3393,7 @@ export function App() {
                               scrollBeyondLastLine: false,
                               diffAlgorithm: "advanced"
                             }}
-                          />}
+                          /></Suspense>}
                   </div>
                 </section>
               ) : centerTab === "runtime" ? (
@@ -3544,14 +3548,14 @@ export function App() {
                   </div>
                 </div>
               ) : (
-                <Editor
+                <Suspense fallback={editorFallback}><CodeEditor
                   theme="vs-dark"
                   language={languageForFile(selectedFile)}
                   value={code}
                   onChange={(value) => { setCode(value ?? ""); setCodeDirty(true); setSaveState("idle"); }}
                   onMount={onEditorMount}
                   options={{ readOnly: codeReadOnly, minimap: { enabled: false }, fontSize: 13, padding: { top: 14 }, automaticLayout: true }}
-                />
+                /></Suspense>
               )}
             </div>
             {previewDockOpen && centerTab !== "runtime" && (

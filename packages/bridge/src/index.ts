@@ -1,4 +1,5 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { checkBridgeRequest } from "./request-guard.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,6 +63,7 @@ import {
   findRuntimeFileStatus,
   listRunningPreviewProjects,
   normalizeUiTree,
+  readLocalPreviewStatus,
   writeIdeCommandsFile
 } from "./runtime-file-channel.js";
 import { planNodeUpgrade, publicNodeUpgradePlan, runNodeUpgrade } from "./node-upgrade.js";
@@ -303,7 +305,7 @@ async function executeAgentFileRequest(request: AgentFileRequest): Promise<unkno
     case "maker_preview_refresh":
       return bridgeLocalJson("/api/maker/preview/refresh", { method: "POST" });
     case "maker_preview_status":
-      return bridgeLocalJson("/api/maker/preview/status");
+      return bridgeLocalJson("/api/maker/preview/status?detail=1");
     case "maker_preview_logs":
       return bridgeLocalJson("/api/maker/preview/logs");
     case "maker_build":
@@ -721,11 +723,14 @@ async function readJson(request: IncomingMessage, maxBytes = 1_048_576): Promise
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
 }
 
-function validOrigin(request: IncomingMessage): boolean {
-  const hostHeader = request.headers.host;
-  const origin = request.headers.origin;
-  if (hostHeader !== `${host}:${port}`) return false;
-  return !origin || origin === "http://127.0.0.1:4173" || origin.startsWith("file://");
+const requestGuardOptions = { bridgeHost: `${host}:${port}`, allowDevOrigin: process.env.TAPMAKERWORK_PACKAGED !== "1" };
+
+function guardRequest(request: IncomingMessage, pathname: string): ReturnType<typeof checkBridgeRequest> {
+  const result = checkBridgeRequest({ method: request.method, headers: request.headers, pathname }, requestGuardOptions);
+  if (!result.ok) {
+    process.stderr.write(`[TapMakerWork] reject ${result.reason} host=${request.headers.host} origin=${request.headers.origin} url=${request.url}\n`);
+  }
+  return result;
 }
 
 const previewAccountHomes = new Map<string, string>();
@@ -809,14 +814,26 @@ async function previewHome(projectRoot: string): Promise<string> {
   return (await accountFor(projectRoot)).home;
 }
 
+const previewStatusInflight = new Map<string, Promise<unknown>>();
+
+function makerPreviewStatusDetail(runtime: NonNullable<typeof makerRuntime>, projectRoot: string): Promise<unknown> {
+  const pending = previewStatusInflight.get(projectRoot);
+  if (pending) return pending;
+  const next = previewHome(projectRoot)
+    .then((home) => runMakerReadOnly(runtime, projectRoot, "status", undefined, home))
+    .finally(() => previewStatusInflight.delete(projectRoot));
+  previewStatusInflight.set(projectRoot, next);
+  return next;
+}
+
 const server = http.createServer(async (request, response) => {
   try {
-    if (!validOrigin(request)) {
-      process.stderr.write(`[TapMakerWork] reject origin host=${request.headers.host} origin=${request.headers.origin} url=${request.url}\n`);
-      sendJson(response, 403, { error: "invalid_origin" });
+    const url = new URL(request.url || "/", `http://${host}:${port}`);
+    const guard = guardRequest(request, url.pathname);
+    if (!guard.ok) {
+      sendJson(response, 403, { error: guard.reason });
       return;
     }
-    const url = new URL(request.url || "/", `http://${host}:${port}`);
     if (request.method === "OPTIONS") {
       response.writeHead(204, {
         "access-control-allow-origin": "*",
@@ -1953,18 +1970,15 @@ const server = http.createServer(async (request, response) => {
       }
     } else if (request.method === "GET" && url.pathname === "/api/maker/preview/status") {
       if (!project) throw new Error("project_not_open");
-      if (!makerRuntime) throw new Error("maker_cli_not_found");
-      sendJson(response, 200, await runMakerReadOnly(makerRuntime, project.root, "status", undefined, await previewHome(project.root)));
+      if (url.searchParams.get("detail") === "1") {
+        if (!makerRuntime) throw new Error("maker_cli_not_found");
+        sendJson(response, 200, await makerPreviewStatusDetail(makerRuntime, project.root));
+      } else {
+        sendJson(response, 200, readLocalPreviewStatus(project.root, probeProcessPresence));
+      }
     } else if (request.method === "GET" && url.pathname === "/api/maker/preview/logs") {
       if (!project) throw new Error("project_not_open");
-      if (!makerRuntime) throw new Error("maker_cli_not_found");
-      let supervisorLogPath: string | undefined;
-      try {
-        const status = await runMakerReadOnly(makerRuntime, project.root, "status", undefined, await previewHome(project.root)) as { supervisor_log_path?: string };
-        supervisorLogPath = status?.supervisor_log_path;
-      } catch {
-        // status may fail when preview never started
-      }
+      const supervisorLogPath = readLocalPreviewStatus(project.root, probeProcessPresence).supervisor_log_path;
       const logs = readMakerPreviewLogs(project.root, supervisorLogPath);
       sendJson(response, 200, { ...logs, supervisorLogPath });
     } else if (request.method === "GET" && url.pathname === "/api/maker/preview/running") {
@@ -2252,7 +2266,7 @@ const server = http.createServer(async (request, response) => {
 const sockets = new Set<WebSocket>();
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
-  if (!validOrigin(request) || request.url !== "/ws") {
+  if (request.url !== "/ws" || !guardRequest(request, "/ws").ok) {
     socket.destroy();
     return;
   }

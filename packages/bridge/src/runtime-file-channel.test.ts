@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +8,7 @@ import {
   findRuntimeFileStatus,
   listRunningPreviewProjects,
   MAX_SNAPSHOT_PARTS,
+  readLocalPreviewStatus,
   writeIdeCommandsFile
 } from "./runtime-file-channel.js";
 
@@ -182,5 +184,56 @@ describe("runtime file channel", () => {
 
     const running = listRunningPreviewProjects((pid) => pid === 11 || pid === 22, [previewDir, previewDir]);
     expect(running.sort()).toEqual(["/p/a", "/p/b"]);
+  });
+
+  describe("readLocalPreviewStatus", () => {
+    const setup = () => {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-proj-"));
+      const homeA = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-home-a-"));
+      const homeB = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-home-b-"));
+      temporary.push(projectRoot, homeA, homeB);
+      const hash = createHash("sha256").update(fs.realpathSync(projectRoot)).digest("hex");
+      const roots = [path.join(homeA, "preview"), path.join(homeB, "preview")];
+      const writeSession = (root: string, session: Record<string, unknown>) => {
+        fs.mkdirSync(path.join(root, hash), { recursive: true });
+        fs.writeFileSync(path.join(root, hash, "session.json"), JSON.stringify(session), "utf8");
+      };
+      return { projectRoot, roots, hash, writeSession };
+    };
+    const alive = (...pids: number[]) => (pid: number) => pids.includes(pid) ? "alive" as const : "missing" as const;
+
+    it("reports stopped without a session", () => {
+      const { projectRoot, roots } = setup();
+      expect(readLocalPreviewStatus(projectRoot, alive(), roots)).toEqual({ state: "stopped", process_alive: false });
+    });
+
+    it("reports running when the runtime pid is alive and prefers the live account home", () => {
+      const { projectRoot, roots, hash, writeSession } = setup();
+      writeSession(roots[0], { state: "running", runtime_pid: 5, supervisor_pid: 6 });
+      writeSession(roots[1], { state: "running", runtime_pid: 7, supervisor_pid: 8, session_id: "s1" });
+      const status = readLocalPreviewStatus(projectRoot, alive(7), roots);
+      expect(status).toMatchObject({ state: "running", process_alive: true, runtime_pid: 7, session_id: "s1" });
+      expect(status.supervisor_log_path).toBe(path.join(roots[1], hash, "supervisor.log"));
+    });
+
+    it("keeps a starting state while only the supervisor is alive", () => {
+      const { projectRoot, roots, writeSession } = setup();
+      writeSession(roots[0], { state: "starting", runtime_pid: 0, supervisor_pid: 6 });
+      expect(readLocalPreviewStatus(projectRoot, alive(6), roots)).toMatchObject({ state: "starting", process_alive: false });
+    });
+
+    it("treats a session whose processes are gone as stopped but keeps its log path", () => {
+      const { projectRoot, roots, hash, writeSession } = setup();
+      writeSession(roots[0], { state: "running", runtime_pid: 5, supervisor_pid: 6 });
+      const status = readLocalPreviewStatus(projectRoot, alive(), roots);
+      expect(status).toMatchObject({ state: "stopped", process_alive: false });
+      expect(status.supervisor_log_path).toBe(path.join(roots[0], hash, "supervisor.log"));
+    });
+
+    it("reports unknown liveness as null", () => {
+      const { projectRoot, roots, writeSession } = setup();
+      writeSession(roots[0], { state: "running", runtime_pid: 5 });
+      expect(readLocalPreviewStatus(projectRoot, () => "unknown", roots)).toMatchObject({ state: "running", process_alive: null });
+    });
   });
 });
