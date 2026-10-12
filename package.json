@@ -27,7 +27,8 @@
     "test": "npm run test -w @tapmakerwork/protocol && npm run test -w @tapmakerwork/bridge && npm run test -w @tapmakerwork/studio && npm run test -w @tapmakerwork/desktop",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
-    "smoke": "node scripts/smoke/studio-smoke.mjs"
+    "smoke": "node scripts/smoke/studio-smoke.mjs",
+    "smoke:packaged": "node scripts/smoke/packaged-smoke.mjs"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
