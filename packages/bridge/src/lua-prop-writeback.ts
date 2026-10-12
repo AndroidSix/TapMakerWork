@@ -1082,12 +1082,9 @@ function collectStringLiteralHits(
     // Only direct string arguments of call sites (`makeButton("开始", …)`); literals inside
     // `opts.text or "确定"`, comparisons or concatenations are shared defaults, not one widget.
     const visit = (expression: Expression) => {
-      const callArguments = expression.type === "CallExpression"
-        ? expression.arguments
-        : expression.type === "StringCallExpression"
-          ? [expression.argument]
-          : [];
-      if (!callArguments.length || NON_UI_CALLS.has(memberPath(expression.base as Expression) ?? "")) return;
+      if (expression.type !== "CallExpression" && expression.type !== "StringCallExpression") return;
+      const callArguments = expression.type === "CallExpression" ? expression.arguments : [expression.argument];
+      if (!callArguments.length || NON_UI_CALLS.has(memberPath(expression.base) ?? "")) return;
       for (const argument of callArguments) {
         if (argument.type !== "StringLiteral") continue;
         const located = argument as Expression & Located;
