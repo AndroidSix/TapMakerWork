@@ -176,6 +176,14 @@ function defaultDailyRange(days = 7): { from: string; to: string } {
   };
 }
 
+const DAILY_PRESETS = [
+  { days: 1, label: "今日" },
+  { days: 3, label: "近3天" },
+  { days: 7, label: "近7天" },
+  { days: 14, label: "近14天" },
+  { days: 30, label: "近30天" }
+];
+
 function dayKeyFromTsClient(tsSec: number): string {
   const date = new Date(tsSec * 1000);
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
@@ -698,26 +706,30 @@ export function NewGameRadarPanel({ apiBase, onClose, onOpenExternal }: NewGameR
                 <input type="date" value={dailyTo} onChange={(event) => setDailyTo(event.target.value)} />
               </label>
               <nav className="radar-subtabs" aria-label="快捷范围">
-                {[7, 14, 30].map((days) => (
-                  <button
-                    key={days}
-                    type="button"
-                    onClick={() => {
-                      const range = defaultDailyRange(days);
-                      setDailyFrom(range.from);
-                      setDailyTo(range.to);
-                      void loadDaily({ from: range.from, to: range.to });
-                    }}
-                  >
-                    近{days}天
-                  </button>
-                ))}
+                {DAILY_PRESETS.map(({ days, label }) => {
+                  const range = defaultDailyRange(days);
+                  return (
+                    <button
+                      key={days}
+                      type="button"
+                      className={dailyFrom === range.from && dailyTo === range.to ? "active" : ""}
+                      disabled={busy != null}
+                      onClick={() => {
+                        setDailyFrom(range.from);
+                        setDailyTo(range.to);
+                        void loadDaily({ from: range.from, to: range.to });
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
               </nav>
               <button type="button" disabled={busy != null} onClick={() => void loadDaily({ from: dailyFrom, to: dailyTo })}>
                 应用范围
               </button>
             </div>
-            <p className="radar-footnote">基于 TapTap 制造「新上」榜的上线时间，默认近 7 天，最长 30 天。汇总最热 / 高分 / 赛道与逐日上线。</p>
+            <p className="radar-footnote">基于 TapTap 制造「新上」榜的上线时间，默认近 7 天，可选今日 / 近 3 天，最长 30 天。汇总最热 / 高分 / 赛道与逐日上线。</p>
             {dailyMessage && <p className="radar-message">{dailyMessage}</p>}
             {busy === "daily" && !dailyReport ? <p className="radar-message">正在拉取每日上线（可能需数秒）…</p> : null}
 

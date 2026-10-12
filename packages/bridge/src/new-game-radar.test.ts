@@ -7,6 +7,7 @@ import {
   buildScoreBuckets,
   computeRisingScore,
   defaultDailyRange,
+  isDailyCacheFresh,
   mapTrack,
   normalizeMakerApp,
   normalizeSteamItem,
@@ -185,5 +186,19 @@ describe("new-game-radar", () => {
     expect(report.highlights.bestScore?.title).toBe("高分");
     expect(report.topTracks[0]?.track).toBeTruthy();
     expect(report.byDay.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("refetches today's launches once the daily cache is stale", () => {
+    const now = new Date(2026, 9, 12, 15, 0, 0).getTime();
+    const fetchedAt = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
+    expect(isDailyCacheFresh(fetchedAt(10), "2026-10-12", now)).toBe(true);
+    expect(isDailyCacheFresh(fetchedAt(120), "2026-10-12", now)).toBe(false);
+    expect(isDailyCacheFresh(fetchedAt(120), "2026-10-11", now)).toBe(true);
+    expect(isDailyCacheFresh("broken", "2026-10-11", now)).toBe(false);
+  });
+
+  it("supports a single-day range for today", () => {
+    const range = defaultDailyRange(1);
+    expect(range.from).toBe(range.to);
   });
 });

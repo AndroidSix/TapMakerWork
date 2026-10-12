@@ -770,6 +770,7 @@ const DAILY_PAGE_SIZE = 40;
 const DAILY_MAX_PAGES = 60;
 const DAILY_MAX_RANGE_DAYS = 30;
 const DAILY_CACHE_BUFFER_DAYS = 30;
+const DAILY_CACHE_FRESH_MS = 30 * 60_000;
 
 function dailyCachePath(): string {
   return path.join(configDir(), "new-game-radar-daily.json");
@@ -822,6 +823,13 @@ function clampDailyRange(from: string, to: string): { from: string; to: string }
     from = dayKeyFromTs(fromSec);
   }
   return { from, to };
+}
+
+/** 缓存半小时内视为新鲜；区间在抓取之前就已结束时，历史数据不会再变。 */
+export function isDailyCacheFresh(fetchedAt: string, rangeTo: string, now = Date.now()): boolean {
+  const fetchedMs = Date.parse(fetchedAt);
+  if (!Number.isFinite(fetchedMs)) return false;
+  return now - fetchedMs < DAILY_CACHE_FRESH_MS || endOfLocalDay(rangeTo) * 1000 < fetchedMs;
 }
 
 function readDailyCache(): DailyLaunchCache | null {
@@ -980,7 +988,12 @@ export async function getDailyLaunchReport(options: {
   const needSince = startOfLocalDay(range.from);
   const cacheSinceTarget = Math.min(needSince, startOfLocalDay(defaultDailyRange(DAILY_CACHE_BUFFER_DAYS).from));
   const cache = readDailyCache();
-  const cacheCovers = Boolean(cache && cache.sinceSec <= needSince && cache.entries.length > 0);
+  const cacheCovers = Boolean(
+    cache
+    && cache.sinceSec <= needSince
+    && cache.entries.length > 0
+    && isDailyCacheFresh(cache.fetchedAt, range.to)
+  );
 
   if (!options.refresh && cacheCovers && cache) {
     return buildDailyReport(cache.entries, range.from, range.to, {
