@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import https from "node:https";
 import type { IncomingHttpHeaders } from "node:http";
+import { hashBytes, openCompressCache, type CompressCache } from "./image-compress-cache.js";
 import { compressLocal, detectLocalEngines, localInstallHint } from "./local-compress.js";
 import { writeFileAtomic } from "./project.js";
 
@@ -24,6 +25,9 @@ export interface ImageCompressFileResult {
   path: string;
   success: boolean;
   skipped?: boolean;
+  cached?: boolean;
+  backedUp?: boolean;
+  reverted?: boolean;
   engine?: string;
   beforeBytes?: number;
   afterBytes?: number;
@@ -43,6 +47,8 @@ export interface ImageCompressProgress {
   current?: string;
   compressed: number;
   skipped: number;
+  /** 内容哈希命中缓存而跳过的数量（包含在 skipped 中）。 */
+  cached: number;
   failed: number;
   savedBytes: number;
   tinyEnabled: boolean;
@@ -354,10 +360,17 @@ async function compressOne(filePath: string, tiny: TinySession | null): Promise<
   return local.ok || local.skipped ? local : result;
 }
 
+export function compressBackupPath(backupDir: string, fileIndex: number, filePath: string): string {
+  return path.join(backupDir, `${fileIndex}${path.extname(filePath).toLowerCase()}`);
+}
+
 export async function runImageCompress(options: {
   target: string;
   projectRoot?: string;
   recursive?: boolean;
+  force?: boolean;
+  backupDir?: string;
+  cache?: CompressCache;
   signal?: AbortSignal;
   onProgress?: (progress: ImageCompressProgress) => void;
   compress?: (filePath: string) => Promise<CompressAttempt>;
@@ -365,6 +378,7 @@ export async function runImageCompress(options: {
   const settings = readImageCompressSettings();
   const target = path.resolve(options.target);
   const recursive = options.recursive !== false;
+  const cache = options.cache ?? openCompressCache();
   const progress: ImageCompressProgress = {
     ok: false,
     state: "running",
@@ -373,6 +387,7 @@ export async function runImageCompress(options: {
     processed: 0,
     compressed: 0,
     skipped: 0,
+    cached: 0,
     failed: 0,
     savedBytes: 0,
     tinyEnabled: settings.tinyEnabled,
@@ -384,6 +399,7 @@ export async function runImageCompress(options: {
   };
   const emit = () => options.onProgress?.({ ...progress, files: [...progress.files] });
   const finish = (state: ImageCompressJobState, error?: string): ImageCompressProgress => {
+    cache.save();
     delete progress.current;
     progress.state = state;
     progress.ok = state === "done" && progress.failed === 0;
@@ -408,10 +424,19 @@ export async function runImageCompress(options: {
 
   for (const filePath of files) {
     if (options.signal?.aborted) return finish("cancelled");
+    const original = fs.readFileSync(filePath);
+    const beforeBytes = original.length;
+    const originalHash = hashBytes(original);
+    if (!options.force && cache.has(originalHash)) {
+      progress.skipped += 1;
+      progress.cached += 1;
+      progress.files.push({ path: filePath, success: false, skipped: true, cached: true, beforeBytes, afterBytes: beforeBytes, durationMs: 0 });
+      progress.processed += 1;
+      continue;
+    }
     progress.current = filePath;
     emit();
     const startedAt = Date.now();
-    const beforeBytes = fs.statSync(filePath).size;
     let result: CompressAttempt;
     try {
       result = await compress(filePath);
@@ -421,11 +446,24 @@ export async function runImageCompress(options: {
     const timing = { beforeBytes, durationMs: Date.now() - startedAt };
 
     if (result.ok && result.bytes) {
+      if (options.backupDir) {
+        fs.mkdirSync(options.backupDir, { recursive: true });
+        fs.writeFileSync(compressBackupPath(options.backupDir, progress.files.length, filePath), original);
+      }
       writeFileAtomic(filePath, result.bytes, fs.statSync(filePath).mode);
+      cache.remember(hashBytes(result.bytes));
       progress.compressed += 1;
       progress.savedBytes += Math.max(0, beforeBytes - result.bytes.length);
-      progress.files.push({ path: filePath, success: true, ...(result.engine ? { engine: result.engine } : {}), ...timing, afterBytes: result.bytes.length });
+      progress.files.push({
+        path: filePath,
+        success: true,
+        ...(options.backupDir ? { backedUp: true } : {}),
+        ...(result.engine ? { engine: result.engine } : {}),
+        ...timing,
+        afterBytes: result.bytes.length
+      });
     } else if (result.skipped) {
+      cache.remember(originalHash);
       progress.skipped += 1;
       progress.files.push({ path: filePath, success: false, skipped: true, ...(result.engine ? { engine: result.engine } : {}), ...timing, afterBytes: beforeBytes });
     } else {
@@ -437,4 +475,19 @@ export async function runImageCompress(options: {
   }
 
   return finish("done");
+}
+
+export function revertCompressedFile(progress: ImageCompressProgress, fileIndex: number, backupDir: string, cache: CompressCache = openCompressCache()): ImageCompressFileResult {
+  const file = progress.files[fileIndex];
+  if (!file?.success || !file.backedUp || file.reverted) throw new Error("file_not_revertable");
+  const backup = compressBackupPath(backupDir, fileIndex, file.path);
+  if (!fs.existsSync(backup)) throw new Error("backup_missing");
+  const original = fs.readFileSync(backup);
+  writeFileAtomic(file.path, original, fs.statSync(file.path).mode);
+  cache.remember(hashBytes(original));
+  cache.save();
+  file.reverted = true;
+  progress.compressed -= 1;
+  progress.savedBytes -= Math.max(0, (file.beforeBytes ?? 0) - (file.afterBytes ?? 0));
+  return file;
 }

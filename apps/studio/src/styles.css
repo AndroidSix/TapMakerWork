@@ -2120,6 +2120,18 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .image-compress-files li.is-failed span { color: #ffb3b3; }
 .image-compress-files li small { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: #77889e; white-space: nowrap; }
 .image-compress-files .image-compress-empty { display: block; color: var(--muted); border-left-color: transparent; }
+.image-compress-files li.is-active { background: #16263a; }
+.image-compress-file-open { display: grid; gap: 2px; min-width: 0; padding: 0; color: inherit; text-align: left; background: none; border: 0; cursor: pointer; }
+.image-compress-file-open:hover strong { color: #9fd0ff; }
+.image-compress-force { display: inline-flex; align-items: center; gap: 5px; margin-right: auto; color: var(--muted); font-size: 11px; cursor: pointer; }
+.image-compress-compare { display: grid; gap: 8px; padding: 10px; border: 1px solid #2c4a6e; border-radius: 6px; background: #0f1724; }
+.image-compress-compare header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.image-compress-compare header strong { overflow: hidden; color: #dce7f7; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.image-compress-compare header button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 4px; cursor: pointer; }
+.image-compress-compare-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.image-compress-compare figure { display: grid; gap: 4px; margin: 0; }
+.image-compress-compare img { width: 100%; height: 200px; object-fit: contain; border-radius: 4px; background: repeating-conic-gradient(#1b2433 0 25%, #121a26 0 50%) 0 0 / 16px 16px; }
+.image-compress-compare figcaption { color: var(--muted); font-size: 11px; text-align: center; }
 .image-compress-panel .desktop-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .image-compress-panel .desktop-card-heading p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .image-compress-panel .desktop-card-actions { align-items: center; }

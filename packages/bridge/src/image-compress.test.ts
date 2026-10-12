@@ -6,9 +6,11 @@ import {
   defaultImageCompressSettings,
   isTooBroadCompressTarget,
   readImageCompressSettings,
+  revertCompressedFile,
   runImageCompress,
   writeImageCompressSettings
 } from "./image-compress.js";
+import { hashBytes, memoryCompressCache, openCompressCache } from "./image-compress-cache.js";
 import { BUILTIN_COMMUNITY } from "./community-config.js";
 
 describe("community builtin", () => {
@@ -64,7 +66,7 @@ describe("image compress progress", () => {
     roots.push(root);
     for (const name of names) {
       fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
-      fs.writeFileSync(path.join(root, name), Buffer.alloc(100, 1));
+      fs.writeFileSync(path.join(root, name), Buffer.from(name.padEnd(100, "x")));
     }
     return root;
   }
@@ -74,6 +76,7 @@ describe("image compress progress", () => {
     const updates: Array<{ processed: number; current?: string }> = [];
     const result = await runImageCompress({
       target: root,
+      cache: memoryCompressCache(),
       onProgress: (progress) => updates.push({ processed: progress.processed, ...(progress.current ? { current: progress.current } : {}) }),
       compress: async (filePath) => filePath.endsWith("b.png")
         ? { ok: false, error: "boom" }
@@ -95,6 +98,7 @@ describe("image compress progress", () => {
     const controller = new AbortController();
     const result = await runImageCompress({
       target: root,
+      cache: memoryCompressCache(),
       signal: controller.signal,
       compress: async () => {
         controller.abort();
@@ -106,9 +110,54 @@ describe("image compress progress", () => {
   });
 
   it("fails fast on a missing target", async () => {
-    const result = await runImageCompress({ target: path.join(os.tmpdir(), "tapmakerwork-missing-dir-xyz") });
+    const result = await runImageCompress({ target: path.join(os.tmpdir(), "tapmakerwork-missing-dir-xyz"), cache: memoryCompressCache() });
     expect(result.state).toBe("failed");
     expect(result.error).toContain("路径不存在");
+  });
+
+  it("skips files whose content hash is cached unless forced", async () => {
+    const root = makeImages(["a.png", "b.png"]);
+    const cache = memoryCompressCache();
+    const shrink = async () => ({ ok: true, engine: "fake", bytes: Buffer.alloc(40, 2) });
+    const first = await runImageCompress({ target: root, cache, compress: async (filePath) => filePath.endsWith("a.png") ? shrink() : { ok: false, skipped: true } });
+    expect(first).toMatchObject({ compressed: 1, skipped: 1, cached: 0 });
+
+    let calls = 0;
+    const second = await runImageCompress({ target: root, cache, compress: async () => { calls += 1; return { ok: false, skipped: true }; } });
+    expect(second).toMatchObject({ compressed: 0, skipped: 2, cached: 2 });
+    expect(second.files.every((file) => file.cached)).toBe(true);
+    expect(calls).toBe(0);
+
+    await runImageCompress({ target: root, cache, force: true, compress: async () => { calls += 1; return { ok: false, skipped: true }; } });
+    expect(calls).toBe(2);
+  });
+
+  it("backs up originals and reverts a compressed file", async () => {
+    const root = makeImages(["a.png"]);
+    const backupDir = path.join(root, ".backup");
+    const cache = memoryCompressCache();
+    const original = fs.readFileSync(path.join(root, "a.png"));
+    const result = await runImageCompress({ target: root, cache, backupDir, compress: async () => ({ ok: true, bytes: Buffer.alloc(40, 2) }) });
+    expect(result.files[0]).toMatchObject({ success: true, backedUp: true });
+
+    revertCompressedFile(result, 0, backupDir, cache);
+    expect(fs.readFileSync(path.join(root, "a.png"))).toEqual(original);
+    expect(result).toMatchObject({ compressed: 0, savedBytes: 0 });
+    expect(result.files[0]?.reverted).toBe(true);
+    expect(cache.has(hashBytes(original))).toBe(true);
+    expect(() => revertCompressedFile(result, 0, backupDir, cache)).toThrow("file_not_revertable");
+  });
+});
+
+describe("compress cache file", () => {
+  it("persists remembered hashes", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-compress-cache-"));
+    const cachePath = path.join(dir, "cache.json");
+    const cache = openCompressCache(cachePath);
+    cache.remember("abc");
+    cache.save();
+    expect(openCompressCache(cachePath).has("abc")).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 

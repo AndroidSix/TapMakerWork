@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   buildAssetSizeReport,
   listTrashedAssets,
@@ -6,7 +7,8 @@ import {
   restoreTrashedAssets
 } from "../asset-trash.js";
 import { readJson, sendJson } from "../http-json.js";
-import { listProjectAssets } from "../ide-tools.js";
+import { listProjectAssets, type AssetEntry } from "../ide-tools.js";
+import { hashFile, openCompressCache } from "../image-compress-cache.js";
 import type { BridgeRoute } from "./route-table.js";
 
 function stringList(value: unknown, error: string): string[] {
@@ -27,7 +29,15 @@ export function createAssetRoutes({ projectRoot }: { projectRoot: () => string |
       handle({ response }) {
         const root = requireRoot();
         const trash = listTrashedAssets(root);
-        sendJson(response, 200, { report: buildAssetSizeReport(listProjectAssets(root), trash), trash });
+        const compressCache = openCompressCache();
+        const isAlreadyCompressed = (asset: AssetEntry) => {
+          try {
+            return compressCache.has(hashFile(path.join(root, asset.path)));
+          } catch {
+            return false;
+          }
+        };
+        sendJson(response, 200, { report: buildAssetSizeReport(listProjectAssets(root), trash, isAlreadyCompressed), trash });
       }
     },
     {

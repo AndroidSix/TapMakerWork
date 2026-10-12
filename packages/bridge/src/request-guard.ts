@@ -6,7 +6,8 @@ export const DEV_STUDIO_ORIGINS = ["http://127.0.0.1:4173", "http://localhost:41
 export const PASSIVE_IMAGE_PATHS = new Set([
   "/api/project/asset",
   "/api/maker/qrcode/image",
-  "/api/tools/new-game-radar/icon"
+  "/api/tools/new-game-radar/icon",
+  "/api/tools/image-compress/preview"
 ]);
 
 export interface RequestGuardOptions {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Copy, ExternalLink, FolderOpen, Image as ImageIcon, Loader2, RefreshCw, Square, X } from "lucide-react";
+import { Copy, ExternalLink, FolderOpen, Image as ImageIcon, Loader2, RefreshCw, RotateCcw, Square, X } from "lucide-react";
 import { formatBytes } from "./app/format";
 
 interface CompressSettings {
@@ -17,6 +17,9 @@ interface CompressFileResult {
   path: string;
   success: boolean;
   skipped?: boolean;
+  cached?: boolean;
+  backedUp?: boolean;
+  reverted?: boolean;
   engine?: string;
   beforeBytes?: number;
   afterBytes?: number;
@@ -33,6 +36,7 @@ interface CompressJob {
   current?: string;
   compressed: number;
   skipped: number;
+  cached?: number;
   failed: number;
   savedBytes: number;
   engine: string;
@@ -67,7 +71,8 @@ function formatDuration(ms: number): string {
 }
 
 function fileStatus(file: CompressFileResult): Exclude<FileFilter, "all"> {
-  if (file.success) return "compressed";
+  if (file.success && !file.reverted) return "compressed";
+  if (file.reverted) return "skipped";
   return file.skipped ? "skipped" : "failed";
 }
 
@@ -75,6 +80,8 @@ function fileDetail(file: CompressFileResult): string {
   if (file.error) return file.error;
   const before = file.beforeBytes ?? 0;
   const after = file.afterBytes ?? before;
+  if (file.reverted) return `${formatBytes(before)} · 已还原原图，之后不再压缩`;
+  if (file.cached) return `${formatBytes(before)} · 上次已处理且内容未变，跳过`;
   if (file.skipped) return `${formatBytes(before)} · 已是最优，未改动`;
   const ratio = before > 0 ? Math.round((1 - after / before) * 100) : 0;
   return `${formatBytes(before)} → ${formatBytes(after)}（-${ratio}%）`;
@@ -98,6 +105,8 @@ export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOp
   const [busy, setBusy] = useState<"load" | "save" | null>(null);
   const [job, setJob] = useState<CompressJob | null>(null);
   const [fileFilter, setFileFilter] = useState<FileFilter>("all");
+  const [force, setForce] = useState(false);
+  const [compareIndex, setCompareIndex] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [message, setMessage] = useState<string | null>(null);
   const running = job?.state === "running";
@@ -206,11 +215,12 @@ export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOp
     }
     setMessage(null);
     setFileFilter("all");
+    setCompareIndex(null);
     try {
       const response = await fetch(`${apiBase}/api/tools/image-compress`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "run", target: target.trim(), recursive: true })
+        body: JSON.stringify({ action: "run", target: target.trim(), recursive: true, force })
       });
       const data = await response.json() as { job?: CompressJob; error?: string };
       if (data.job) {
@@ -221,7 +231,23 @@ export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOp
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, [apiBase, target]);
+  }, [apiBase, force, target]);
+
+  const revertFile = useCallback(async (fileIndex: number) => {
+    try {
+      const response = await fetch(`${apiBase}/api/tools/image-compress/revert`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ index: fileIndex })
+      });
+      const data = await response.json() as { job?: CompressJob; error?: string };
+      if (!response.ok || !data.job) throw new Error(data.error || `HTTP ${response.status}`);
+      setJob(data.job);
+      setMessage("已还原原图，并记入缓存：之后的压缩会跳过这张图。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiBase]);
 
   const cancelCompress = useCallback(async () => {
     await fetch(`${apiBase}/api/tools/image-compress`, {
@@ -233,9 +259,12 @@ export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOp
   }, [apiBase]);
 
   const visibleFiles = useMemo(() => {
-    const files = job?.files ?? [];
-    return [...files].reverse().filter((file) => fileFilter === "all" || fileStatus(file) === fileFilter);
+    const indexed = (job?.files ?? []).map((file, index) => ({ file, index }));
+    return indexed.reverse().filter(({ file }) => fileFilter === "all" || fileStatus(file) === fileFilter);
   }, [fileFilter, job?.files]);
+  const compareFile = compareIndex == null ? undefined : job?.files[compareIndex];
+  const previewUrl = (fileIndex: number, side: "before" | "after", file: CompressFileResult) =>
+    `${apiBase}/api/tools/image-compress/preview?index=${fileIndex}&side=${side}&v=${encodeURIComponent(`${job?.startedAt}-${file.reverted ? 1 : 0}`)}`;
 
   const body = (
     <div className="image-compress-panel">
@@ -319,13 +348,17 @@ export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOp
           <button type="button" onClick={() => setTarget(defaultTarget)} disabled={!defaultTarget}>恢复默认</button>
         </div>
         <div className="desktop-card-actions">
+          <label className="image-compress-force">
+            <input type="checkbox" checked={force} onChange={(event) => setForce(event.target.checked)} />
+            忽略缓存，全部重新压缩
+          </label>
           <button type="button" className="primary" disabled={running} onClick={() => void runCompress()}>
             {running ? "压缩中…" : "开始压缩"}
           </button>
           {running && (
             <button type="button" onClick={() => void cancelCompress()}><Square size={12} />停止</button>
           )}
-          <span className="desktop-card-note">{tinyEnabled ? "优先 Tiny，失败回退本地" : "使用本地压缩（无需 Tiny）"}</span>
+          <span className="desktop-card-note">{tinyEnabled ? "优先 Tiny，失败回退本地" : "使用本地压缩（无需 Tiny）"} · 已压缩且未改动的图片自动跳过</span>
         </div>
       </section>
 
@@ -354,6 +387,7 @@ export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOp
             {job.total ? ` · ${Math.round((job.processed / job.total) * 100)}%` : ""}
             {` · 用时 ${formatDuration((job.finishedAt ? Date.parse(job.finishedAt) : now) - Date.parse(job.startedAt))}`}
             {job.engine ? ` · ${job.engine}` : ""}
+            {job.cached ? ` · 缓存跳过 ${job.cached}` : ""}
           </p>
           <p className="image-compress-job-meta" title={job.target}>目录：{job.target}</p>
           {job.current && <p className="image-compress-current">正在处理：{relativeTo(job.target, job.current)}</p>}
@@ -375,14 +409,48 @@ export function ImageCompressPanel({ apiBase, projectRoot, onClose, onCopy, onOp
           <ol className="image-compress-files">
             {visibleFiles.length === 0 ? (
               <li className="image-compress-empty">{running ? "等待第一张图片处理完成…" : "没有符合条件的文件"}</li>
-            ) : visibleFiles.map((file) => (
-              <li key={file.path} className={`is-${fileStatus(file)}`}>
-                <strong title={file.path}>{relativeTo(job.target, file.path)}</strong>
-                <span>{fileDetail(file)}</span>
+            ) : visibleFiles.map(({ file, index }) => (
+              <li key={file.path} className={`is-${fileStatus(file)}${compareIndex === index ? " is-active" : ""}`}>
+                {file.success ? (
+                  <button type="button" className="image-compress-file-open" title="点击查看压缩前后对比" onClick={() => setCompareIndex(compareIndex === index ? null : index)}>
+                    <strong title={file.path}>{relativeTo(job.target, file.path)}</strong>
+                    <span>{fileDetail(file)}</span>
+                  </button>
+                ) : (
+                  <>
+                    <strong title={file.path}>{relativeTo(job.target, file.path)}</strong>
+                    <span>{fileDetail(file)}</span>
+                  </>
+                )}
                 <small>{[file.engine, file.durationMs != null ? formatDuration(file.durationMs) : ""].filter(Boolean).join(" · ")}</small>
               </li>
             ))}
           </ol>
+
+          {compareFile && compareIndex != null && (
+            <section className="image-compress-compare" aria-label="压缩前后对比">
+              <header>
+                <strong title={compareFile.path}>{relativeTo(job.target, compareFile.path)}</strong>
+                <button type="button" aria-label="关闭对比" onClick={() => setCompareIndex(null)}><X size={12} /></button>
+              </header>
+              <div className="image-compress-compare-grid">
+                <figure>
+                  <img src={previewUrl(compareIndex, "before", compareFile)} alt="压缩前" />
+                  <figcaption>压缩前 · {formatBytes(compareFile.beforeBytes ?? 0)}</figcaption>
+                </figure>
+                <figure>
+                  <img src={previewUrl(compareIndex, "after", compareFile)} alt="压缩后" />
+                  <figcaption>{compareFile.reverted ? "已还原" : "压缩后"} · {formatBytes(compareFile.reverted ? compareFile.beforeBytes ?? 0 : compareFile.afterBytes ?? 0)}</figcaption>
+                </figure>
+              </div>
+              <div className="desktop-card-actions">
+                <span className="desktop-card-note">{compareFile.backedUp ? "原图备份只保留到下次压缩任务开始前" : "本次任务未备份原图"}</span>
+                {compareFile.backedUp && !compareFile.reverted && (
+                  <button type="button" disabled={running} onClick={() => void revertFile(compareIndex)}><RotateCcw size={13} />还原原图</button>
+                )}
+              </div>
+            </section>
+          )}
 
           {job.state === "done" && job.compressed > 0 && (
             <>
