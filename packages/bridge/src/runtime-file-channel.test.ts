@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findRuntimeFileStatus, writeIdeCommandsFile } from "./runtime-file-channel.js";
+import { findRuntimeFileStatus, MAX_SNAPSHOT_PARTS, writeIdeCommandsFile } from "./runtime-file-channel.js";
 
 const temporary: string[] = [];
 
@@ -102,5 +102,48 @@ describe("runtime file channel", () => {
       previewProjects: new Map([[previewDir, projectReal]])
     });
     expect(status?.sessionId).toBe("billiard-session");
+  });
+
+  function writeStatus(dir: string, status: Record<string, unknown>): void {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "runtime-status.json"), JSON.stringify(status), "utf8");
+  }
+
+  it("never falls back to a status that belongs to another project", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-channel-"));
+    temporary.push(root);
+    writeStatus(path.join(root, "a", "tapmakerwork"), { sessionId: "other", projectName: "别的游戏" });
+
+    expect(findRuntimeFileStatus([root], { projectName: "台球大师", previewProjects: new Map() })).toBeUndefined();
+  });
+
+  it("does not treat a substring of the project name as a match", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-channel-"));
+    temporary.push(root);
+    writeStatus(path.join(root, "a", "tapmakerwork"), { sessionId: "pro", projectName: "台球大师Pro" });
+
+    expect(findRuntimeFileStatus([root], { projectName: "台球大师", previewProjects: new Map() })).toBeUndefined();
+  });
+
+  it("falls back to an anonymous status when nothing identifies a project", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-channel-"));
+    temporary.push(root);
+    writeStatus(path.join(root, "a", "tapmakerwork"), { sessionId: "anonymous" });
+    writeStatus(path.join(root, "b", "tapmakerwork"), { sessionId: "other", projectName: "别的游戏" });
+
+    const status = findRuntimeFileStatus([root], { projectName: "台球大师", previewProjects: new Map() });
+    expect(status?.sessionId).toBe("anonymous");
+  });
+
+  it("ignores a split snapshot that declares too many parts", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-channel-"));
+    temporary.push(root);
+    const dir = path.join(root, "a", "tapmakerwork");
+    writeStatus(dir, { sessionId: "huge" });
+    fs.writeFileSync(path.join(dir, "runtime-snapshot.json.meta.json"), JSON.stringify({ parts: MAX_SNAPSHOT_PARTS + 1 }), "utf8");
+
+    const status = findRuntimeFileStatus([root], { previewProjects: new Map() });
+    expect(status?.sessionId).toBe("huge");
+    expect(status?.snapshot).toBeUndefined();
   });
 });

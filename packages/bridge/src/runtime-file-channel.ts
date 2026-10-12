@@ -154,6 +154,9 @@ function snapshotStem(statusPath: string): string {
     : "runtime-snapshot.json";
 }
 
+export const MAX_SNAPSHOT_PARTS = 256;
+export const MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024;
+
 function readSiblingSnapshot(statusPath: string): unknown {
   const dir = path.dirname(statusPath);
   const stem = snapshotStem(statusPath);
@@ -163,11 +166,15 @@ function readSiblingSnapshot(statusPath: string): unknown {
     try {
       const meta = JSON.parse(fs.readFileSync(metaPath, "utf8").split("\0")[0] || "{}") as { parts?: number; total?: number };
       const parts = Number(meta.parts || 0);
+      if (!Number.isInteger(parts) || parts > MAX_SNAPSHOT_PARTS) return undefined;
       if (parts > 0) {
         let text = "";
+        let totalBytes = 0;
         for (let index = 1; index <= parts; index += 1) {
           const partPath = path.join(dir, `${stem}.part${String(index).padStart(2, "0")}`);
           if (!fs.existsSync(partPath)) return undefined;
+          totalBytes += fs.statSync(partPath).size;
+          if (totalBytes > MAX_SNAPSHOT_BYTES) return undefined;
           // Maker File 分片可能在中间插入 \0，必须全部去掉再拼接
           text += fs.readFileSync(partPath, "utf8").replace(/\0+/g, "");
         }
@@ -179,6 +186,7 @@ function readSiblingSnapshot(statusPath: string): unknown {
   }
   if (!fs.existsSync(singlePath)) return undefined;
   try {
+    if (fs.statSync(singlePath).size > MAX_SNAPSHOT_BYTES) return undefined;
     return normalizeRuntimeSnapshot(parseFirstJsonObject(fs.readFileSync(singlePath, "utf8")));
   } catch {
     return undefined;
@@ -249,27 +257,38 @@ function allPreviewSessionProjectPaths(): Map<string, string> {
   return merged;
 }
 
-function statusMatchesProject(
-  status: RuntimeFileStatus,
-  hints: string[],
-  previewProjects?: Map<string, string>
-): boolean {
-  if (!hints.length) return true;
-  const haystackParts = [
-    status.projectName,
-    status.sourcePath,
-    status.snapshotPath
-  ];
-  if (status.sourcePath && previewProjects) {
-    for (const [previewRoot, projectRealpath] of previewProjects) {
-      if (status.sourcePath.startsWith(previewRoot)) {
-        haystackParts.push(projectRealpath, path.basename(projectRealpath));
-      }
+type ProjectMatch = "match" | "mismatch" | "unknown";
+
+function normalizeIdentity(value: string): string {
+  const trimmed = value.trim().replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? trimmed.replace(/\\/g, "/").toLowerCase() : trimmed;
+}
+
+function isInsideDirectory(filePath: string, directory: string): boolean {
+  const relative = path.relative(directory, filePath);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function statusProjectIdentities(status: RuntimeFileStatus, previewProjects: Map<string, string>): string[] {
+  const identities: string[] = [];
+  if (status.projectName?.trim()) identities.push(status.projectName);
+  if (status.sourcePath) {
+    for (const [previewDir, projectRealpath] of previewProjects) {
+      if (isInsideDirectory(status.sourcePath, previewDir)) identities.push(projectRealpath, path.basename(projectRealpath));
     }
   }
-  const haystack = haystackParts.filter(Boolean).join("\n");
-  if (!haystack) return false;
-  return hints.some((hint) => haystack.includes(hint));
+  return identities;
+}
+
+function classifyStatusProject(
+  status: RuntimeFileStatus,
+  hints: string[],
+  previewProjects: Map<string, string>
+): ProjectMatch {
+  const identities = statusProjectIdentities(status, previewProjects).map(normalizeIdentity);
+  if (!identities.length) return "unknown";
+  const normalizedHints = new Set(hints.map(normalizeIdentity));
+  return identities.some((identity) => normalizedHints.has(identity)) ? "match" : "mismatch";
 }
 
 export function findRuntimeFileStatus(
@@ -284,39 +303,38 @@ export function findRuntimeFileStatus(
   if (!candidates.length) return undefined;
   const hints = projectMatchHints(options);
   const previewProjects = options?.previewProjects ?? allPreviewSessionProjectPaths();
-  let best: RuntimeFileStatus | undefined;
-  let bestMtime = 0;
-  let bestMatched: RuntimeFileStatus | undefined;
-  let bestMatchedMtime = 0;
+  const newest: Record<ProjectMatch, { status?: RuntimeFileStatus; mtime: number }> = {
+    match: { mtime: 0 },
+    unknown: { mtime: 0 },
+    mismatch: { mtime: 0 }
+  };
   for (const file of candidates) {
     try {
       const stat = fs.statSync(file);
       const parsed = parseFirstJsonObject(fs.readFileSync(file, "utf8"));
       if (!parsed || typeof parsed !== "object" || !parsed.sessionId) continue;
-      const snapshot = readSiblingSnapshot(file);
-      const stem = snapshotStem(file);
-      const metaPath = path.join(path.dirname(file), `${stem}.meta.json`);
-      const singlePath = path.join(path.dirname(file), stem);
-      const snapshotPath = fs.existsSync(metaPath) ? metaPath : (fs.existsSync(singlePath) ? singlePath : undefined);
-      const current: RuntimeFileStatus = {
-        ...parsed,
-        sourcePath: file,
-        ...(snapshotPath ? { snapshotPath } : {}),
-        snapshot
-      };
-      if (stat.mtimeMs >= bestMtime) {
-        best = current;
-        bestMtime = stat.mtimeMs;
-      }
-      if (hints.length && statusMatchesProject(current, hints, previewProjects) && stat.mtimeMs >= bestMatchedMtime) {
-        bestMatched = current;
-        bestMatchedMtime = stat.mtimeMs;
+      const current: RuntimeFileStatus = { ...parsed, sourcePath: file };
+      const bucket = newest[hints.length ? classifyStatusProject(current, hints, previewProjects) : "match"];
+      if (stat.mtimeMs >= bucket.mtime) {
+        bucket.status = current;
+        bucket.mtime = stat.mtimeMs;
       }
     } catch {
       // ignore unreadable status
     }
   }
-  return bestMatched || best;
+  // 明确属于其它项目的状态绝不回退使用，避免把 A 项目的 UI 树当成当前项目
+  const chosen = newest.match.status ?? newest.unknown.status;
+  return chosen ? withSiblingSnapshot(chosen) : undefined;
+}
+
+function withSiblingSnapshot(status: RuntimeFileStatus): RuntimeFileStatus {
+  const file = status.sourcePath!;
+  const stem = snapshotStem(file);
+  const metaPath = path.join(path.dirname(file), `${stem}.meta.json`);
+  const singlePath = path.join(path.dirname(file), stem);
+  const snapshotPath = fs.existsSync(metaPath) ? metaPath : (fs.existsSync(singlePath) ? singlePath : undefined);
+  return { ...status, ...(snapshotPath ? { snapshotPath } : {}), snapshot: readSiblingSnapshot(file) };
 }
 
 export function writeIdeCommandsFile(status: RuntimeFileStatus, commands: Array<Record<string, unknown>>): string | undefined {
