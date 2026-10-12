@@ -25,7 +25,9 @@
     "package:ide:mac": "node scripts/package-ide.mjs --mac",
     "package:ide:win": "node scripts/package-ide.mjs --win",
     "test": "npm run test -w @tapmakerwork/protocol && npm run test -w @tapmakerwork/bridge && npm run test -w @tapmakerwork/studio && npm run test -w @tapmakerwork/desktop",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "smoke": "node scripts/smoke/studio-smoke.mjs"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
@@ -37,6 +39,7 @@
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^5.2.0",
     "globals": "^17.13.0",
+    "playwright-core": "^1.64.0",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.71.1",
     "vitest": "^5.0.1"
