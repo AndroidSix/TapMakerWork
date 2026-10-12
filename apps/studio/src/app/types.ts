@@ -52,6 +52,8 @@ export interface MakerVersionState {
   checkedAt?: string;
 }
 
+export type MakerVersionBusy = "" | "check" | "switch" | "stable" | "beta" | "node" | "node-upgrade";
+
 export interface NodeVersionState {
   device: { version: string; executable: string } | null;
   embedded: { version: string; executable: string };
