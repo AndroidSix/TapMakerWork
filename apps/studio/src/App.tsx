@@ -61,6 +61,7 @@ import {
   BoxSelect,
   Magnet,
   Cpu,
+  LifeBuoy,
   ScrollText,
   AlertTriangle,
   X,
@@ -166,6 +167,8 @@ import {
   clamp
 } from "./app/workspace-storage";
 import { displayValue, runtimeLayoutBox, uiChildren, visualWeight, keepValidSelection } from "./app/ui-values";
+import { findSafeAreaIssues, safeInsetsInCanvas, type SafeAreaIssue } from "./app/safe-area-check";
+import { indexUiNodes, measureCanvasNodes, SafeAreaOverlay, SafeAreaToggle } from "./app/safe-area";
 import { ToastStack } from "./app/ToastStack";
 import { iconForType, PanelResizer, RuntimeNode, HierarchyNode, FileTreeEntry } from "./app/tree-nodes";
 import { InspectorField, InspectorColorField, InspectorAssetField } from "./app/inspector-fields";
@@ -184,6 +187,8 @@ const CodeEditor = lazy(() => import("./code-editors").then((module) => ({ defau
 const CodeDiffEditor = lazy(() => import("./code-editors").then((module) => ({ default: module.CodeDiffEditor })));
 const ImageCompressPanel = lazy(() => import("./ImageCompressPanel").then((module) => ({ default: module.ImageCompressPanel })));
 const AssetCheckupPanel = lazy(() => import("./AssetCheckupPanel").then((module) => ({ default: module.AssetCheckupPanel })));
+const RuntimeManagerPanel = lazy(() => import("./RuntimeManagerPanel").then((module) => ({ default: module.RuntimeManagerPanel })));
+const FeedbackPackPanel = lazy(() => import("./FeedbackPackPanel").then((module) => ({ default: module.FeedbackPackPanel })));
 const NewGameRadarPanel = lazy(() => import("./NewGameRadarPanel").then((module) => ({ default: module.NewGameRadarPanel })));
 const editorFallback = <div className="editor-loading">正在加载编辑器…</div>;
 
@@ -252,6 +257,8 @@ export function App() {
   const [tipsOpen, setTipsOpen] = useState(false);
   const [compressOpen, setCompressOpen] = useState(false);
   const [checkupOpen, setCheckupOpen] = useState(false);
+  const [runtimeManagerOpen, setRuntimeManagerOpen] = useState(false);
+  const [feedbackPack, setFeedbackPack] = useState<{ runtimeError?: string | undefined } | null>(null);
   const [radarOpen, setRadarOpen] = useState(false);
   const [radarSeen, setRadarSeen] = useState(() => readNewGameRadarSeen());
   const [toolkitMenuOpen, setToolkitMenuOpen] = useState(false);
@@ -431,6 +438,24 @@ export function App() {
     : rootLayout.h && rootLayout.h > 0
       ? rootLayout.h
       : device.height / device.width * previewWidth;
+  const runtimeSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const [safeAreaCheckEnabled, setSafeAreaCheckEnabled] = useState(true);
+  const [safeAreaIssues, setSafeAreaIssues] = useState<SafeAreaIssue[]>([]);
+  const safeInsets = useMemo(() => safeInsetsInCanvas(device, { width: previewWidth, height: previewHeight }), [device, previewHeight, previewWidth]);
+
+  useEffect(() => {
+    if (!safeAreaCheckEnabled || centerTab !== "visual" || !snapshot) {
+      setSafeAreaIssues((current) => current.length ? [] : current);
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const surface = runtimeSurfaceRef.current;
+      if (!surface) return;
+      const measured = measureCanvasNodes(surface, stageScale, snapshot.root.id, indexUiNodes(snapshot.root));
+      setSafeAreaIssues(findSafeAreaIssues(measured, { width: previewWidth, height: previewHeight }, safeInsets));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [centerTab, previewHeight, previewWidth, safeAreaCheckEnabled, safeInsets, snapshot, stageScale]);
 
   const applyBestCanvasScale = useCallback(() => {
     const viewport = canvasViewportRef.current;
@@ -1230,7 +1255,28 @@ export function App() {
     setCompressOpen(false);
     setRadarOpen(false);
     setTipsOpen(false);
+    setRuntimeManagerOpen(false);
+    setFeedbackPack(null);
     setCheckupOpen(true);
+  }, []);
+
+  const openRuntimeManager = useCallback(() => {
+    setCompressOpen(false);
+    setRadarOpen(false);
+    setTipsOpen(false);
+    setCheckupOpen(false);
+    setFeedbackPack(null);
+    setRuntimeManagerOpen(true);
+  }, []);
+
+  const openFeedbackPack = useCallback((runtimeError?: string) => {
+    setCompressOpen(false);
+    setRadarOpen(false);
+    setTipsOpen(false);
+    setCheckupOpen(false);
+    setRuntimeManagerOpen(false);
+    setSettingsOpen(false);
+    setFeedbackPack({ runtimeError });
   }, []);
 
   const refreshFileTree = useCallback(async () => {
@@ -2387,6 +2433,11 @@ export function App() {
       report={runtimeErrorReport}
       copying={copyBusy}
       onCopy={() => void copyText(runtimeErrorReport.clipboardText)}
+      onFeedback={() => {
+        const errorText = runtimeErrorReport.errorText;
+        dismissRuntimeError();
+        openFeedbackPack(errorText);
+      }}
       onOpenLogs={() => {
         setActiveTerminal("runtime");
         persistLayout({ ...layout, terminal: Math.max(layout.terminal, DEFAULT_LAYOUT.terminal) });
@@ -2710,11 +2761,17 @@ export function App() {
               <section>
                 <h3>工具集</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setRadarOpen(false); setCheckupOpen(false); setCompressOpen(true); }}>
+                  <button onClick={() => { setToolkitMenuOpen(false); setTipsOpen(false); setSettingsOpen(false); setSearchOpen(false); setGuideOpen(false); setRadarOpen(false); setCheckupOpen(false); setRuntimeManagerOpen(false); setFeedbackPack(null); setCompressOpen(true); }}>
                     <Image size={13} />图片压缩
                   </button>
                   <button onClick={() => { setToolkitMenuOpen(false); openAssetCheckup(); }}>
                     <Stethoscope size={13} />资源体检
+                  </button>
+                  <button onClick={() => { setToolkitMenuOpen(false); openRuntimeManager(); }}>
+                    <Cpu size={13} />Runtime 管理
+                  </button>
+                  <button onClick={() => { setToolkitMenuOpen(false); openFeedbackPack(runtimeErrorReport?.errorText); }}>
+                    <LifeBuoy size={13} />一键反馈包
                   </button>
                   <button
                     className="tool-entry-with-dot"
@@ -2801,8 +2858,10 @@ export function App() {
               <section>
                 <h3>工具集</h3>
                 <div className="tools-actions">
-                  <button onClick={() => { setToolsMenuOpen(false); setRadarOpen(false); setCheckupOpen(false); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
+                  <button onClick={() => { setToolsMenuOpen(false); setRadarOpen(false); setCheckupOpen(false); setRuntimeManagerOpen(false); setFeedbackPack(null); setCompressOpen(true); }}><Image size={13} />图片压缩</button>
                   <button onClick={() => { setToolsMenuOpen(false); openAssetCheckup(); }}><Stethoscope size={13} />资源体检</button>
+                  <button onClick={() => { setToolsMenuOpen(false); openRuntimeManager(); }}><Cpu size={13} />Runtime 管理</button>
+                  <button onClick={() => { setToolsMenuOpen(false); openFeedbackPack(runtimeErrorReport?.errorText); }}><LifeBuoy size={13} />一键反馈包</button>
                   <button
                     className="tool-entry-with-dot"
                     onClick={() => {
@@ -2954,6 +3013,28 @@ export function App() {
         /></Suspense>
       )}
 
+      {runtimeManagerOpen && (
+        <Suspense fallback={null}><RuntimeManagerPanel
+          apiBase={API}
+          onClose={() => setRuntimeManagerOpen(false)}
+          onOpenProject={(projectRoot) => void openProjectPath(projectRoot)}
+          onSessionsChanged={setRunningPreviewRoots}
+        /></Suspense>
+      )}
+
+      {feedbackPack && (
+        <Suspense fallback={null}><FeedbackPackPanel
+          apiBase={API}
+          appVersion={__APP_VERSION__}
+          desktopVersion={desktopUpdate?.currentVersion}
+          runtimeError={feedbackPack.runtimeError}
+          studioLogs={logs}
+          onClose={() => setFeedbackPack(null)}
+          onCopy={(text) => void copyText(text)}
+          onOpenCommunity={() => openExternalUrl(QQ_GROUP_JOIN_URL)}
+        /></Suspense>
+      )}
+
       {checkupOpen && (
         <Suspense fallback={null}><AssetCheckupPanel
           apiBase={API}
@@ -3050,6 +3131,7 @@ export function App() {
               <div className="desktop-card-actions">
                 <button className="primary" onClick={() => openExternalUrl(QQ_GROUP_JOIN_URL)}><Users size={13} />一键入群</button>
                 <button onClick={() => void copyText(QQ_GROUP_ID)}><Copy size={13} />复制群号</button>
+                <button onClick={() => openFeedbackPack(runtimeErrorReport?.errorText)}><LifeBuoy size={13} />一键反馈包</button>
                 <button onClick={() => setRoadmapOpen(true)}><Map size={13} />后续规划</button>
                 <button onClick={() => openExternalUrl(OFFICIAL_SITE_URL)}><ExternalLink size={13} />官网</button>
               </div>
@@ -3436,6 +3518,12 @@ export function App() {
                     <span>{snapshot?.viewport?.physicalWidth && snapshot?.viewport?.physicalHeight ? `物理 ${snapshot.viewport.physicalWidth}×${snapshot.viewport.physicalHeight}` : `DPR ${device.dpr}`}</span>
                     <span>可视化编辑</span>
                     <span className="canvas-source">画布：{canvasSourceLabel}</span>
+                    <SafeAreaToggle
+                      enabled={safeAreaCheckEnabled}
+                      issues={safeAreaIssues}
+                      onToggle={() => setSafeAreaCheckEnabled((enabled) => !enabled)}
+                      onSelectIssue={(id) => selectCanvasNode(id, false)}
+                    />
                     {runtimeLive && (
                       <span className="canvas-source runtime-scene">
                         真机：{runtimeScene === "live" ? "活树可同步" : runtimeScene === "loading" ? "加载/启动画面" : "已连接"}
@@ -3504,7 +3592,8 @@ export function App() {
                         bottom: `${device.safeArea.bottom / device.height * 100}%`,
                         left: `${device.safeArea.left / device.width * 100}%`
                       }} />
-                      <div className="runtime-surface" style={{
+                      {safeAreaCheckEnabled && <SafeAreaOverlay insets={safeInsets} canvas={{ width: previewWidth, height: previewHeight }} scale={stageScale} issues={safeAreaIssues} />}
+                      <div ref={runtimeSurfaceRef} className="runtime-surface" style={{
                         width: previewWidth,
                         height: previewHeight,
                         transform: `scale(${stageScale})`
@@ -3838,6 +3927,9 @@ export function App() {
         <span>{snapshot ? `UI rev ${snapshot.revision}` : "UI 未连接"}</span>
         <span>{sidecarInfo.exists ? (sidecarInfo.dirty ? `${sidecarInfo.path || "ui.json"} ●` : `${sidecarInfo.path || "ui.json"} 已同步`) : "视觉旁路未创建"}</span>
         <span className="status-spacer" />
+        <button type="button" className={`statusbar-button ${runningPreviewRoots.length ? "is-live" : ""}`} title="打开 Runtime 管理：查看所有项目的本地预览进程" onClick={openRuntimeManager}>
+          <Cpu size={11} aria-hidden="true" />{runningPreviewRoots.length ? `Runtime 运行中 ×${runningPreviewRoots.length}` : "Runtime 未运行"}
+        </button>
         <span>{health?.runtimeAdapter?.installed ? "Runtime 适配器已安装" : "Runtime 适配器未安装"}</span>
         <span>{health?.capabilities.shellSandbox ? "沙箱就绪" : "沙箱锁定"}</span>
         <span>{connected ? "本机连接" : "离线"}</span>

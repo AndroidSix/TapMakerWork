@@ -148,7 +148,7 @@ CI（`.github/workflows/desktop-release.yml`）目前只构建 **Windows**；mac
 ### 发版流程（GitHub Release 自动草稿）
 
 1. 升级根目录与各 workspace 的 `package.json` 版本号，同步 `version.json`、`docs/CHANGELOG.md`。
-2. 合并到 `main` 后打标签并推送：`git tag v0.1.6 && git push origin v0.1.6`（标签必须等于 `v` + `package.json` 版本，否则 CI 直接失败）。
+2. 合并到 `main` 后打标签并推送：`git tag v0.1.7 && git push origin v0.1.7`（标签必须等于 `v` + `package.json` 版本，否则 CI 直接失败）。
 3. CI 构建 Windows 安装包后，自动创建同名 **草稿** GitHub Release，附带 `.exe`、`.blockmap` 与 `latest.yml`。
 4. 在 GitHub 上检查草稿说明与附件，再点击发布；需要 macOS 包时把本机打出的 `.pkg` / ZIP / `latest-mac.yml` 一并上传。
 5. 应用内更新读取 Gitee Release：把同一批文件上传到 Gitee 的同名 Release，并确认 `version.json` 里的下载直链可访问。

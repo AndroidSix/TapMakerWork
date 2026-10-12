@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   classifyRuntimeProject,
   findRuntimeFileStatus,
+  listPreviewSessions,
   listRunningPreviewProjects,
   MAX_SNAPSHOT_PARTS,
   readLocalPreviewStatus,
@@ -184,6 +185,28 @@ describe("runtime file channel", () => {
 
     const running = listRunningPreviewProjects((pid) => pid === 11 || pid === 22, [previewDir, previewDir]);
     expect(running.sort()).toEqual(["/p/a", "/p/b"]);
+  });
+
+  it("summarizes preview sessions across account homes, live ones first", () => {
+    const homeA = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-home-a-"));
+    const homeB = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-home-b-"));
+    temporary.push(homeA, homeB);
+    const writeSession = (home: string, hash: string, session: Record<string, unknown>) => {
+      fs.mkdirSync(path.join(home, "preview", hash), { recursive: true });
+      fs.writeFileSync(path.join(home, "preview", hash, "session.json"), JSON.stringify(session), "utf8");
+    };
+    writeSession(homeA, "a".repeat(64), { project_realpath: "/p/game", state: "running", runtime_pid: 90, supervisor_pid: 91 });
+    writeSession(homeB, "a".repeat(64), { project_realpath: "/p/game", state: "running", runtime_pid: 11, started_at: "2026-10-12T08:00:00Z" });
+    writeSession(homeA, "b".repeat(64), { project_realpath: "/p/stale", state: "running", runtime_pid: 92, supervisor_pid: 22 });
+    writeSession(homeA, "c".repeat(64), { project_realpath: "/p/off", state: "stopped" });
+
+    const presence = (pid: number) => pid === 11 || pid === 22 ? "alive" as const : "missing" as const;
+    const sessions = listPreviewSessions(presence, [path.join(homeA, "preview"), path.join(homeB, "preview")]);
+    expect(sessions.map((session) => [session.projectName, session.alive, session.runtimePid])).toEqual([
+      ["game", true, 11],
+      ["stale", false, 92]
+    ]);
+    expect(sessions[0]).toMatchObject({ startedAt: "2026-10-12T08:00:00Z", previewDir: path.join(homeB, "preview", "a".repeat(64)) });
   });
 
   describe("readLocalPreviewStatus", () => {

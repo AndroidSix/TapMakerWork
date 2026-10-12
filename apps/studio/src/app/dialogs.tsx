@@ -93,10 +93,11 @@ export function LegalConsentDialog({ state, busy, onAccept, onDecline, onClose }
   </div>;
 }
 
-export function RuntimeErrorDialog({ report, copying, onCopy, onOpenLogs, onDismiss }: {
+export function RuntimeErrorDialog({ report, copying, onCopy, onFeedback, onOpenLogs, onDismiss }: {
   report: RuntimeErrorReport;
   copying: boolean;
   onCopy: () => void;
+  onFeedback: () => void;
   onOpenLogs: () => void;
   onDismiss: () => void;
 }) {
@@ -104,7 +105,7 @@ export function RuntimeErrorDialog({ report, copying, onCopy, onOpenLogs, onDism
     <section className="runtime-error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="runtime-error-title" aria-describedby="runtime-error-description">
       <header><span><AlertTriangle size={20} /></span><div><h2 id="runtime-error-title">TapTap Maker 运行时错误</h2><p id="runtime-error-description">请修复游戏中的以下错误。请定位根因并修改代码，完成后验证游戏不再报错。</p></div></header>
       <pre>{report.errorText}</pre>
-      <footer><button onClick={onOpenLogs}>查看 Runtime 日志</button><button onClick={onDismiss}>暂时忽略</button><button className="primary" autoFocus disabled={copying} onClick={onCopy}><Copy size={14} />{copying ? "正在复制…" : "复制错误报告"}</button></footer>
+      <footer><button onClick={onOpenLogs}>查看 Runtime 日志</button><button onClick={onFeedback} title="附带版本、系统与日志，发给开发者排查">生成反馈包</button><button onClick={onDismiss}>暂时忽略</button><button className="primary" autoFocus disabled={copying} onClick={onCopy}><Copy size={14} />{copying ? "正在复制…" : "复制错误报告"}</button></footer>
     </section>
   </div>;
 }
@@ -124,9 +125,7 @@ export const ROADMAP_SECTIONS: Array<{ title: string; icon: ReactNode; items: st
     title: "资源与构建优化",
     icon: <Package size={15} aria-hidden="true" />,
     items: [
-      "无用资源清理：基于引用审计列清单，可撤销",
-      "代码混淆选项：与官方构建链兼容，可开关",
-      "构建包体报告：资源占比与压缩收益"
+      "代码混淆选项：与官方构建链兼容，可开关"
     ]
   },
   {
@@ -161,7 +160,6 @@ export const ROADMAP_SECTIONS: Array<{ title: string; icon: ReactNode; items: st
     title: "游戏工程能力参考",
     icon: <ShieldCheck size={15} aria-hidden="true" />,
     items: [
-      "UI 安全区域：异形屏可视化与布局检查",
       "反作弊参考：客户端检测思路与服务端校验配合",
       "强更新范式：强制升级、维护公告、灰度/分渠道",
       "游戏数据存档回退：云存档与版本兼容策略",

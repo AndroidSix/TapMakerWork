@@ -225,6 +225,19 @@ export interface LuaDiagnostic {
   message: string;
 }
 
+export interface PreviewSessionSummary {
+  projectRoot: string;
+  projectName: string;
+  state: string;
+  /** null = PID 存在但无法确认（如权限不足）。 */
+  alive: boolean | null;
+  previewDir: string;
+  runtimePid?: number;
+  supervisorPid?: number;
+  startedAt?: string;
+  supervisorLogPath?: string;
+}
+
 export type AssetKind = "image" | "audio" | "video" | "model" | "font" | "other";
 
 export interface TrashedAsset {

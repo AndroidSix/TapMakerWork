@@ -526,6 +526,23 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .device-stage { position: relative; flex: 0 0 auto; overflow: hidden; border: 1px solid #465166; border-radius: 5px; background: #111827; box-shadow: 0 18px 60px #0009; }
 .runtime-surface { position: absolute; inset: 0 auto auto 0; transform-origin: top left; overflow: hidden; }
 .safe-area { position: absolute; z-index: 8; border: 1px dashed #e3b34199; pointer-events: none; }
+.safe-area-overlay { position: absolute; inset: 0 auto auto 0; z-index: 7; pointer-events: none; }
+.safe-area-zone { position: absolute; display: flex; align-items: center; justify-content: center; background: repeating-linear-gradient(135deg, #e3b3411f 0 6px, #e3b3410a 6px 12px); }
+.safe-area-zone span { padding: 1px 5px; color: #f0d59a; border-radius: 3px; background: #1a1408cc; font: 9px ui-monospace, monospace; }
+.safe-area-issue { position: absolute; border-radius: 2px; }
+.safe-area-issue.is-unsafe-area { outline: 2px solid #f0a33a; background: #f0a33a22; }
+.safe-area-issue.is-outside-canvas { outline: 2px solid #e5484d; background: #e5484d26; }
+.safe-area-toggle { position: relative; display: inline-flex; align-items: center; gap: 2px; }
+.safe-area-toggle button { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 4px; font: inherit; cursor: pointer; }
+.safe-area-toggle button.active { color: #9ee6bd; border-color: #2a6b4d; }
+.safe-area-toggle button.active.has-issues { color: #f0d59a; border-color: #6b5a2a; }
+.safe-area-toggle .safe-area-count { min-width: 22px; justify-content: center; color: #1a1408; background: #f0a33a; border-color: #f0a33a; font-weight: 700; }
+.safe-area-issue-list { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; display: grid; gap: 2px; width: 280px; max-height: 300px; margin: 0; padding: 4px; overflow: auto; list-style: none; border: 1px solid var(--border); border-radius: 6px; background: #141a24; box-shadow: 0 12px 30px #0009; }
+.safe-area-issue-list button { display: grid; width: 100%; height: auto; gap: 2px; padding: 6px 8px; text-align: left; border: 0; border-left: 3px solid #f0a33a; border-radius: 4px; background: #101620; }
+.safe-area-issue-list button.is-outside-canvas { border-left-color: #e5484d; }
+.safe-area-issue-list button:hover { background: #16263a; }
+.safe-area-issue-list strong { overflow: hidden; color: #dce7f7; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.safe-area-issue-list small { color: var(--muted); font-size: 10px; }
 .runtime-node { min-width: 0; cursor: default; }
 .runtime-node.selected { outline: 2px solid var(--focus); outline-offset: -2px; }
 .runtime-panel { position: relative; outline: 1px dashed #3a465a; outline-offset: -1px; }
@@ -815,6 +832,9 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .terminal-output.locked { color: #d9bd79; }
 .sandbox-warning { display: flex; align-items: center; gap: 6px; padding: 5px 10px; color: #e8c875; background: #332b19; border-top: 1px solid #574923; font-size: 10px; }
 .statusbar { gap: 14px; padding: 0 8px; color: #cbd5e1; background: #1d5486; font-size: 10px; }
+.statusbar-button { display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 6px; color: inherit; background: transparent; border: 0; border-radius: 3px; font: inherit; cursor: pointer; }
+.statusbar-button:hover { background: #ffffff1f; }
+.statusbar-button.is-live { color: #b8f5d0; }
 .status-spacer { flex: 1; }
 
 .welcome-window { height: 100%; display: grid; grid-template-rows: 52px 1fr; color: var(--text); background: #101318; }
@@ -2140,6 +2160,26 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .image-compress-panel :is(.desktop-card-actions, .desktop-card-heading) button.primary { background: #28598d; border-color: #3976b3; }
 .image-compress-panel :is(.desktop-card-actions, .desktop-card-heading) button.danger { color: #ffc0bb; border-color: #6b3635; background: #3a2224; }
 .image-compress-panel :is(.desktop-card-actions, .desktop-card-heading) button:disabled { opacity: .5; cursor: default; }
+.runtime-session h4 { display: flex; align-items: center; gap: 6px; }
+.runtime-session-dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7a90; }
+.runtime-session.is-live .runtime-session-dot { background: var(--success); box-shadow: 0 0 0 3px #2fbf7133; }
+.runtime-session.is-unknown .runtime-session-dot { background: #f0d59a; }
+.runtime-session.is-stale .runtime-session-dot { background: #e5484d; }
+.runtime-session-current { padding: 1px 6px; color: #9fd0ff; border-radius: 999px; background: #17304d; font-size: 10px; font-weight: 500; }
+.runtime-session .desktop-card-heading p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.runtime-session-state { flex: none; padding: 2px 8px; border-radius: 999px; font-size: 11px; color: #9ee6bd; background: #12342a; }
+.runtime-session-state.is-unknown { color: #f0d59a; background: #3a3018; }
+.runtime-session-state.is-stale { color: #ffb3b3; background: #3a1c1f; }
+.runtime-session-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.runtime-session-meta div { display: grid; gap: 2px; padding: 6px 8px; border-radius: 5px; background: #101620; }
+.runtime-session-meta dt { color: var(--muted); font-size: 10px; }
+.runtime-session-meta dd { margin: 0; color: #dce7f7; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.runtime-session-logs { display: grid; gap: 4px; }
+.runtime-session-logs pre { max-height: 240px; }
+.image-compress-keys .feedback-pack-description { min-height: 72px; font-family: inherit; }
+.feedback-pack-flag { padding: 2px 8px; color: #ffb3b3; border-radius: 999px; background: #3a1c1f; font-size: 11px; }
+.feedback-pack-preview { max-height: 320px; }
+.feedback-pack-inline { margin-left: 8px; padding: 1px 8px; color: var(--text); background: var(--control); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; cursor: pointer; }
 .asset-checkup-heading-actions { display: flex; gap: 6px; }
 .asset-checkup-heading-actions button { display: inline-flex; align-items: center; gap: 4px; }
 .asset-checkup-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
