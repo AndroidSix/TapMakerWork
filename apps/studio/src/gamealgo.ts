@@ -1,4 +1,4 @@
-import { GameAlgoWebClient } from "@gamealgo/web";
+import type { GameAlgoWebClient } from "@gamealgo/web";
 
 const DOMESTIC_BASE_URL = "https://game-algo-sdk.dictapis.cn";
 
@@ -41,6 +41,8 @@ export async function initStudioGameAlgo(options: {
   }
   if (client) return { ok: true };
   try {
+    const { GameAlgoWebClient } = await import("@gamealgo/web");
+    if (!enabled || client) return { ok: true };
     client = GameAlgoWebClient.init({
       baseUrl: DOMESTIC_BASE_URL,
       gameKey,
