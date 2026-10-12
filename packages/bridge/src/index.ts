@@ -1084,16 +1084,22 @@ const server = http.createServer(async (request, response) => {
         throw error;
       }
       let snapshot;
+      let refreshError: string | undefined;
       if (body.path.endsWith(".lua")) {
-        uiScreens = scanUiScreens(project.root);
-        const conversion = convertLuaUiFile(project.root, activeUiEntry);
-        if (conversion) {
-          uiScreens.documents.set(activeUiEntry, conversion);
-          snapshot = editor.reset(snapshotFromConversion(conversion));
-          broadcast({ type: "ui.snapshot", snapshot });
+        // 文件已经写盘；界面刷新失败只影响画布，不能让客户端误以为保存失败
+        try {
+          uiScreens = scanUiScreens(project.root);
+          const conversion = convertLuaUiFile(project.root, activeUiEntry);
+          if (conversion) {
+            uiScreens.documents.set(activeUiEntry, conversion);
+            snapshot = editor.reset(snapshotFromConversion(conversion));
+            broadcast({ type: "ui.snapshot", snapshot });
+          }
+        } catch (error) {
+          refreshError = error instanceof Error ? error.message : String(error);
         }
       }
-      sendJson(response, 200, { ok: true, path: body.path, version: projectFileVersion(project.root, body.path), snapshot });
+      sendJson(response, 200, { ok: true, path: body.path, version: projectFileVersion(project.root, body.path), snapshot, refreshError });
     } else if (request.method === "GET" && url.pathname === "/api/project/asset") {
       if (!project) throw new Error("project_not_open");
       const assetPath = url.searchParams.get("path");

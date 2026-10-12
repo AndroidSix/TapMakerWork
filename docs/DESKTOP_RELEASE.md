@@ -164,8 +164,8 @@ The scripts disable certificate auto-discovery (`CSC_IDENTITY_AUTO_DISCOVERY=fal
 
 CI mapping in `.github/workflows/desktop-release.yml`:
 
-- macOS runner → `MAC_CSC_LINK` / `MAC_CSC_KEY_PASSWORD` + Apple notarization secrets
 - Windows runner → `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`
+- macOS 本机打包时自行导出 `CSC_LINK` / `CSC_KEY_PASSWORD` 与 Apple 公证变量
 
 **Unsigned artifacts are for local QA only.** Do not publish them as the download that end users should install. A signed (and on macOS, notarized) build is required for a normal install experience, durable Screen Recording / Accessibility consent, and reliable automatic updates.
 
