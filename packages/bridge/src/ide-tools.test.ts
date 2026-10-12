@@ -17,6 +17,7 @@ function repository(): string {
   git(root, "init", "-b", "main");
   git(root, "config", "user.name", "TapMakerWork Test");
   git(root, "config", "user.email", "test@tapmakerwork.local");
+  git(root, "config", "core.autocrlf", "false");
   fs.writeFileSync(path.join(root, "tracked.txt"), "before\n", "utf8");
   git(root, "add", "tracked.txt");
   git(root, "commit", "-m", "initial commit");

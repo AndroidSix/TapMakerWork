@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { listAccountHomes } from "./maker-accounts.js";
 import { resolveInsideProject } from "./project.js";
@@ -481,7 +482,7 @@ export function readMakerPreviewLogs(projectRoot: string, supervisorLogPath?: st
   const candidates: string[] = [];
   if (supervisorLogPath) candidates.push(supervisorLogPath);
   const previewRoots = [
-    path.join(process.env.HOME || "", ".taptap-maker", "preview"),
+    path.join(os.homedir(), ".taptap-maker", "preview"),
     ...listAccountHomes().map((home) => path.join(home, "preview"))
   ];
   for (const previewRoot of [...new Set(previewRoots)]) {

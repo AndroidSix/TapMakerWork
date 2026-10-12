@@ -19,18 +19,26 @@ describe("community builtin", () => {
   });
 });
 
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 describe("image compress settings", () => {
   const dir = path.join(os.tmpdir(), `tapmakerwork-compress-test-${process.pid}-${Date.now()}`);
   const prevHome = process.env.HOME;
+  const prevUserProfile = process.env.USERPROFILE;
 
   afterEach(() => {
-    process.env.HOME = prevHome;
+    restoreEnv("HOME", prevHome);
+    restoreEnv("USERPROFILE", prevUserProfile);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it("defaults to tiny disabled and persists keys outside project", () => {
     fs.mkdirSync(dir, { recursive: true });
     process.env.HOME = dir;
+    process.env.USERPROFILE = dir;
     expect(readImageCompressSettings()).toEqual(defaultImageCompressSettings());
     const saved = writeImageCompressSettings({
       tinyEnabled: true,
