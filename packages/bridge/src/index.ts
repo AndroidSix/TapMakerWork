@@ -54,6 +54,7 @@ import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
 import { commitGitProject, listProjectAssets, mutateGitProject, projectHasRuntimeAdapter, pullGitProject, readGitDiff, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
 import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
+import { ensureTapMakerWorkGitIgnored } from "./git-ignore.js";
 import { detectUiBackend } from "./ui-backend.js";
 import { findRuntimeFileStatus, normalizeUiTree, writeIdeCommandsFile } from "./runtime-file-channel.js";
 import {
@@ -429,9 +430,18 @@ async function processAgentInbox(): Promise<void> {
   }
 }
 
+function ignoreTapMakerWorkStateInGit(projectRoot: string): { changed: boolean; error?: string } {
+  try {
+    return { changed: ensureTapMakerWorkGitIgnored(projectRoot).changed };
+  } catch (error) {
+    return { changed: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 if (process.env.TAPMAKERWORK_PROJECT) {
   try {
     project = resolveProjectRoot(process.env.TAPMAKERWORK_PROJECT);
+    ignoreTapMakerWorkStateInGit(project.root);
   } catch (error) {
     process.stderr.write(`[TapMakerWork] Project binding failed: ${String(error)}\n`);
   }
@@ -1029,13 +1039,17 @@ const server = http.createServer(async (request, response) => {
         adapter = { installed: true, changed: installed.changed };
       } catch (error) {
         adapter = { installed: false, changed: false, error: error instanceof Error ? error.message : String(error) };
+        broadcast({ type: "log.append", channel: "runtime", lines: [`实时编辑桥自动接入失败：${adapter.error}`] });
       }
+      const gitignore = ignoreTapMakerWorkStateInGit(project.root);
+      if (gitignore.changed) broadcast({ type: "log.append", channel: "agent", lines: ["已把 .tapmakerwork/ 写入项目 .gitignore"] });
       publishAgentContextNow(true);
       sendJson(response, 200, {
         project,
         snapshot,
         activeUiEntry,
         adapter,
+        gitignore,
         agentContext: {
           dir: ".tapmakerwork/ai",
           contextFile: ".tapmakerwork/ai/CONTEXT.md"
