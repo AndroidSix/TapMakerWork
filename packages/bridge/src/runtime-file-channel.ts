@@ -241,6 +241,14 @@ function previewSessionProjectPaths(previewDir: string): Map<string, string> {
   return mapping;
 }
 
+function allPreviewSessionProjectPaths(): Map<string, string> {
+  const merged = new Map<string, string>();
+  for (const root of runtimeFileSearchRoots().filter((candidate) => path.basename(candidate) === "preview")) {
+    for (const [previewDir, projectRealpath] of previewSessionProjectPaths(root)) merged.set(previewDir, projectRealpath);
+  }
+  return merged;
+}
+
 function statusMatchesProject(
   status: RuntimeFileStatus,
   hints: string[],
@@ -275,7 +283,7 @@ export function findRuntimeFileStatus(
   }
   if (!candidates.length) return undefined;
   const hints = projectMatchHints(options);
-  const previewProjects = options?.previewProjects ?? previewSessionProjectPaths(previewRoot());
+  const previewProjects = options?.previewProjects ?? allPreviewSessionProjectPaths();
   let best: RuntimeFileStatus | undefined;
   let bestMtime = 0;
   let bestMatched: RuntimeFileStatus | undefined;
