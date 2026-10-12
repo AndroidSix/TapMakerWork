@@ -2543,6 +2543,8 @@ export function App() {
           ...current,
           runtimeAdapter: { installed: true, paths: ["scripts/tapmakerwork/TapMakerWorkBridge.lua"] }
         } : current);
+      } else if (result.adapter?.error) {
+        toast(`实时编辑桥未能自动接入：${result.adapter.error}`, "error");
       }
       if (result.adapter?.changed) {
         toast("已自动接入实时编辑桥", "success");
@@ -2552,8 +2554,13 @@ export function App() {
           setMakerPreviewStatus(status);
           if (status.process_alive) {
             await fetch(`${API}/api/maker/preview/stop`, { method: "POST" });
-            await fetch(`${API}/api/maker/preview/start`, { method: "POST" });
-            toast("Runtime 正在重启，进入游戏后即可点选控件", "info");
+            const restart = await fetch(`${API}/api/maker/preview/start`, { method: "POST" });
+            if (restart.ok) {
+              toast("Runtime 正在重启，进入游戏后即可点选控件", "info");
+            } else {
+              const failure = await restart.json().catch(() => ({})) as { error?: string };
+              toast(`Runtime 重启失败：${failure.error || restart.status}`, "error");
+            }
           }
         }
       }

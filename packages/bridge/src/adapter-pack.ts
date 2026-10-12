@@ -31,15 +31,30 @@ export interface AdapterInstallResult {
 const BOOTSTRAP_START = "-- >>> TapMakerWork live editor (managed)";
 const BOOTSTRAP_END = "-- <<< TapMakerWork live editor (managed)";
 const START_CALL = "TapMakerWorkLiveEditorStart() -- TapMakerWork managed";
-const UPDATE_CALL = "TapMakerWorkLiveEditorUpdate(dt) -- TapMakerWork managed";
+const UPDATE_CALL_PATTERN = /TapMakerWorkLiveEditorUpdate\([A-Za-z_]\w*\) -- TapMakerWork managed/;
+const BOM = "\uFEFF";
 
-/** Maker entries use either VariantMap method or index+GetFloat for TimeStep. */
-const TIME_STEP_DT_LINE =
-  /local\s+dt\s*=\s*(?:eventData:GetFloat\(["']TimeStep["']\)|eventData\[["']TimeStep["']\]:GetFloat\(\))/;
+/** Any `local <name> = <eventData>:GetFloat("TimeStep")` or `<eventData>["TimeStep"]:GetFloat()` line. */
+const TIME_STEP_LINE =
+  /local\s+([A-Za-z_]\w*)\s*=\s*[A-Za-z_]\w*(?::GetFloat\(\s*["']TimeStep["']\s*\)|\[\s*["']TimeStep["']\s*\]:GetFloat\(\s*\))/;
+
+const ADAPTER_ERROR_HINTS: Record<string, string> = {
+  maker_project_config_invalid: ".project/project.json 不是合法 JSON，无法确定客户端入口。",
+  maker_client_entry_not_found: "没有找到客户端入口脚本（project.json 的 entry@client / entry，或 scripts/main.lua）。",
+  runtime_adapter_start_hook_not_found: "入口脚本里没有 function Start()，无法挂载实时编辑桥。",
+  maker_start_function_not_found: "入口脚本里没有 function Start()，无法挂载实时编辑桥。",
+  runtime_adapter_update_hook_not_found:
+    "入口脚本的 Update 处理函数里没有找到 local <变量> = eventData:GetFloat(\"TimeStep\") 或 eventData[\"TimeStep\"]:GetFloat()，请在 Update 里加上这一行后重试。"
+};
+
+function adapterError(code: string): Error {
+  const hint = ADAPTER_ERROR_HINTS[code];
+  return new Error(hint ? `${code}：${hint}` : code);
+}
 
 function editorUpdateIsInScope(source: string): boolean {
   const definedAt = source.indexOf("local function TapMakerWorkLiveEditorUpdate");
-  const calledAt = source.indexOf(UPDATE_CALL);
+  const calledAt = source.search(UPDATE_CALL_PATTERN);
   return definedAt >= 0 && calledAt > definedAt;
 }
 
@@ -49,12 +64,12 @@ function stripManagedEditor(source: string): string {
   const end = next.indexOf(BOOTSTRAP_END);
   if (start >= 0 && end > start) {
     let cut = end + BOOTSTRAP_END.length;
-    while (next[cut] === "\r" || next[cut] === "\n") cut += 1;
+    while (next[cut] === "\r" || next[cut] === "\n" || next[cut] === BOM) cut += 1;
     next = `${next.slice(0, start)}${next.slice(cut)}`;
   }
   return next
     .replace(/^[ \t]*TapMakerWorkLiveEditorStart\(\) -- TapMakerWork managed\r?\n/gm, "")
-    .replace(/^[ \t]*TapMakerWorkLiveEditorUpdate\(dt\) -- TapMakerWork managed\r?\n/gm, "");
+    .replace(/^[ \t]*TapMakerWorkLiveEditorUpdate\([A-Za-z_]\w*\) -- TapMakerWork managed\r?\n/gm, "");
 }
 
 function timestampForPath(): string {
@@ -74,7 +89,7 @@ function resolveMakerClientEntry(projectRoot: string): string {
         if (typeof value === "string" && value.trim()) candidates.push(value.trim());
       }
     } catch {
-      throw new Error("maker_project_config_invalid");
+      throw adapterError("maker_project_config_invalid");
     }
   }
   candidates.push("main.lua");
@@ -87,7 +102,7 @@ function resolveMakerClientEntry(projectRoot: string): string {
       if (entryPath.startsWith(`${path.resolve(scriptsRoot)}${path.sep}`) && fs.existsSync(entryPath)) return entryPath;
     }
   }
-  throw new Error("maker_client_entry_not_found");
+  throw adapterError("maker_client_entry_not_found");
 }
 
 function escapeLuaString(value: string): string {
@@ -233,35 +248,37 @@ export function installRuntimeAdapter(options: {
 
   const entryPath = resolveMakerClientEntry(projectRoot);
   const original = fs.readFileSync(entryPath, "utf8");
+  const hasBom = original.startsWith(BOM);
+  const source = hasBom ? original.slice(BOM.length) : original;
+  const eol = source.includes("\r\n") ? "\r\n" : "\n";
   const expectedBootstrap = bootstrapFor(backend, bootstrapName);
-  const currentBootstrap = extractManagedBootstrap(original);
+  const currentBootstrap = extractManagedBootstrap(source);
   const bootstrapCurrent = Boolean(currentBootstrap)
     && normalizeBootstrapText(currentBootstrap!) === normalizeBootstrapText(expectedBootstrap);
-  const alreadyManaged = editorUpdateIsInScope(original)
-    && original.includes(BOOTSTRAP_START)
-    && original.includes(START_CALL)
-    && original.includes(UPDATE_CALL)
-    && entryMatchesBackend(original, backend)
-    && bootstrapCurrent;
-  let next = alreadyManaged ? original : stripManagedEditor(original);
+  const alreadyManaged = editorUpdateIsInScope(source)
+    && source.includes(BOOTSTRAP_START)
+    && source.includes(START_CALL)
+    && UPDATE_CALL_PATTERN.test(source)
+    && entryMatchesBackend(source, backend)
+    && bootstrapCurrent
+    && !source.includes(BOM);
+  let next = alreadyManaged ? source : stripManagedEditor(source).replaceAll(BOM, "");
 
   if (!alreadyManaged) {
     const hasAppInit = /\bapp_:Init\(\)/.test(next);
     const hasStart = /\bfunction\s+Start\s*\(/.test(next);
-    if (!hasAppInit && !hasStart) throw new Error("runtime_adapter_start_hook_not_found");
-    if (!TIME_STEP_DT_LINE.test(next)) {
-      throw new Error("runtime_adapter_update_hook_not_found");
-    }
+    if (!hasAppInit && !hasStart) throw adapterError("runtime_adapter_start_hook_not_found");
+    const timeStepVariable = TIME_STEP_LINE.exec(next)?.[1];
+    if (!timeStepVariable) throw adapterError("runtime_adapter_update_hook_not_found");
+    if (!hasStart) throw adapterError("maker_start_function_not_found");
 
-    if (!/\bfunction\s+Start\s*\(/.test(next)) throw new Error("maker_start_function_not_found");
-    next = `${expectedBootstrap}${next}`;
-    if (hasAppInit) next = next.replace(/(\bapp_:Init\(\)[^\n]*\n)/, `$1    ${START_CALL}\n`);
-    else next = next.replace(/(\bfunction\s+Start\s*\([^)]*\)[^\n]*\n)/, `$1    ${START_CALL}\n`);
-    next = next.replace(
-      new RegExp(`(${TIME_STEP_DT_LINE.source}[^\\n]*\\n)`),
-      `$1    ${UPDATE_CALL}\n`
-    );
+    const updateCall = `TapMakerWorkLiveEditorUpdate(${timeStepVariable}) -- TapMakerWork managed`;
+    next = `${expectedBootstrap.replace(/\n/g, eol)}${next}`;
+    if (hasAppInit) next = next.replace(/(\bapp_:Init\(\)[^\n]*\n)/, `$1    ${START_CALL}${eol}`);
+    else next = next.replace(/(\bfunction\s+Start\s*\([^)]*\)[^\n]*\n)/, `$1    ${START_CALL}${eol}`);
+    next = next.replace(new RegExp(`(${TIME_STEP_LINE.source}[^\\n]*\\n)`), `$1    ${updateCall}${eol}`);
   }
+  next = hasBom ? `${BOM}${next}` : next;
 
   const adapterPath = path.join(projectRoot, "scripts", "tapmakerwork", templateName);
   const adapterSource = fs.readFileSync(templatePath, "utf8");
