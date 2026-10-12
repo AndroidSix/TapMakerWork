@@ -1,12 +1,10 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { checkBridgeRequest } from "./request-guard.js";
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   PROTOCOL_VERSION,
-  applyUiTreeOp,
   findParentInfo,
   findUiNode,
   type BridgeCapabilities,
@@ -50,7 +48,7 @@ import {
   type MakerRuntimeMode
 } from "./maker.js";
 import { scanUiScreens, uiNodeCount, type UiScreenSummary } from "./ui-screens.js";
-import { listProjectEntries, projectFileVersion, readProjectSource, resolveInsideProject, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
+import { listProjectEntries, projectFileVersion, readProjectSource, resolveProjectRoot, writeProjectText, type ProjectBinding } from "./project.js";
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
@@ -67,11 +65,7 @@ import {
   writeIdeCommandsFile
 } from "./runtime-file-channel.js";
 import { planNodeUpgrade, publicNodeUpgradePlan, runNodeUpgrade } from "./node-upgrade.js";
-import {
-  adoptWindowsMimeForFile,
-  resolveProjectAsset,
-  sendProjectAsset
-} from "./asset-handler.js";
+import { resolveProjectAsset, sendProjectAsset } from "./asset-handler.js";
 import { collectDirtyLiteralOverrides, writeBackUiOverridesToLua, writeBackUiTreeLiteralsToLua, type LuaOverridesWritebackDetail, type LuaWritebackOverride } from "./lua-prop-writeback.js";
 import { findUiNodePath, mergeUiSidecarOverride, mergeUiSidecarOverrides, nodeMatchesUiOverride, overrideSelectorForNode, readUiSidecar, sidecarExists, sidecarRelativePath, snapshotFromSidecar, uiNodeAtLine, writeUiSidecar, type UiSidecarOverride } from "./ui-sidecar.js";
 import { combineInstanceOverrides, loadInstanceOverridesExcept, mergeInstanceOverrides, planInstancePersistence, writeUiOverridesModule } from "./ui-overrides.js";

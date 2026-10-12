@@ -5,6 +5,7 @@ export interface RuntimeErrorReport {
 }
 
 function cleanLine(line: string): string {
+  // eslint-disable-next-line no-control-regex -- strips ANSI escape sequences
   return line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "").trimEnd();
 }
 
