@@ -3,8 +3,14 @@ import { checkBridgeRequest } from "./request-guard.js";
 import { readJson, sendJson } from "./http-json.js";
 import { findRoute, type BridgeRoute } from "./routes/route-table.js";
 import { createMakerAccountRoutes } from "./routes/maker-account-routes.js";
+import { createLuaRoutes } from "./routes/lua-routes.js";
+import { createAssetRoutes } from "./routes/asset-routes.js";
+import { createRuntimeRoutes } from "./routes/runtime-routes.js";
 import { createToolsRoutes } from "./routes/tools-routes.js";
 import { createGitRoutes } from "./routes/git-routes.js";
+import { createFeedbackRoutes } from "./routes/feedback-routes.js";
+import { captureStreamLines, createLogRing, defaultFeedbackDir, readProjectGameVersion } from "./feedback-pack.js";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
@@ -56,7 +62,7 @@ import { listProjectEntries, projectFileVersion, readProjectSource, resolveProje
 import { sandboxStatus } from "./sandbox.js";
 import { EditorState } from "./state.js";
 import { convertLuaUiFile, snapshotFromConversion } from "./lua-converter.js";
-import { listProjectAssets, projectHasRuntimeAdapter, readGitStatus, readMakerPreviewLogs, searchProject } from "./ide-tools.js";
+import { listProjectAssets, projectHasRuntimeAdapter, readGitStatus, readMakerPreviewLogs, readPreviewDirLogs, searchProject } from "./ide-tools.js";
 import { exportRuntimeAdapterPackage, installRuntimeAdapter } from "./adapter-pack.js";
 import { ensureTapMakerWorkGitIgnored } from "./git-ignore.js";
 import { detectUiBackend } from "./ui-backend.js";
@@ -201,6 +207,10 @@ function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
   return status;
 }
 
+const bridgeLog = createLogRing(400);
+captureStreamLines(process.stdout, bridgeLog);
+captureStreamLines(process.stderr, bridgeLog);
+
 const host = "127.0.0.1";
 const port = Number(process.env.TAPMAKERWORK_BRIDGE_PORT || 43121);
 const bridgeUrl = `http://${host}:${port}`;
@@ -212,6 +222,7 @@ const sandbox = sandboxStatus();
 let project: ProjectBinding | undefined;
 let lastAgentPublishAt = 0;
 let lastAgentPublishKey = "";
+let lastAgentPublishError: string | undefined;
 let agentInboxBusy = false;
 let agentErrors: AgentErrorEntry[] = [];
 const recentAgentLogs: Partial<Record<LogChannel, string[]>> = {};
@@ -247,8 +258,11 @@ function publishAgentContextNow(force = false): void {
       ...(runtimeSessionId ? { runtimeSessionId } : {}),
       alive: true
     });
+    lastAgentPublishError = undefined;
   } catch (error) {
-    process.stderr.write(`[TapMakerWork] agent context publish failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== lastAgentPublishError) process.stderr.write(`[TapMakerWork] agent context publish failed: ${message}\n`);
+    lastAgentPublishError = message;
   }
 }
 
@@ -743,7 +757,40 @@ function makerPreviewStatusDetail(runtime: NonNullable<typeof makerRuntime>, pro
   return next;
 }
 
+function collectFeedbackContext() {
+  const previewDir = project ? readLocalPreviewStatus(project.root, probeProcessPresence) : undefined;
+  const meta = project ? readMakerProjectMeta(project.root) : undefined;
+  return {
+    environment: {
+      platform: process.platform,
+      arch: process.arch,
+      osRelease: os.release(),
+      node: process.version,
+      makerVersion: makerRuntime?.version,
+      protocolVersion: PROTOCOL_VERSION
+    },
+    project: project ? {
+      name: project.name,
+      root: project.root,
+      gameVersion: readProjectGameVersion(project.root),
+      title: meta?.title,
+      appId: meta?.appId,
+      orientation: meta?.orientation,
+      uiBackend: detectUiBackend(project.root)
+    } : undefined,
+    runtimeSession: runtimeSessionId,
+    recentErrors: agentErrors.map((entry) => `${entry.at} [${entry.channel}] ${entry.message}`),
+    runtimeLogs: previewDir?.preview_dir
+      ? readPreviewDirLogs(previewDir.preview_dir, previewDir.supervisor_log_path, 200).lines
+      : []
+  };
+}
+
 const routeTable: BridgeRoute[] = [
+  ...createFeedbackRoutes({ bridgeLog, collectContext: collectFeedbackContext, outputDir: defaultFeedbackDir }),
+  ...createLuaRoutes({ projectRoot: () => project?.root }),
+  ...createAssetRoutes({ projectRoot: () => project?.root }),
+  ...createRuntimeRoutes({ presence: probeProcessPresence, currentProjectRoot: () => project?.root }),
   ...createGitRoutes({ broadcast, currentProject: () => project, currentMakerRuntime: () => makerRuntime, freshAccount, previewHome }),
   ...createToolsRoutes({ projectRoot: () => project?.root, broadcast }),
   ...createMakerAccountRoutes({
@@ -1755,8 +1802,8 @@ const server = http.createServer(async (request, response) => {
       }
     } else if (request.method === "GET" && url.pathname === "/api/maker/preview/logs") {
       if (!project) throw new Error("project_not_open");
-      const supervisorLogPath = readLocalPreviewStatus(project.root, probeProcessPresence).supervisor_log_path;
-      const logs = readMakerPreviewLogs(project.root, supervisorLogPath);
+      const { preview_dir: previewDir, supervisor_log_path: supervisorLogPath } = readLocalPreviewStatus(project.root, probeProcessPresence);
+      const logs = previewDir ? readPreviewDirLogs(previewDir, supervisorLogPath) : readMakerPreviewLogs(supervisorLogPath);
       sendJson(response, 200, { ...logs, supervisorLogPath });
     } else if (request.method === "GET" && url.pathname === "/api/maker/preview/running") {
       sendJson(response, 200, { projects: listRunningPreviewProjects((pid) => probeProcessPresence(pid) === "alive") });
@@ -1904,7 +1951,9 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, 404, { error: "not_found" });
     }
   } catch (error) {
-    sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== "project_not_open") bridgeLog.push(`[route-error] ${request.method} ${request.url?.split("?")[0]}: ${message}`);
+    sendJson(response, 400, { error: message });
   }
 });
 
@@ -1964,7 +2013,7 @@ const agentChannelTimer = setInterval(() => {
   } catch {
     // ignore periodic sync failures
   }
-  void processAgentInbox();
+  processAgentInbox().catch(() => undefined);
 }, 500);
 
 function shutdown(): void {
@@ -1981,3 +2030,6 @@ function shutdown(): void {
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(`[TapMakerWork] unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}\n`);
+});

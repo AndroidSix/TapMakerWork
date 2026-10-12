@@ -1,11 +1,15 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { BridgeEvent } from "@tapmakerwork/protocol";
 import { loadCommunityConfig } from "../community-config.js";
 import { readJson, sendJson } from "../http-json.js";
 import {
+  compressBackupPath,
   imageCompressPublicSettings,
   readImageCompressSettings,
   resolveDefaultCompressTarget,
+  revertCompressedFile,
   runImageCompress,
   writeImageCompressSettings,
   type ImageCompressProgress,
@@ -22,6 +26,13 @@ import {
 } from "../new-game-radar.js";
 import type { BridgeRoute } from "./route-table.js";
 
+const IMAGE_CONTENT_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp"
+};
+
 export interface ToolsRouteContext {
   projectRoot: () => string | undefined;
   broadcast: (event: BridgeEvent) => void;
@@ -29,18 +40,22 @@ export interface ToolsRouteContext {
 
 export function createToolsRoutes({ projectRoot, broadcast }: ToolsRouteContext): BridgeRoute[] {
   let imageCompressJob: { progress: ImageCompressProgress; controller: AbortController } | undefined;
+  const backupDir = path.join(os.tmpdir(), `tapmakerwork-compress-originals-${process.pid}`);
 
-  function startImageCompressJob(target: string, recursive: boolean): ImageCompressProgress {
+  function startImageCompressJob(target: string, recursive: boolean, force: boolean): ImageCompressProgress {
     const controller = new AbortController();
     const job = {
       controller,
-      progress: { ok: false, state: "running", target: path.resolve(target), total: 0, processed: 0, compressed: 0, skipped: 0, failed: 0, savedBytes: 0, tinyEnabled: false, keyCount: 0, engine: "", files: [], aiCopyText: "", startedAt: new Date().toISOString() } as ImageCompressProgress
+      progress: { ok: false, state: "running", target: path.resolve(target), total: 0, processed: 0, compressed: 0, skipped: 0, cached: 0, failed: 0, savedBytes: 0, tinyEnabled: false, keyCount: 0, engine: "", files: [], aiCopyText: "", startedAt: new Date().toISOString() } as ImageCompressProgress
     };
     imageCompressJob = job;
+    fs.rmSync(backupDir, { recursive: true, force: true });
     broadcast({ type: "log.append", channel: "build", lines: [`图片压缩开始：${job.progress.target}`] });
     void runImageCompress({
       target,
       recursive,
+      force,
+      backupDir,
       signal: controller.signal,
       onProgress: (progress) => {
         const finished = progress.files.at(-1);
@@ -52,7 +67,7 @@ export function createToolsRoutes({ projectRoot, broadcast }: ToolsRouteContext)
     }).then((result) => {
       const summary = result.state === "failed"
         ? `图片压缩失败：${result.error}`
-        : `图片压缩${result.state === "cancelled" ? "已停止" : "完成"}：处理 ${result.processed}/${result.total}，压缩 ${result.compressed}，跳过 ${result.skipped}，失败 ${result.failed}，节省 ${(result.savedBytes / 1024).toFixed(1)} KB`;
+        : `图片压缩${result.state === "cancelled" ? "已停止" : "完成"}：处理 ${result.processed}/${result.total}，压缩 ${result.compressed}，跳过 ${result.skipped}（缓存命中 ${result.cached}），失败 ${result.failed}，节省 ${(result.savedBytes / 1024).toFixed(1)} KB`;
       broadcast({ type: "log.append", channel: "build", lines: [summary] });
     }).catch((error: unknown) => {
       job.progress = { ...job.progress, state: "failed", error: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() };
@@ -74,6 +89,45 @@ export function createToolsRoutes({ projectRoot, broadcast }: ToolsRouteContext)
       path: "/api/tools/image-compress/job",
       handle({ response }) {
         sendJson(response, 200, { job: imageCompressJob?.progress ?? null });
+      }
+    },
+    {
+      method: "GET",
+      path: "/api/tools/image-compress/preview",
+      handle({ response, url }) {
+        const fileIndex = Number(url.searchParams.get("index"));
+        const file = imageCompressJob?.progress.files[fileIndex];
+        if (!file) {
+          sendJson(response, 404, { error: "file_not_in_job" });
+          return;
+        }
+        const wantsOriginal = url.searchParams.get("side") === "before" && file.backedUp && !file.reverted;
+        const source = wantsOriginal ? compressBackupPath(backupDir, fileIndex, file.path) : file.path;
+        if (!fs.existsSync(source)) {
+          sendJson(response, 404, { error: "image_missing" });
+          return;
+        }
+        response.writeHead(200, {
+          "content-type": IMAGE_CONTENT_TYPES[path.extname(file.path).toLowerCase()] ?? "application/octet-stream",
+          "cache-control": "no-store",
+          "access-control-allow-origin": "*"
+        });
+        response.end(fs.readFileSync(source));
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/tools/image-compress/revert",
+      async handle({ request, response }) {
+        const body = await readJson(request) as { index?: unknown };
+        if (!imageCompressJob || imageCompressJob.progress.state === "running") {
+          sendJson(response, 409, { error: "no_finished_job" });
+          return;
+        }
+        if (typeof body.index !== "number") throw new Error("file_index_required");
+        const file = revertCompressedFile(imageCompressJob.progress, body.index, backupDir);
+        broadcast({ type: "log.append", channel: "build", lines: [`已还原原图：${file.path}`] });
+        sendJson(response, 200, { job: imageCompressJob.progress });
       }
     },
     {
@@ -103,6 +157,7 @@ export function createToolsRoutes({ projectRoot, broadcast }: ToolsRouteContext)
           target?: string;
           projectRoot?: string;
           recursive?: boolean;
+          force?: boolean;
         };
         if (body.action === "save-settings") {
           const patch: Partial<ImageCompressSettings> = {
@@ -122,7 +177,7 @@ export function createToolsRoutes({ projectRoot, broadcast }: ToolsRouteContext)
           } else if (imageCompressJob?.progress.state === "running") {
             sendJson(response, 409, { error: "已有压缩任务在进行中", job: imageCompressJob.progress });
           } else {
-            sendJson(response, 202, { job: startImageCompressJob(target, body.recursive !== false) });
+            sendJson(response, 202, { job: startImageCompressJob(target, body.recursive !== false, body.force === true) });
           }
         } else if (body.action === "cancel") {
           imageCompressJob?.controller.abort();

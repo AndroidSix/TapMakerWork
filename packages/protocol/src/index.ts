@@ -210,6 +210,59 @@ export interface ProjectWorkflowOverview {
   } | undefined;
 }
 
+export interface LuaSymbol {
+  name: string;
+  kind: "function" | "field";
+  signature: string;
+  doc?: string;
+  file: string;
+  line: number;
+}
+
+export interface LuaDiagnostic {
+  line: number;
+  column: number;
+  message: string;
+}
+
+export interface PreviewSessionSummary {
+  projectRoot: string;
+  projectName: string;
+  state: string;
+  /** null = PID 存在但无法确认（如权限不足）。 */
+  alive: boolean | null;
+  previewDir: string;
+  runtimePid?: number;
+  supervisorPid?: number;
+  startedAt?: string;
+  supervisorLogPath?: string;
+}
+
+export type AssetKind = "image" | "audio" | "video" | "model" | "font" | "other";
+
+export interface TrashedAsset {
+  id: string;
+  originalPath: string;
+  bytes: number;
+  trashedAt: string;
+}
+
+export interface AssetSizeItem {
+  path: string;
+  bytes: number;
+  kind: AssetKind;
+  referenced: boolean;
+}
+
+export interface AssetSizeReport {
+  totalBytes: number;
+  byKind: Record<AssetKind, { count: number; bytes: number }>;
+  largest: AssetSizeItem[];
+  unreferenced: { count: number; bytes: number };
+  compressCandidates: { count: number; bytes: number };
+  trash: { count: number; bytes: number };
+}
+
 export type SnapshotSource = "conversion" | "sidecar" | "runtime" | "empty";
 
 export type AgentUiRequest =

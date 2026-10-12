@@ -1021,7 +1021,7 @@ export type CallSiteTextWritebackResult = {
   reason: "ok" | "unchanged" | "no_match" | "ambiguous" | "empty";
 };
 
-function listLuaFilesUnder(projectRoot: string, relativeDir: string): string[] {
+export function listLuaFilesUnder(projectRoot: string, relativeDir: string): string[] {
   const scriptsRoot = path.join(projectRoot, relativeDir);
   if (!fs.existsSync(scriptsRoot)) return [];
   const files: string[] = [];

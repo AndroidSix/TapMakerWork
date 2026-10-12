@@ -1,11 +1,13 @@
 import Editor, { DiffEditor, loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor/editor/editor.api";
+import "monaco-editor/features/register.all";
 import "monaco-editor/languages/definitions/lua/register";
 import "monaco-editor/language/json/monaco.contribution";
 import "monaco-editor/languages/definitions/typescript/register";
 import "monaco-editor/languages/definitions/javascript/register";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 import JsonWorker from "monaco-editor/language/json/json.worker?worker";
+import { registerLuaLanguageFeatures } from "./lua-monaco";
 
 self.MonacoEnvironment = {
   getWorker(_moduleId: string, label: string) {
@@ -14,5 +16,6 @@ self.MonacoEnvironment = {
   }
 };
 loader.config({ monaco });
+registerLuaLanguageFeatures(monaco);
 
 export { Editor as CodeEditor, DiffEditor as CodeDiffEditor };

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { PreviewSessionSummary } from "@tapmakerwork/protocol";
 import { listAccountHomes } from "./maker-accounts.js";
 
 export interface RuntimeFileStatus {
@@ -302,8 +303,19 @@ export function classifyRuntimeProject(runtimeProjectName: string | undefined, o
 
 /** 当前仍在运行 Maker 预览（runtime 进程存活）的项目 realpath 列表。 */
 export function listRunningPreviewProjects(isAlive: (pid: number) => boolean, roots = runtimeFileSearchRoots()): string[] {
-  const running = new Set<string>();
-  for (const root of roots.filter((candidate) => path.basename(candidate) === "preview")) {
+  return listPreviewSessions((pid) => isAlive(pid) ? "alive" : "missing", roots)
+    .filter((session) => session.alive === true)
+    .map((session) => session.projectRoot);
+}
+
+function previewStatusRank(status: LocalPreviewStatus): number {
+  return status.process_alive === true ? 3 : status.process_alive === null ? 2 : status.state !== "stopped" ? 1 : 0;
+}
+
+/** 所有账号目录下未停止的 Maker 预览会话（同一项目取最“活”的一份），存活的排前面。 */
+export function listPreviewSessions(presence: (pid: number) => PidPresence, roots = runtimeFileSearchRoots()): PreviewSessionSummary[] {
+  const byProject = new Map<string, { status: LocalPreviewStatus; summary: PreviewSessionSummary }>();
+  for (const root of new Set(roots.filter((candidate) => path.basename(candidate) === "preview"))) {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
@@ -312,20 +324,38 @@ export function listRunningPreviewProjects(isAlive: (pid: number) => boolean, ro
     }
     for (const entry of entries) {
       if (!/^[a-f0-9]{64}$/.test(entry.name)) continue;
+      const previewDir = path.join(root, entry.name);
+      let session: PreviewSessionFile & { project_realpath?: unknown };
       try {
-        const session = JSON.parse(fs.readFileSync(path.join(root, entry.name, "session.json"), "utf8")) as {
-          project_realpath?: unknown;
-          state?: unknown;
-          runtime_pid?: unknown;
-        };
-        if (typeof session.project_realpath !== "string" || session.state === "stopped") continue;
-        if (isAlive(Number(session.runtime_pid ?? 0))) running.add(session.project_realpath);
+        session = JSON.parse(fs.readFileSync(path.join(previewDir, "session.json"), "utf8")) as PreviewSessionFile & { project_realpath?: unknown };
       } catch {
-        // 没有会话或会话损坏即视为未运行
+        continue;
       }
+      if (typeof session.project_realpath !== "string") continue;
+      const status = statusFromSession(previewDir, session, presence);
+      if (status.state === "stopped") continue;
+      const existing = byProject.get(session.project_realpath);
+      if (existing && previewStatusRank(existing.status) >= previewStatusRank(status)) continue;
+      byProject.set(session.project_realpath, {
+        status,
+        summary: {
+          projectRoot: session.project_realpath,
+          projectName: path.basename(session.project_realpath),
+          state: status.state,
+          alive: status.process_alive,
+          previewDir,
+          ...(status.runtime_pid ? { runtimePid: status.runtime_pid } : {}),
+          ...(status.supervisor_pid ? { supervisorPid: status.supervisor_pid } : {}),
+          ...(status.started_at ? { startedAt: status.started_at } : {}),
+          ...(status.supervisor_log_path ? { supervisorLogPath: status.supervisor_log_path } : {})
+        }
+      });
     }
   }
-  return [...running];
+  const aliveRank = (session: PreviewSessionSummary) => session.alive === true ? 2 : session.alive === null ? 1 : 0;
+  return [...byProject.values()]
+    .map((entry) => entry.summary)
+    .sort((left, right) => aliveRank(right) - aliveRank(left) || (right.startedAt ?? "").localeCompare(left.startedAt ?? ""));
 }
 
 export type PidPresence = "alive" | "missing" | "unknown";
@@ -386,7 +416,6 @@ export function readLocalPreviewStatus(
     return STOPPED;
   }
   const hash = createHash("sha256").update(realpath).digest("hex");
-  const rank = (status: LocalPreviewStatus) => status.process_alive === true ? 3 : status.process_alive === null ? 2 : status.state !== "stopped" ? 1 : 0;
   let best: LocalPreviewStatus = STOPPED;
   for (const root of new Set(roots.filter((candidate) => path.basename(candidate) === "preview"))) {
     const previewDir = path.join(root, hash);
@@ -397,7 +426,7 @@ export function readLocalPreviewStatus(
       continue;
     }
     const status = statusFromSession(previewDir, session, presence);
-    if (rank(status) > rank(best) || (best === STOPPED && status.preview_dir)) best = status;
+    if (previewStatusRank(status) > previewStatusRank(best) || (best === STOPPED && status.preview_dir)) best = status;
   }
   return best;
 }
