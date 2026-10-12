@@ -30,7 +30,9 @@ export function checkBridgeRequest(
   if (origin) return isAllowedOrigin(origin, options.allowDevOrigin) ? { ok: true } : { ok: false, reason: "invalid_origin" };
   const fetchSite = request.headers["sec-fetch-site"];
   const fromWebPage = fetchSite === "cross-site" || fetchSite === "same-site";
-  if (fromWebPage && !(request.method === "GET" && PASSIVE_IMAGE_PATHS.has(request.pathname))) {
+  // Web pages always attach Origin to CORS requests; only Electron's file:// Studio sends them without one.
+  const packagedStudioFetch = request.headers["sec-fetch-mode"] === "cors";
+  if (fromWebPage && !packagedStudioFetch && !(request.method === "GET" && PASSIVE_IMAGE_PATHS.has(request.pathname))) {
     return { ok: false, reason: "cross_site_request" };
   }
   return { ok: true };

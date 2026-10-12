@@ -33,10 +33,18 @@ describe("checkBridgeRequest", () => {
   });
 
   it("blocks cross-site browser requests without Origin except passive image GETs", () => {
-    expect(checkBridgeRequest(request({ "sec-fetch-site": "cross-site" }, "/api/runtime/commands"), packaged))
+    expect(checkBridgeRequest(request({ "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors" }, "/api/runtime/commands"), packaged))
       .toEqual({ ok: false, reason: "cross_site_request" });
-    expect(checkBridgeRequest(request({ "sec-fetch-site": "cross-site" }, "/api/project/asset"), packaged)).toEqual({ ok: true });
+    expect(checkBridgeRequest(request({ "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" }, "/api/runtime/commands"), packaged))
+      .toEqual({ ok: false, reason: "cross_site_request" });
+    expect(checkBridgeRequest(request({ "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors" }, "/api/project/asset"), packaged)).toEqual({ ok: true });
     expect(checkBridgeRequest(request({ "sec-fetch-site": "same-site" }, "/api/project/asset", "POST"), packaged))
       .toEqual({ ok: false, reason: "cross_site_request" });
+  });
+
+  it("allows the packaged Studio, whose file:// fetches carry no Origin", () => {
+    const studioFetch = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors" };
+    expect(checkBridgeRequest(request(studioFetch, "/api/health"), packaged)).toEqual({ ok: true });
+    expect(checkBridgeRequest(request(studioFetch, "/api/project/open", "POST"), packaged)).toEqual({ ok: true });
   });
 });
