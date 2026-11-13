@@ -51,6 +51,8 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
   publishedAt: "2026-11-13",
   force: false,
   downloads: {
+    macArm64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.9/TapMakerWork-0.1.9-mac-arm64.pkg",
+    macX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.9/TapMakerWork-0.1.9-mac-x64.pkg",
     windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.9/TapMakerWork-0.1.9-windows-x64.exe",
     page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.9",
     site: "https://androidsix.github.io/tapmakerwork-site/",
