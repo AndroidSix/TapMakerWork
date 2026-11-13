@@ -1,5 +1,18 @@
 # Change log
 
+<a id="release-0.1.9"></a>
+
+## 2026-11-13 — TapMakerWork 0.1.9
+
+### 修复
+- **macOS 录屏授权反复弹窗（真正的根因）**：0.1.8 的 `.app` 没有代码签名。`dist:mac` 里的 `CSC_IDENTITY_AUTO_DISCOVERY=false` 让 electron-builder 完全跳过签名，产出的包只有 Electron 二进制自带的链接器签名（`Identifier=Electron`），`Contents/_CodeSignature/CodeResources` 缺失，`codesign --verify` 直接失败。macOS 的 TCC 靠代码签名把录屏授权绑定到 app 身份，签名无效时系统无法复用已记录的授权 —— 所以就算在系统设置里允许了，每次抓屏仍会重新弹框。0.1.8 里加的门禁只能拦住「未授权」，拦不住「授权了但签名对不上」。
+- 新增 `scripts/after-pack.cjs`：打包后自动补做签名（默认 ad-hoc，可通过 `TAPMAKERWORK_CODESIGN_IDENTITY` 指定真实证书），并立即用 `codesign --verify --strict` 校验，不通过就让构建失败，避免再发出带缺陷的安装包。
+- 主进程新增安装包签名自检：签名无效时抓屏直接返回 `app_signature_invalid`，不再调用 `getSources()` 去触发系统框；权限状态新增 `signatureValid` 字段。
+- 设置页「系统授权」卡片与授权向导改为明确提示「安装包签名无效」，不再把它显示成未授权。
+
+### 打包与发布
+- 版本号同步至 **0.1.9**（GitHub Release 标签 **`v0.1.9`**）。
+
 <a id="release-0.1.8"></a>
 
 ## 2026-11-12 — TapMakerWork 0.1.8

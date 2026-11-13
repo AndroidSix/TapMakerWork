@@ -70,7 +70,8 @@ export function DesktopPermissionsCard({ permissions: desktopPermissions, busy: 
         <button onClick={() => void runPermissionAction("confirm")} disabled={Boolean(permissionBusy)}><CheckCircle2 size={13} />{permissionConfirmed ? "已确认授权" : "我已授权"}</button>
         <button className="primary" onClick={() => void runPermissionAction("restart")} disabled={!desktopPermissions.ready && !permissionConfirmed}>重启应用</button>
       </div>
-      {!desktopPermissions.stableIdentity && <p className="desktop-card-note">开发模式的授权归属 Electron；请用签名后的正式安装包在新机器授权。</p>}
+      {desktopPermissions.signatureValid === false && <p className="desktop-card-note warning">当前安装包签名无效，macOS 会忘记录屏授权并每次重新询问。请重新安装官方签名版本。</p>}
+      {desktopPermissions.signatureValid !== false && !desktopPermissions.stableIdentity && <p className="desktop-card-note">开发模式的授权归属 Electron；请用签名后的正式安装包在新机器授权。</p>}
     </section>
   );
 }

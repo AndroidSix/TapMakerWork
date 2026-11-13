@@ -2,6 +2,8 @@ export interface DesktopPermissionState {
   platform: string;
   packaged: boolean;
   stableIdentity: boolean;
+  /** 安装包签名是否通过 codesign 校验；无效时系统无法保存录屏授权。 */
+  signatureValid?: boolean | undefined;
   screen: "granted" | "denied" | "restricted" | "not-determined" | "unavailable";
   accessibility: "granted" | "denied" | "restricted" | "not-determined" | "unavailable";
   ready: boolean;
