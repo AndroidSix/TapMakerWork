@@ -1,6 +1,7 @@
 appId: com.androidsup.tapmakerwork
 productName: TapMakerWork
 copyright: Copyright © 2026 androidsup
+afterPack: scripts/after-pack.cjs
 afterSign: scripts/notarize.cjs
 directories:
   output: outputs/installers
