@@ -32,7 +32,9 @@ if (process.platform === "darwin") {
 app.setName("TapMakerWork");
 app.setAppUserModelId("com.androidsup.tapmakerwork");
 const EULA_VERSION = "2026-09-21";
-const hardwareAccelerationAtLaunch = readDesktopSettings().hardwareAcceleration === true;
+// GPU 合成默认开启。软件渲染下 Monaco、画布与预览全部走 CPU 光栅化，
+// 会让功耗与内存显著上升；只有用户显式关闭时才降级。
+const hardwareAccelerationAtLaunch = readDesktopSettings().hardwareAcceleration !== false;
 if (!hardwareAccelerationAtLaunch) app.disableHardwareAcceleration();
 
 const MAKER_CONSOLE_URL = "https://maker.taptap.cn/";
@@ -92,6 +94,45 @@ function windowsCaptureCandidates(windows: ListedWindow[]): { id: string; name: 
     .map((item) => ({ id: `win:${item.hwnd}`, name: item.title }));
 }
 
+/**
+ * 抓屏的主要开销是 PNG 编码（toDataURL），而不是读取像素本身。
+ * 用原始位图算一个廉价哈希，画面没变就复用上一次的 dataUrl。
+ * 键含窗口 id 与目标尺寸，避免切换窗口或分辨率后拿到过期帧。
+ */
+const runtimeFrameCache = new Map<string, { digest: string; dataUrl: string; width: number; height: number }>();
+
+function bitmapDigest(image: NativeImage): string {
+  const bitmap = image.toBitmap();
+  let hash = 0x811c9dc5;
+  // 采样步长让哈希与位图大小解耦，同时仍然对局部变化敏感。
+  const step = bitmap.length > 64_000 ? 4 : 1;
+  for (let index = 0; index < bitmap.length; index += step) {
+    hash ^= bitmap[index]!;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${bitmap.length}:${(hash >>> 0).toString(16)}`;
+}
+
+function encodeRuntimeFrame(
+  cacheKey: string,
+  image: NativeImage
+): { dataUrl: string; width: number; height: number; unchanged: boolean } {
+  const size = image.getSize();
+  const digest = bitmapDigest(image);
+  const cached = runtimeFrameCache.get(cacheKey);
+  if (cached && cached.digest === digest && cached.width === size.width && cached.height === size.height) {
+    return { dataUrl: cached.dataUrl, width: cached.width, height: cached.height, unchanged: true };
+  }
+  const dataUrl = image.toDataURL();
+  // 缓存按窗口/尺寸分键，正常只有个位数条目；超出上限时清掉最旧的，避免长期驻留大字符串。
+  if (runtimeFrameCache.size >= 8 && !runtimeFrameCache.has(cacheKey)) {
+    const oldest = runtimeFrameCache.keys().next();
+    if (!oldest.done) runtimeFrameCache.delete(oldest.value);
+  }
+  runtimeFrameCache.set(cacheKey, { digest, dataUrl, width: size.width, height: size.height });
+  return { dataUrl, width: size.width, height: size.height, unchanged: false };
+}
+
 async function captureOnWindows(opts?: {
   projectName?: string;
   sourceId?: string;
@@ -116,11 +157,12 @@ async function captureOnWindows(opts?: {
     const frame = nativeImage.createFromBuffer(shot.png);
     if (shot.blank || frame.isEmpty()) return { ok: false as const, error: "runtime_frame_empty", permission, candidates };
     const frameSize = frame.getSize();
+    const encoded = encodeRuntimeFrame(`win:${selected.hwnd}:${frameSize.width}x${frameSize.height}`, frame);
     return {
       ok: true as const,
       sourceId: `win:${selected.hwnd}`,
       sourceName: selected.title,
-      dataUrl: frame.toDataURL(),
+      dataUrl: encoded.dataUrl,
       width: frameSize.width,
       height: frameSize.height,
       permission,
@@ -201,6 +243,10 @@ interface DesktopPermissionState {
   screen: PermissionValue;
   accessibility: PermissionValue;
   ready: boolean;
+  /** 用户此前已确认过授权（持久化，跨重启与缓存清理有效）。 */
+  acknowledged: boolean;
+  /** 用户此前主动选择「稍后设置」（持久化）。 */
+  dismissed: boolean;
 }
 
 type UpdatePhase = "idle" | "checking" | "available" | "up-to-date" | "downloading" | "downloaded" | "error" | "unconfigured";
@@ -257,6 +303,9 @@ desktopLog(`main loaded packaged=${app.isPackaged} ready=${app.isReady()}`);
 app.once("ready", () => desktopLog("ready event received"));
 
 function permissionState(): DesktopPermissionState {
+  const settings = readDesktopSettings();
+  const acknowledged = Boolean(settings.permissionsAcknowledgedAt);
+  const dismissed = Boolean(settings.permissionsDismissedAt);
   const stableIdentity = (() => {
     if (!app.isPackaged) return false;
     if (process.platform !== "darwin") return true;
@@ -265,7 +314,7 @@ function permissionState(): DesktopPermissionState {
     return result.status === 0 && !/flags=.*adhoc/i.test(details) && !/TeamIdentifier=not set/i.test(details);
   })();
   if (process.platform !== "darwin") {
-    return { platform: process.platform, packaged: app.isPackaged, stableIdentity, screen: "granted", accessibility: "granted", ready: true };
+    return { platform: process.platform, packaged: app.isPackaged, stableIdentity, screen: "granted", accessibility: "granted", ready: true, acknowledged, dismissed };
   }
   const screen = systemPreferences.getMediaAccessStatus("screen") as PermissionValue;
   const accessibility = systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied";
@@ -275,7 +324,9 @@ function permissionState(): DesktopPermissionState {
     stableIdentity,
     screen,
     accessibility,
-    ready: screen === "granted" && accessibility === "granted"
+    ready: screen === "granted" && accessibility === "granted",
+    acknowledged,
+    dismissed
   };
 }
 
@@ -303,6 +354,10 @@ interface DesktopSettings {
   gamealgoGameKey?: string | undefined;
   mutedUpdateVersion?: string | undefined;
   snoozeUpdateUntil?: number | undefined;
+  /** 用户已在引导里确认过授权；与 TCC 实时状态分开存，避免 localStorage 被清后重复弹窗。 */
+  permissionsAcknowledgedAt?: string | undefined;
+  /** 用户主动点了「稍后设置」；只应被用户重新打开引导时清除。 */
+  permissionsDismissedAt?: string | undefined;
 }
 
 let telemetry: TelemetryController | undefined;
@@ -754,6 +809,18 @@ function createWindow(): void {
 }
 
 ipcMain.handle("tapmakerwork:permissions-get", () => permissionState());
+ipcMain.handle("tapmakerwork:permissions-acknowledge", () => {
+  writeDesktopSettings({ permissionsAcknowledgedAt: new Date().toISOString(), permissionsDismissedAt: undefined });
+  return sendPermissionState();
+});
+ipcMain.handle("tapmakerwork:permissions-dismiss", () => {
+  writeDesktopSettings({ permissionsDismissedAt: new Date().toISOString() });
+  return sendPermissionState();
+});
+ipcMain.handle("tapmakerwork:permissions-reopen", () => {
+  writeDesktopSettings({ permissionsDismissedAt: undefined });
+  return sendPermissionState();
+});
 ipcMain.handle("tapmakerwork:bring-to-front", () => bringIdeToFront(true));
 ipcMain.handle("tapmakerwork:clipboard-write", (_event, value: unknown) => {
   if (typeof value !== "string" || !value) return { ok: false, error: "clipboard_text_empty" };
@@ -786,7 +853,7 @@ ipcMain.handle("tapmakerwork:app-restart", () => {
   app.exit(0);
 });
 ipcMain.handle("tapmakerwork:hardware-get", () => {
-  const enabled = readDesktopSettings().hardwareAcceleration === true;
+  const enabled = readDesktopSettings().hardwareAcceleration !== false;
   return {
     enabled,
     active: hardwareAccelerationAtLaunch,
@@ -1267,9 +1334,22 @@ ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
   orientation?: "portrait" | "landscape";
   viewportWidth?: number;
   viewportHeight?: number;
+  /** 只有用户显式操作（刷新画面 / 选窗口 / 去授权）才允许触发系统授权框。 */
+  allowPermissionPrompt?: boolean;
 }) => {
   if (process.platform === "win32") return captureOnWindows(opts);
   const permission = process.platform === "darwin" ? systemPreferences.getMediaAccessStatus("screen") : "granted";
+  // macOS 的录屏授权无法在应用内申请（askForMediaAccess 只支持麦克风与摄像头），
+  // 而 getSources() 一旦在未授权时被调用就会顶出系统 TCC 授权框。渲染层有三个
+  // 后台轮询在抓屏，放行会让系统框反复出现，因此默认拦住：只有显式请求才枚举窗口。
+  if (permission !== "granted" && !opts?.allowPermissionPrompt) {
+    return {
+      ok: false,
+      error: "screen_recording_permission_required",
+      permission,
+      candidates: []
+    };
+  }
   try {
     const portrait = opts?.orientation !== "landscape";
     const sources = await desktopCapturer.getSources({
@@ -1322,11 +1402,12 @@ ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
       frame = cropRuntimeFrame(frame, targetAspect);
     }
     const frameSize = frame.getSize();
+    const encoded = encodeRuntimeFrame(`${selected.id}:${frameSize.width}x${frameSize.height}`, frame);
     return {
       ok: true,
       sourceId: selected.id,
       sourceName: selected.name,
-      dataUrl: frame.toDataURL(),
+      dataUrl: encoded.dataUrl,
       width: frameSize.width,
       height: frameSize.height,
       permission,

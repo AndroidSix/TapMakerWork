@@ -43,8 +43,10 @@ export function useDesktopSystem({ toast, trackTelemetry }: {
         if (!active) return;
         setDesktopPermissions(state);
         if (state.ready) setPermissionConfirmed(true);
-        const dismissed = localStorage.getItem("tapmakerwork.permissions.dismissed") === "1";
-        if (state.platform === "darwin" && !state.ready && !dismissed) setPermissionGuideOpen(true);
+        // 以主进程持久化的确认 / 稍后设置状态为准；localStorage 只作旧版本兼容兜底。
+        const legacyDismissed = localStorage.getItem("tapmakerwork.permissions.dismissed") === "1";
+        const settled = Boolean(state.acknowledged) || Boolean(state.dismissed) || legacyDismissed;
+        if (state.platform === "darwin" && !state.ready && !settled) setPermissionGuideOpen(true);
       });
     }
     if (updatesApi) {
@@ -82,10 +84,9 @@ export function useDesktopSystem({ toast, trackTelemetry }: {
     }
     const removePermissionListener = permissionsApi?.onChanged((state) => {
       setDesktopPermissions(state);
-      if (state.ready) {
-        setPermissionConfirmed(true);
-        localStorage.removeItem("tapmakerwork.permissions.dismissed");
-      }
+      // 只更新实时状态，不因为 ready 就清掉「已确认 / 稍后设置」记录：
+      // ad-hoc 签名下 TCC 授权会反复失效，清掉记录会让引导弹窗无限重开。
+      if (state.ready) setPermissionConfirmed(true);
     });
     const removeUpdateListener = updatesApi?.onState((state) => {
       setDesktopUpdate(state);
@@ -137,7 +138,8 @@ export function useDesktopSystem({ toast, trackTelemetry }: {
         return;
       }
       if (action === "confirm") {
-        const state = await api.get();
+        // 把「我已授权」写进主进程设置文件，重启或清缓存后不再重复询问。
+        const state = api.acknowledge ? await api.acknowledge() : await api.get();
         setDesktopPermissions(state);
         setPermissionConfirmed(true);
         toast(state.ready ? "系统权限已检测为就绪，可以重启应用" : "已记录你的授权确认；现在可以重启应用完成系统状态刷新", "success");
@@ -161,6 +163,16 @@ export function useDesktopSystem({ toast, trackTelemetry }: {
   const closePermissionGuide = useCallback(() => {
     localStorage.setItem("tapmakerwork.permissions.dismissed", "1");
     setPermissionGuideOpen(false);
+    // 同时写入主进程设置文件，避免缓存被清后引导又弹回来。
+    void window.tapMakerWork?.permissions?.dismiss?.().catch(() => undefined);
+  }, []);
+
+  /** 用户在设置页点「重新查看授权引导」时调用，清除稍后设置记录。 */
+  const reopenPermissionGuide = useCallback(async () => {
+    localStorage.removeItem("tapmakerwork.permissions.dismissed");
+    const state = await window.tapMakerWork?.permissions?.reopen?.().catch(() => undefined);
+    if (state) setDesktopPermissions(state);
+    setPermissionGuideOpen(true);
   }, []);
 
   const runDesktopUpdateAction = useCallback(async (action: DesktopUpdateAction) => {
@@ -276,6 +288,7 @@ export function useDesktopSystem({ toast, trackTelemetry }: {
     legalBusy,
     runPermissionAction,
     closePermissionGuide,
+    reopenPermissionGuide,
     runDesktopUpdateAction,
     setHardwareAcceleration,
     acceptLegalTerms,

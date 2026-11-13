@@ -5,6 +5,10 @@ export interface DesktopPermissionState {
   screen: "granted" | "denied" | "restricted" | "not-determined" | "unavailable";
   accessibility: "granted" | "denied" | "restricted" | "not-determined" | "unavailable";
   ready: boolean;
+  /** 用户已确认过授权（主进程持久化，跨重启与缓存清理有效）。 */
+  acknowledged?: boolean | undefined;
+  /** 用户主动选择过「稍后设置」（主进程持久化）。 */
+  dismissed?: boolean | undefined;
 }
 
 export interface DesktopUpdateState {

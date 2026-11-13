@@ -41,6 +41,9 @@ declare global {
         request: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
         open: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
         restart: () => Promise<void>;
+        acknowledge: () => Promise<DesktopPermissionState>;
+        dismiss: () => Promise<DesktopPermissionState>;
+        reopen: () => Promise<DesktopPermissionState>;
         onChanged: (listener: (state: DesktopPermissionState) => void) => () => void;
       };
       updates?: {
@@ -70,7 +73,7 @@ declare global {
         onTrack?: (listener: (name: string, props?: Record<string, unknown>) => void) => () => void;
         onSessionEnd?: (listener: (payload: { session_ms: number; active_ms: number }) => void) => () => void;
       };
-      captureRuntime?: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) => Promise<{
+      captureRuntime?: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) => Promise<{
         ok: boolean;
         dataUrl?: string;
         sourceId?: string;
@@ -88,7 +91,7 @@ declare global {
         capture: () => Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
       };
       runtime?: {
-        capture: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) => Promise<{
+        capture: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) => Promise<{
           ok: boolean;
           dataUrl?: string;
           sourceId?: string;

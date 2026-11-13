@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPoi
 import { ExternalLink, MonitorPlay, RefreshCw, Save, X } from "lucide-react";
 import type { PreviewPanelState } from "@tapmakerwork/protocol";
 import { API, isEmbeddablePreviewUrl } from "./bridge-api";
+import { useScreenCaptureAllowed } from "./app/screen-permission";
 
 export interface PreviewDockProps {
   panel: PreviewPanelState | undefined;
@@ -31,6 +32,7 @@ export function PreviewDock({
   const [urlDraft, setUrlDraft] = useState(panel?.url || "");
   const [busy, setBusy] = useState<"save" | "refresh" | "">("");
   const [runtimeFrame, setRuntimeFrame] = useState<{ dataUrl: string; sourceId?: string; sourceName?: string; width?: number; height?: number }>();
+  const screenAllowed = useScreenCaptureAllowed();
   const frameRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const transport = panel?.transport || "auto";
@@ -78,24 +80,30 @@ export function PreviewDock({
 
   useEffect(() => {
     const captureRuntime = window.tapMakerWork?.captureRuntime || window.tapMakerWork?.runtime?.capture;
-    if (!runtimeLive || embeddable || !captureRuntime) {
+    // 未授权时不轮询：macOS 的系统录屏授权框由窗口枚举触发，后台反复抓屏会让它一直重弹。
+    if (!runtimeLive || embeddable || !captureRuntime || !screenAllowed) {
       setRuntimeFrame(undefined);
       return;
     }
     let active = true;
     let inFlight = false;
+    let lastDataUrl = "";
     const capture = async () => {
       if (inFlight || document.hidden) return;
       inFlight = true;
       try {
         const result = await captureRuntime({ projectName, orientation: panel?.orientation || "portrait" });
-        if (active && result.ok && result.dataUrl) setRuntimeFrame({
-          dataUrl: result.dataUrl,
-          ...(result.sourceId ? { sourceId: result.sourceId } : {}),
-          ...(result.sourceName ? { sourceName: result.sourceName } : {}),
-          ...(result.width ? { width: result.width } : {}),
-          ...(result.height ? { height: result.height } : {})
-        });
+        // 画面未变化时主进程会返回同一份 dataUrl；跳过 setState 避免无谓的重渲染。
+        if (active && result.ok && result.dataUrl && result.dataUrl !== lastDataUrl) {
+          lastDataUrl = result.dataUrl;
+          setRuntimeFrame({
+            dataUrl: result.dataUrl,
+            ...(result.sourceId ? { sourceId: result.sourceId } : {}),
+            ...(result.sourceName ? { sourceName: result.sourceName } : {}),
+            ...(result.width ? { width: result.width } : {}),
+            ...(result.height ? { height: result.height } : {})
+          });
+        }
       } catch {
         // The next capture retries while Runtime remains available.
       } finally {
@@ -103,9 +111,9 @@ export function PreviewDock({
       }
     };
     void capture();
-    const timer = window.setInterval(capture, 450);
+    const timer = window.setInterval(capture, 1_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [embeddable, panel?.orientation, projectName, runtimeLive]);
+  }, [embeddable, panel?.orientation, projectName, runtimeLive, screenAllowed]);
 
   const interactWithRuntime = useCallback(async (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (!runtimeFrame?.sourceId || !runtimeFrame.sourceName || !window.tapMakerWork?.runtime?.interact) return;

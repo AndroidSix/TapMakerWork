@@ -20,6 +20,9 @@ function mockDesktop() {
       request: vi.fn(async () => ({ ...notReady, screen: "granted" as const })),
       open: vi.fn(async () => notReady),
       restart: vi.fn(async () => undefined),
+      acknowledge: vi.fn(async () => ({ ...notReady, acknowledged: true })),
+      dismiss: vi.fn(async () => ({ ...notReady, dismissed: true })),
+      reopen: vi.fn(async () => notReady),
       onChanged: (listener) => { listeners.permission = listener; return () => undefined; }
     },
     updates: {
@@ -120,14 +123,35 @@ describe("useDesktopSystem", () => {
     unmount();
   });
 
-  it("clears the dismissed flag once permissions become ready", async () => {
+  it("keeps the dismissed flag after permissions become ready", async () => {
     const { listeners } = mockDesktop();
     localStorage.setItem("tapmakerwork.permissions.dismissed", "1");
     const { result, unmount } = setup();
     await flushPromises();
     act(() => listeners.permission?.({ ...notReady, screen: "granted", accessibility: "granted", ready: true }));
     expect(result.current.permissionConfirmed).toBe(true);
-    expect(localStorage.getItem("tapmakerwork.permissions.dismissed")).toBeNull();
+    // ad-hoc 签名下 TCC 授权会反复失效，清掉记录会让引导弹窗无限重开。
+    expect(localStorage.getItem("tapmakerwork.permissions.dismissed")).toBe("1");
+    expect(result.current.permissionGuideOpen).toBe(false);
+    unmount();
+  });
+
+  it("does not reopen the guide when the main process remembers the acknowledgement", async () => {
+    const { api } = mockDesktop();
+    api.permissions!.get = vi.fn(async () => ({ ...notReady, acknowledged: true }));
+    const { result, unmount } = setup();
+    await flushPromises();
+    expect(result.current.permissionGuideOpen).toBe(false);
+    unmount();
+  });
+
+  it("persists dismissal to the main process when closing the guide", async () => {
+    const { api } = mockDesktop();
+    const { result, unmount } = setup();
+    await flushPromises();
+    act(() => result.current.closePermissionGuide());
+    expect(api.permissions?.dismiss).toHaveBeenCalled();
+    expect(result.current.permissionGuideOpen).toBe(false);
     unmount();
   });
 
