@@ -1,28 +1,21 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import type { OnMount } from "@monaco-editor/react";
 import {
-  Box,
   ChevronRight,
-  CircleHelp,
   CirclePlay,
   Code2,
   FileCode2,
-  Files,
   Folder,
   FolderOpen,
   GitBranch,
   Image,
   Paintbrush,
-  Layers3,
   MonitorPlay,
   PanelBottom,
   Pause,
   Play,
   RefreshCw,
   Save,
-  Search,
-  Settings2,
-  ShieldAlert,
   SlidersHorizontal,
   Sparkles,
   Stethoscope,
@@ -30,14 +23,11 @@ import {
   Redo2,
   Undo2,
   Wifi,
-  WifiOff,
   Hammer,
   QrCode,
   ExternalLink,
   Copy,
   Activity,
-  Eye,
-  EyeOff,
   ArrowUp,
   ArrowDown,
   Plus,
@@ -45,10 +35,7 @@ import {
   MoreHorizontal,
   Columns2,
   LayoutDashboard,
-  Music2,
-  Video,
   Rocket,
-  Download,
   Maximize2,
   ZoomIn,
   ZoomOut,
@@ -62,12 +49,10 @@ import {
   Magnet,
   Cpu,
   LifeBuoy,
-  ScrollText,
   AlertTriangle,
   X,
   Heart,
   Gamepad2,
-  Users,
   MessageCircle,
   Map,
   Lightbulb,
@@ -151,7 +136,6 @@ import {
   AGENT_FRAME_INTERVAL_MS,
   AGENT_FRAME_AFTER_EDIT_MS,
   WRITEBACK_SKIP_REASON_TEXT,
-  LOG_CHANNELS,
   INITIAL_LOGS,
   DEFAULT_DEVICE_HINT
 } from "./app/constants";
@@ -163,23 +147,27 @@ import {
   loadSyncUiEditsToCode,
   loadOpenProjects,
   DEFAULT_LAYOUT,
-  terminalMaxHeight,
   clamp
 } from "./app/workspace-storage";
 import { displayValue, runtimeLayoutBox, uiChildren, visualWeight, keepValidSelection } from "./app/ui-values";
 import { findSafeAreaIssues, safeInsetsInCanvas, type SafeAreaIssue } from "./app/safe-area-check";
 import { indexUiNodes, measureCanvasNodes, SafeAreaOverlay, SafeAreaToggle } from "./app/safe-area";
 import { ToastStack } from "./app/ToastStack";
-import { iconForType, PanelResizer, RuntimeNode, HierarchyNode, FileTreeEntry } from "./app/tree-nodes";
+import { iconForType, PanelResizer, RuntimeNode } from "./app/tree-nodes";
 import { InspectorField, InspectorColorField, InspectorAssetField } from "./app/inspector-fields";
 import { UpdatePromptDialog } from "./app/update-dialogs";
 import { PermissionGuide, LegalConsentDialog, RuntimeErrorDialog, ProjectRejectDialog, RoadmapDialog, SponsorDialog } from "./app/dialogs";
-import { DesktopPermissionsCard, DesktopTelemetryCard, DesktopUpdateCard, MakerVersionSettings } from "./app/settings-cards";
 import { useDesktopSystem } from "./app/use-desktop-system";
+import { screenCaptureAllowed } from "./app/screen-permission";
 import { useMakerVersions } from "./app/use-maker-versions";
 import { useGitPanel } from "./app/use-git-panel";
 import { useWorkspaceLayout } from "./app/use-workspace-layout";
 import { useDocumentTabs } from "./app/use-document-tabs";
+import { TitleBar, type TitlePanelId } from "./app/title-bar";
+import { StatusBar } from "./app/status-bar";
+import { TerminalPanel } from "./app/terminal-panel";
+import { LeftPane, type LeftTab } from "./app/left-pane";
+import { SettingsPanel } from "./app/settings-panel";
 
 declare const __APP_VERSION__: string;
 
@@ -223,7 +211,7 @@ export function App() {
   const setLogs = useCallback((update: SetStateAction<Record<LogChannel, string[]>>) => {
     setUncappedLogs((current) => capLogChannels(typeof update === "function" ? update(current) : update));
   }, []);
-  const [leftTab, setLeftTab] = useState<"files" | "screens" | "hierarchy" | "assets" | "git">("screens");
+  const [leftTab, setLeftTab] = useState<LeftTab>("screens");
   const [centerTab, setCenterTab] = useState<CenterTab>("workflow");
   const [previewDockOpen, setPreviewDockOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
@@ -492,7 +480,6 @@ export function App() {
   const {
     desktopPermissions,
     permissionGuideOpen,
-    setPermissionGuideOpen,
     permissionBusy,
     permissionConfirmed,
     desktopUpdate,
@@ -509,6 +496,7 @@ export function App() {
     legalBusy,
     runPermissionAction,
     closePermissionGuide,
+    reopenPermissionGuide,
     runDesktopUpdateAction,
     setHardwareAcceleration,
     acceptLegalTerms,
@@ -843,19 +831,20 @@ export function App() {
   uploadAgentPreviewFrameRef.current = uploadAgentPreviewFrame;
 
   useEffect(() => {
-    if (!project || health?.runtimeScene !== "live") return;
+    // 只在录屏已授权时上传 Agent 帧；未授权时的窗口枚举会反复顶出 macOS 系统授权框。
+    if (!project || health?.runtimeScene !== "live" || !screenCaptureAllowed(desktopPermissions)) return;
     void uploadAgentPreviewFrame();
     const timer = window.setInterval(() => {
       if (!document.hidden) void uploadAgentPreviewFrame();
     }, AGENT_FRAME_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [project, health?.runtimeScene, uploadAgentPreviewFrame]);
+  }, [project, health?.runtimeScene, desktopPermissions, uploadAgentPreviewFrame]);
 
   useEffect(() => {
-    if (!project || health?.runtimeScene !== "live" || !snapshot?.revision) return;
+    if (!project || health?.runtimeScene !== "live" || !screenCaptureAllowed(desktopPermissions) || !snapshot?.revision) return;
     const timer = window.setTimeout(() => { void uploadAgentPreviewFrame(); }, AGENT_FRAME_AFTER_EDIT_MS);
     return () => window.clearTimeout(timer);
-  }, [project, health?.runtimeScene, snapshot?.revision, uploadAgentPreviewFrame]);
+  }, [project, health?.runtimeScene, desktopPermissions, snapshot?.revision, uploadAgentPreviewFrame]);
 
   const selectNode = useCallback((nodeId: string, additive = false) => {
     setSelectedNodeIds((currentIds) => {
@@ -1613,14 +1602,6 @@ export function App() {
     void runTreeOp({ type: "relocate", nodeId: dragId, parentId, index }, hint === "before" ? "拖到上方" : "拖到下方");
   }, [hierDragId, hierDrop, snapshot, runTreeOp, toast]);
 
-  const screenLabel = (screen: UiScreenSummary): string => {
-    const directory = screen.path.split("/").slice(1, -1).join("/");
-    const location = directory && directory !== "ui" ? `${directory} · ` : "";
-    if (screen.confidence === "module" || screen.error === "module_only") return `${location}逻辑模块 · 非界面`;
-    if (screen.error) return `${location}仅代码 · 无法静态预览`;
-    return `${location}${screen.nodeCount ?? 0} 个节点 · ${screen.confidence === "static" ? "完整" : "混合"}`;
-  };
-
   const saveUiSidecar = useCallback(async (snapshotOverride?: UiSnapshot) => {
     if (!syncUiEditsToCodeRef.current) return;
     const snap = snapshotOverride ?? snapshotRef.current;
@@ -2340,21 +2321,38 @@ export function App() {
 
   const runtimeSceneRef = useRef(health?.runtimeScene);
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (document.hidden) return;
+    // 有 Runtime 会话时需要较快感知场景切换；没有会话时没必要按 1.5 秒空转。
+    // 用递归 setTimeout 自适应：空闲 4 秒、运行中 1.5 秒，窗口隐藏时暂停。
+    let disposed = false;
+    let timer: number | undefined;
+    const poll = () => {
+      if (disposed) return;
+      if (document.hidden) {
+        timer = window.setTimeout(poll, 1_500);
+        return;
+      }
       void fetch(`${API}/api/health`).then((res) => readJsonResponse<Health>(res, "读取状态失败")).then((value) => {
+        if (disposed) return;
         const prevScene = runtimeSceneRef.current;
         runtimeSceneRef.current = value.runtimeScene;
         setHealth(value);
+        const active = Boolean(value.runtimeSessionId);
+        timer = window.setTimeout(poll, active ? 1_500 : 4_000);
         if (!value.runtimeSessionId) return;
         if (value.snapshotSource) setSnapshotSource(value.snapshotSource);
         if (value.runtimeScene === "live" && prevScene !== undefined && prevScene !== "live") {
           void syncFromRuntime();
           toast("真机已进入可同步界面，已拉取活树", "success");
         }
-      }).catch(() => undefined);
-    }, 1500);
-    return () => window.clearInterval(timer);
+      }).catch(() => {
+        if (!disposed) timer = window.setTimeout(poll, 4_000);
+      });
+    };
+    timer = window.setTimeout(poll, 1_500);
+    return () => {
+      disposed = true;
+      if (timer) window.clearTimeout(timer);
+    };
   }, [syncFromRuntime, toast]);
 
   const runWorkflowAction = async (action: ProjectWorkflowAction) => {
@@ -2531,6 +2529,22 @@ export function App() {
     </div>
   ) : null;
 
+  // 四个标题栏面板互斥：打开一个就关掉其余三个。点击已打开的那个则收起。
+  const openTitlePanel = useCallback((panel: TitlePanelId) => {
+    const current = guideOpen ? "guide" : tipsOpen ? "tips" : searchOpen ? "search" : settingsOpen ? "settings" : null;
+    const next = current === panel ? null : panel;
+    setGuideOpen(next === "guide");
+    setTipsOpen(next === "tips");
+    setSearchOpen(next === "search");
+    setSettingsOpen(next === "settings");
+    setCompressOpen(false);
+    if (panel === "search") toast(next === "search" ? "打开项目搜索" : "已关闭搜索", "info");
+    if (panel === "settings") {
+      if (next === "settings") void loadSystemInfo();
+      toast(next === "settings" ? "打开设置" : "关闭设置", "info");
+    }
+  }, [guideOpen, tipsOpen, searchOpen, settingsOpen, toast, loadSystemInfo]);
+
   if (!projectLoaded || !project) {
     return (
       <><main className="welcome-window">
@@ -2592,36 +2606,20 @@ export function App() {
         ["--preview-dock-w" as string]: `${layout.previewDock}px`
       } as React.CSSProperties}
     >
-      <header className="titlebar">
-        <div className="brand"><span className="brand-mark">T</span><strong>TapMakerWork</strong><span className="phase-badge">v{__APP_VERSION__}</span></div>
-        <div className="project-tabs" role="tablist" aria-label="已打开项目">
-          {openProjects.map((item) => {
-            const active = item.root === project.root;
-            return <div key={item.root} className={`project-tab ${active ? "active" : ""}`} title={item.root}>
-              <button type="button" role="tab" aria-selected={active} disabled={projectOpening} onClick={() => void openProjectPath(item.root)}>
-                <Folder size={14} aria-hidden="true" /><span>{item.name}</span>{runningPreviewRoots.some((root) => sameProjectPath(root, item.root)) && <i className="project-tab-runtime" title="该项目的 Runtime 正在运行" aria-label="Runtime 运行中" />}{active && <><GitBranch size={12} aria-hidden="true" /><small>{gitStatus?.branch || "—"}</small>{gitStatus?.dirty ? <small className="dirty-branch">•</small> : null}</>}
-              </button>
-              <button type="button" className="project-tab-close" aria-label={`关闭项目 ${item.name}`} disabled={projectOpening} onClick={() => closeProjectTab(item.root)}><X size={13} /></button>
-            </div>;
-          })}
-          <button type="button" className="project-tab-add" aria-label="打开另一个项目" title="打开另一个项目" disabled={projectOpening} onClick={() => void chooseProject()}><Plus size={15} /></button>
-        </div>
-        <div className="runtime-status" role="status">{connected ? <Wifi size={14} aria-hidden="true" /> : <WifiOff size={14} aria-hidden="true" />}<span>{connected ? "Bridge 已连接" : "Bridge 断开"}</span>{runtimeLive ? <small className="runtime-live">Runtime 运行中</small> : <small>Runtime 未启动</small>}</div>
-        <div className="title-actions">
-          <Tip label="看看各按钮做什么、从哪开始改界面。">
-            <button aria-label="使用说明" onClick={() => { setSearchOpen(false); setSettingsOpen(false); setTipsOpen(false); setCompressOpen(false); setGuideOpen((open) => !open); }}><CircleHelp size={15} /></button>
-          </Tip>
-          <Tip label="本地预览 Token 优化、grill-me、发布前检查等开发经验，可一键复制给 AI。">
-            <button aria-label="开发技巧" onClick={() => { setSearchOpen(false); setSettingsOpen(false); setGuideOpen(false); setCompressOpen(false); setTipsOpen((open) => !open); }}><Lightbulb size={15} /></button>
-          </Tip>
-          <Tip label="在项目文件中全文搜索。输入关键词后回车，点击结果可跳转到源码行。">
-            <button aria-label="搜索" onClick={() => { setGuideOpen(false); setSettingsOpen(false); setTipsOpen(false); setCompressOpen(false); setSearchOpen((open) => !open); toast(searchOpen ? "已关闭搜索" : "打开项目搜索", "info"); }}><Search size={15} /></button>
-          </Tip>
-          <Tip label="查看 Bridge / Maker / Runtime 适配器状态；可导出本地接入包（不会写入游戏 git）。">
-            <button aria-label="设置" onClick={() => { setGuideOpen(false); setSearchOpen(false); setTipsOpen(false); setCompressOpen(false); setSettingsOpen((open) => { const next = !open; if (next) void loadSystemInfo(); toast(next ? "打开设置" : "关闭设置", "info"); return next; }); }}><Settings2 size={15} /></button>
-          </Tip>
-        </div>
-      </header>
+      <TitleBar
+        openProjects={openProjects}
+        activeProjectRoot={project.root}
+        projectOpening={projectOpening}
+        runningPreviewRoots={runningPreviewRoots}
+        gitStatus={gitStatus}
+        connected={connected}
+        runtimeLive={runtimeLive}
+        activePanel={guideOpen ? "guide" : tipsOpen ? "tips" : searchOpen ? "search" : settingsOpen ? "settings" : null}
+        onOpenPanel={openTitlePanel}
+        onOpenProject={(root) => void openProjectPath(root)}
+        onCloseProject={closeProjectTab}
+        onChooseProject={() => void chooseProject()}
+      />
 
       <section className="commandbar">
         <div className="commandbar-scroll">
@@ -3078,275 +3076,124 @@ export function App() {
       )}
 
       {settingsOpen && (
-        <section className="overlay-panel panel settings-panel" aria-label="设置">
-          <div className="overlay-heading"><strong>设置 / 系统</strong><button onClick={() => setSettingsOpen(false)}>关闭</button></div>
-          <div className="settings-grid">
-            <div><h3>连接</h3><p>Bridge：{API}</p><p>协议：{String((systemInfo as { protocolVersion?: number } | undefined)?.protocolVersion ?? health ? 1 : "—")}</p><p>Node：{String((systemInfo as { node?: string } | undefined)?.node ?? "—")}</p><p>平台：{String((systemInfo as { platform?: string } | undefined)?.platform ?? "—")}</p></div>
-            <div><h3>Maker</h3><p>版本：{health?.makerVersion || "未发现"}</p><p>项目：{project.root}</p><p>当前 UI：{String((systemInfo as { activeUiEntry?: string } | undefined)?.activeUiEntry ?? activeUiPath)}</p></div>
-            {window.tapMakerWork?.hardwareAcceleration && desktopHardware && (
-              <section className="desktop-system-card" aria-labelledby="hardware-acceleration-heading">
-                <div className="desktop-card-heading">
-                  <div><h3 id="hardware-acceleration-heading">硬件加速</h3><p>默认关闭。开启后使用 GPU 渲染 IDE 与 Web 预览，需重启应用生效。</p></div>
-                  <span className={desktopHardware.active ? "ready" : "neutral"}>{desktopHardware.active ? "运行中" : "已关闭"}</span>
-                </div>
-                <label className="settings-switch-row">
-                  <span><Cpu size={15} /><strong>启用硬件加速</strong><small>遇到花屏、驱动崩溃或远程桌面兼容问题时请保持关闭。</small></span>
-                  <input type="checkbox" checked={desktopHardware.enabled} disabled={hardwareBusy} onChange={(event) => void setHardwareAcceleration(event.target.checked)} />
-                </label>
-                {desktopHardware.restartRequired && <div className="desktop-card-actions"><span className="desktop-card-note">设置已更改，重启后生效。</span><button className="primary" onClick={() => void window.tapMakerWork?.hardwareAcceleration?.restart()}>立即重启</button></div>}
-              </section>
-            )}
-            {window.tapMakerWork?.legal && (
-              <section className="desktop-system-card" aria-labelledby="legal-settings-heading">
-                <div className="desktop-card-heading">
-                  <div><h3 id="legal-settings-heading">用户协议与隐私</h3><p>{desktopLegal?.acceptedAt ? `已于 ${new Date(desktopLegal.acceptedAt).toLocaleString()} 接受` : "首次使用前需要确认"}</p></div>
-                  <ScrollText size={18} />
-                </div>
-                <div className="desktop-card-actions"><button onClick={() => setLegalDialogOpen(true)}>查看 EULA 与隐私政策</button></div>
-              </section>
-            )}
-            {window.tapMakerWork?.telemetry && desktopTelemetry && (
-              <DesktopTelemetryCard telemetry={desktopTelemetry} busy={telemetryBusy} onToggle={setTelemetryEnabled} />
-            )}
-            {window.tapMakerWork?.permissions && desktopPermissions && (
-              <DesktopPermissionsCard
-                permissions={desktopPermissions}
-                busy={permissionBusy}
-                confirmed={permissionConfirmed}
-                onAction={runPermissionAction}
-                onOpenGuide={() => setPermissionGuideOpen(true)}
-              />
-            )}
-            {window.tapMakerWork?.updates && desktopUpdate && (
-              <DesktopUpdateCard update={desktopUpdate} busy={desktopUpdateBusy} onAction={runDesktopUpdateAction} onOpenUrl={openExternalUrl} />
-            )}
-            <section className="desktop-system-card community-card" aria-labelledby="community-heading">
-              <div className="desktop-card-heading">
-                <div>
-                  <h3 id="community-heading">社区交流</h3>
-                  <p>{QQ_GROUP_NAME} · 群号 {QQ_GROUP_ID}。反馈问题、讨论用法、获取后续功能动态。{community.source && community.source !== "builtin" ? `（来自 ${community.source === "gitee" ? "Gitee" : "GitHub"}）` : ""}</p>
-                </div>
-                <span className="ready">QQ</span>
-              </div>
-              <div className="desktop-card-actions">
-                <button className="primary" onClick={() => openExternalUrl(QQ_GROUP_JOIN_URL)}><Users size={13} />一键入群</button>
-                <button onClick={() => void copyText(QQ_GROUP_ID)}><Copy size={13} />复制群号</button>
-                <button onClick={() => openFeedbackPack(runtimeErrorReport?.errorText)}><LifeBuoy size={13} />一键反馈包</button>
-                <button onClick={() => setRoadmapOpen(true)}><Map size={13} />后续规划</button>
-                <button onClick={() => openExternalUrl(OFFICIAL_SITE_URL)}><ExternalLink size={13} />官网</button>
-              </div>
-            </section>
-            <MakerAccountsCard
-              open={settingsOpen}
-              {...(project?.root ? { projectRoot: project.root } : {})}
-              notify={toast}
-              onOpenConsole={(accountId) => openMakerConsole(accountId)}
-            />
-            <MakerVersionSettings
-              makerVersions={makerVersions}
-              nodeVersions={nodeVersions}
-              busy={makerVersionBusy}
-              onCheck={checkMakerUpdates}
-              onSelect={selectMakerVersion}
-              onInstallRequired={installRequiredMakerMcp}
-              onInstallChannel={installMakerChannel}
-              onSyncNode={syncSystemNode}
-              onUpgradeNode={upgradeSystemNode}
-              onCopy={copyText}
-            />
-            <div><h3>Runtime 适配器</h3><p>{adapterExport || (health?.runtimeAdapter?.installed ? `已安装：${health.runtimeAdapter.paths.join(", ")}` : "未安装到当前 Maker 项目")}</p><p>后端：{health?.uiBackend || health?.runtimeAdapter?.backend || "自动检测"} · Session：{health?.runtimeSessionId || "未连接"}</p><button onClick={() => void exportRuntimeAdapter()}>导出接入包到 outputs/runtime-adapter</button></div>
-            <div><h3>能力</h3><p>Maker CLI：{health?.capabilities.makerCli ? "可用" : "不可用"}</p><p>UI Bridge：{health?.capabilities.uiBridge ? "可用" : "不可用"}</p><p>Runtime 帧：{health?.capabilities.runtimeFrames ? "可用" : "未接入"}</p><p>Shell 沙箱：{health?.capabilities.shellSandbox ? "就绪" : "锁定"}</p></div>
-          </div>
-        </section>
+        <SettingsPanel
+          apiBase={API}
+          systemInfo={systemInfo}
+          health={health}
+          projectRoot={project.root}
+          activeUiPath={activeUiPath}
+          adapterExport={adapterExport}
+          onExportRuntimeAdapter={exportRuntimeAdapter}
+          onClose={() => setSettingsOpen(false)}
+          hardware={desktopHardware}
+          hardwareBusy={hardwareBusy}
+          onToggleHardware={setHardwareAcceleration}
+          onRestartHardware={() => void window.tapMakerWork?.hardwareAcceleration?.restart()}
+          legal={desktopLegal}
+          onOpenLegalDialog={() => setLegalDialogOpen(true)}
+          telemetry={desktopTelemetry}
+          telemetryBusy={telemetryBusy}
+          onToggleTelemetry={setTelemetryEnabled}
+          permissions={desktopPermissions}
+          permissionBusy={permissionBusy}
+          permissionConfirmed={permissionConfirmed}
+          onPermissionAction={runPermissionAction}
+          onOpenPermissionGuide={() => void reopenPermissionGuide()}
+          update={desktopUpdate}
+          updateBusy={desktopUpdateBusy}
+          onUpdateAction={runDesktopUpdateAction}
+          onOpenUrl={openExternalUrl}
+          community={community}
+          runtimeErrorText={runtimeErrorReport?.errorText}
+          onOpenFeedbackPack={openFeedbackPack}
+          onOpenRoadmap={() => setRoadmapOpen(true)}
+          onCopy={copyText}
+          makerAccountsProjectRoot={project.root}
+          onOpenMakerConsole={(accountId) => openMakerConsole(accountId)}
+          notify={toast}
+          makerVersions={makerVersions}
+          nodeVersions={nodeVersions}
+          makerVersionBusy={makerVersionBusy}
+          onCheckMakerVersions={checkMakerUpdates}
+          onSelectMakerVersion={selectMakerVersion}
+          onInstallRequiredMakerMcp={installRequiredMakerMcp}
+          onInstallMakerChannel={installMakerChannel}
+          onSyncNode={syncSystemNode}
+          onUpgradeNode={upgradeSystemNode}
+        />
       )}
 
       <section
         className="workspace"
         style={{ gridTemplateColumns: `${layout.left}px 5px minmax(320px, 1fr) 5px ${layout.right}px` }}
       >
-        <aside className="left-pane panel">
-          <nav className="pane-tabs left-resource-tabs" aria-label="资源导航">
-            <Tip label="项目文件">
-              <button aria-label="项目文件" title="项目文件" aria-pressed={leftTab === "files"} className={leftTab === "files" ? "active" : ""} onClick={() => setLeftTab("files")}><Files size={14} /><span className="pane-tab-label">文件</span></button>
-            </Tip>
-            <Tip label="UI 界面列表">
-              <button aria-label="UI 界面列表" title="UI 界面列表" aria-pressed={leftTab === "screens"} className={leftTab === "screens" ? "active" : ""} onClick={() => setLeftTab("screens")}><MonitorPlay size={14} /><span className="pane-tab-label">界面</span></button>
-            </Tip>
-            <Tip label="控件树">
-              <button aria-label="控件树" title="控件树" aria-pressed={leftTab === "hierarchy"} className={leftTab === "hierarchy" ? "active" : ""} onClick={() => setLeftTab("hierarchy")}><Layers3 size={14} /><span className="pane-tab-label">层级</span></button>
-            </Tip>
-            <Tip label="图片资源">
-              <button aria-label="图片资源" title="图片资源" aria-pressed={leftTab === "assets"} className={leftTab === "assets" ? "active" : ""} onClick={() => setLeftTab("assets")}><Image size={14} /><span className="pane-tab-label">资源</span></button>
-            </Tip>
-            <Tip label="Git 版本管理">
-              <button aria-label="Git 版本管理" title="Git 版本管理" aria-pressed={leftTab === "git"} className={leftTab === "git" ? "active" : ""} onClick={() => { setLeftTab("git"); void loadGitStatus(); }}><GitBranch size={14} /><span className="pane-tab-label">Git</span></button>
-            </Tip>
-          </nav>
-          <div className={`pane-body ${leftTab === "hierarchy" ? "hierarchy-pane-body" : ""}`}>
-            {leftTab === "hierarchy" && snapshot && (
-              <div className="hier-wrap">
-                <div className="hier-actions">
-                  <Tip label="显示/隐藏当前节点（对齐 Cocos Creator 的眼睛开关）。隐藏时画布不渲染该节点。">
-                    <button className="icon-command" aria-label="显示隐藏" disabled={!snapshot.selectedId} onClick={() => {
-                      if (!selected) { toast("请先选择节点", "warn"); return; }
-                      void runTreeOp({ type: "toggle-visible", nodeId: selected.id }, selected.props.visible === false ? "显示节点" : "隐藏节点");
-                    }}>
-                      {selected?.props.visible === false ? <EyeOff size={13} /> : <Eye size={13} />}
-                    </button>
-                  </Tip>
-                  <Tip label="在同级节点中上移。">
-                    <button className="icon-command" aria-label="上移" disabled={!snapshot.selectedId} onClick={() => {
-                      if (!selected) { toast("请先选择节点", "warn"); return; }
-                      void runTreeOp({ type: "move", nodeId: selected.id, direction: "up" }, "上移");
-                    }}><ArrowUp size={13} /></button>
-                  </Tip>
-                  <Tip label="在同级节点中下移。">
-                    <button className="icon-command" aria-label="下移" disabled={!snapshot.selectedId} onClick={() => {
-                      if (!selected) { toast("请先选择节点", "warn"); return; }
-                      void runTreeOp({ type: "move", nodeId: selected.id, direction: "down" }, "下移");
-                    }}><ArrowDown size={13} /></button>
-                  </Tip>
-                  <select value={newNodeType} onChange={(event) => setNewNodeType(event.target.value as typeof newNodeType)} title="新建节点类型">
-                    <option value="Node">空节点</option>
-                    <option value="Panel">Panel</option>
-                    <option value="Label">Label</option>
-                    <option value="Button">Button</option>
-                    <option value="Image">Image</option>
-                  </select>
-                  <Tip label="在当前节点下创建子节点（Cocos：创建子节点）。">
-                    <button className="icon-command" aria-label="添加子节点" disabled={!snapshot.selectedId} onClick={() => {
-                      if (!selected) { toast("请先选择节点", "warn"); return; }
-                      void runTreeOp({ type: "insert-child", nodeId: selected.id, nodeType: newNodeType }, `添加子节点 ${newNodeType}`);
-                    }}><Plus size={13} /></button>
-                  </Tip>
-                  <Tip label="在当前节点旁创建同级节点（Cocos：创建兄弟节点）。根节点不可用。">
-                    <button className="icon-command" aria-label="添加兄弟节点" disabled={!snapshot.selectedId} onClick={() => {
-                      if (!selected) { toast("请先选择节点", "warn"); return; }
-                      void runTreeOp({ type: "insert-sibling", nodeId: selected.id, nodeType: newNodeType }, `添加兄弟节点 ${newNodeType}`);
-                    }}><Plus size={13} /><span className="tiny">兄弟</span></button>
-                  </Tip>
-                  <Tip label="删除当前节点（根节点不可删）。已接入 Runtime 时会立即销毁真实控件。">
-                    <button className="icon-command danger" aria-label="删除节点" disabled={!snapshot.selectedId} onClick={() => {
-                      if (!selected) { toast("请先选择节点", "warn"); return; }
-                      void runTreeOp({ type: "delete", nodeId: selected.id }, `删除 ${selected.name}`);
-                    }}><Trash2 size={13} /></button>
-                  </Tip>
-                  <Tip label="复制当前节点（含子节点），插在同级后面。根节点不可复制。">
-                    <button className="icon-command" aria-label="复制节点" disabled={!snapshot.selectedId} onClick={duplicateSelected}><Copy size={13} /></button>
-                  </Tip>
-                  <Tip label="重命名当前节点（也可在层级树中双击名称）。">
-                    <button className="icon-command" aria-label="重命名节点" disabled={!snapshot.selectedId} onClick={beginRenameSelected}><span className="tiny">重命名</span></button>
-                  </Tip>
-                </div>
-                <div className="hierarchy-tree-scroll" ref={hierarchyTreeRef}>
-                  <HierarchyNode
-                    node={snapshot.root}
-                    selectedId={snapshot.selectedId}
-                    selectedIds={selectedNodeIds}
-                    onSelect={(id, additive) => {
-                      selectCanvasNode(id, additive);
-                      if (renamingId && renamingId !== id) setRenamingId(null);
-                    }}
-                    onContextMenuId={openNodeContextMenu}
-                    renamingId={renamingId}
-                    renameDraft={renameDraft}
-                    onRenameDraft={setRenameDraft}
-                    onCommitRename={commitRename}
-                    onCancelRename={() => setRenamingId(null)}
-                    dragId={hierDragId}
-                    dropHint={hierDrop}
-                    onDragStartId={(id) => {
-                      setHierDragId(id);
-                      setSnapshot((current) => current ? { ...current, selectedId: id } : current);
-                      toast(`开始拖拽：${id.split(":").slice(-2).join(":")}`, "info");
-                    }}
-                    onDragOverId={onHierDragOverId}
-                    onDropId={onHierDropId}
-                  />
-                </div>
-              </div>
-            )}
-            {leftTab === "files" && (files.length ? files.map((entry) => <FileTreeEntry key={entry.path} entry={entry} depth={0} selectedPath={selectedFile} onOpen={(path) => void readFile(path)} />) : <p className="empty-state">项目目录为空。点击顶部项目名称可重新选择目录。</p>)}
-            {leftTab === "screens" && <div className="screen-list">
-              <div className="screen-list-heading"><span>检测到 {screens.length} 个 UI 入口</span><button onClick={() => void rescanUiScreens()} disabled={screensBusy} aria-busy={screensBusy} aria-label="重新扫描整个 scripts 目录"><RefreshCw size={13} className={screensBusy ? "spin" : ""} aria-hidden="true" /></button></div>
-              {screens.map((screen) => <button key={screen.path} title={screen.path} className={`screen-row ${activeUiPath === screen.path ? "active" : ""}`} onClick={() => void openUiScreen(screen.path)}>
-                <MonitorPlay size={15} /><span><strong>{screen.name}</strong><small>{screenLabel(screen)}</small></span>{activeUiPath === screen.path && <span className="active-dot" />}
-              </button>)}
-            </div>}
-            {leftTab === "assets" && <div className="asset-list">
-              <div className="screen-list-heading"><span>{assets.length ? `${assets.length} 个游戏素材` : "项目素材"}</span><span className="screen-list-actions"><button onClick={openAssetCheckup} aria-label="资源体检" title="资源体检：包体报告与未引用素材清理"><Stethoscope size={13} /></button><button onClick={() => { void loadAssets(); void loadWorkflow(); }} aria-label="刷新资源"><RefreshCw size={13} /></button></span></div>
-              {assets.length === 0 ? <p className="empty-state">未发现图片、音频、视频或模型素材。</p> : assets.slice(0, 160).map((asset) => {
-                const status = asset.status ?? "unreferenced";
-                const statusLabel = status === "referenced" ? `已绑定 ${asset.referencedBy?.length || 0}` : status === "external" ? "外部采纳" : "待确认";
-                const statusClass = status === "referenced" ? "asset-bound" : status === "external" ? "asset-external" : "asset-unbound";
-                const toastMessage = status === "referenced" ? `已绑定：${asset.path}` : status === "external" ? `外部采纳（来自 Windows 绝对路径）：${asset.path}` : `待确认：${asset.path}`;
-                const toastKind = status === "referenced" ? "success" : status === "external" ? "info" : "warn";
-                return (
-                  <button key={asset.path} className="file-row asset-row" onClick={() => toast(toastMessage, toastKind)} title={`${asset.path}${asset.referencedBy?.length ? `\n引用：${asset.referencedBy.join(", ")}` : "\n未发现源码引用"}`}>
-                    {asset.kind === "audio" ? <Music2 size={14} /> : asset.kind === "video" ? <Video size={14} /> : asset.kind === "model" ? <Box size={14} /> : <Image size={14} />}
-                    <span>{asset.name}</span>
-                    <small className={statusClass}>{statusLabel}</small>
-                  </button>
-                );
-              })}
-            </div>}
-            {leftTab === "git" && <div className="git-panel">
-              <header className="git-panel-head">
-                <div><span>源代码管理</span><strong><GitBranch size={14} />{gitStatus?.branch || "未识别分支"}</strong></div>
-                <div>
-                  <button className="icon-command" aria-label="拉取远端修改" title="拉取" disabled={Boolean(gitBusy)} onClick={() => void runGitAction("pull")}><Download size={13} /></button>
-                  <button className="icon-command" aria-label="刷新 Git 状态" title="刷新" onClick={() => void loadGitStatus()}><RefreshCw size={13} /></button>
-                </div>
-              </header>
-              <div className="git-sync-status">
-                <span title={gitStatus?.upstream || "尚未绑定上游"}>{gitStatus?.upstream || "未绑定上游"}</span>
-                <small>↑ {gitStatus?.ahead || 0}</small><small>↓ {gitStatus?.behind || 0}</small>
-              </div>
-              <div className="git-commit-box">
-                <input value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void runGitAction("commit"); }} placeholder={`消息（⌘/Ctrl+Enter 在“${gitStatus?.branch || "当前分支"}”提交）`} aria-label="Git 提交说明" />
-                <button className="primary" disabled={Boolean(gitBusy) || !gitCommitMessage.trim() || !gitStatus?.dirty} onClick={() => void runGitAction("commit")}><Save size={14} />{gitBusy === "commit" ? "提交中…" : "提交"}</button>
-              </div>
-
-              {Boolean(gitStatus?.changes?.some((change) => change.staged)) && <section className="git-change-group">
-                <header className="git-change-header" tabIndex={0} aria-label="暂存的更改；右键打开批量操作" onContextMenu={(event) => { event.preventDefault(); setGitFileMenu(null); setGitGroupMenu({ scope: "staged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 130) }); }} onKeyDown={(event) => { if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return; event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setGitFileMenu(null); setGitGroupMenu({ scope: "staged", x: Math.min(rect.left + 12, window.innerWidth - 230), y: Math.min(rect.bottom, window.innerHeight - 130) }); }}><strong>暂存的更改</strong><span>{gitStatus?.changes?.filter((change) => change.staged).length}</span><button className="icon-command" aria-label="取消暂存全部" title="取消暂存全部" onClick={() => void runGitFileAction("unstage-all")}><Undo2 size={12} /></button></header>
-                <div className="git-file-list">
-                  {gitStatus?.changes?.filter((change) => change.staged).map((change) => <div key={`staged:${change.path}`} className={`git-file-row ${change.conflicted ? "conflicted" : ""} ${centerTab === "git-diff" && gitDiff?.path === change.path && gitDiff.scope === "staged" ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setGitGroupMenu(null); setGitFileMenu({ change, scope: "staged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 210) }); }}>
-                    <button className="git-file-open" title={`${change.path} · 点击查看暂存差异`} onClick={() => void openGitDiff(change, "staged")}><FileCode2 size={13} /><span><strong>{fileName(change.path)}</strong><small>{change.path.includes("/") ? change.path.slice(0, change.path.lastIndexOf("/")) : "项目根目录"}</small></span><code>{change.indexStatus}</code></button>
-                    <button className="git-file-action" aria-label={`取消暂存 ${change.path}`} title="取消暂存" onClick={() => void runGitFileAction("unstage", change)}><Undo2 size={12} /></button>
-                  </div>)}
-                </div>
-              </section>}
-
-              <section className="git-change-group">
-                <header className="git-change-header" tabIndex={0} aria-label="更改；右键打开批量操作" onContextMenu={(event) => { event.preventDefault(); setGitFileMenu(null); setGitGroupMenu({ scope: "unstaged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 150) }); }} onKeyDown={(event) => { if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return; event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setGitFileMenu(null); setGitGroupMenu({ scope: "unstaged", x: Math.min(rect.left + 12, window.innerWidth - 230), y: Math.min(rect.bottom, window.innerHeight - 150) }); }}><strong>更改</strong><span>{gitStatus?.changes?.filter((change) => change.unstaged).length || 0}</span>{Boolean(gitStatus?.changes?.some((change) => change.unstaged)) && <button className="icon-command" aria-label="暂存全部更改" title="暂存全部" onClick={() => void runGitFileAction("stage-all")}><Plus size={13} /></button>}</header>
-                <div className="git-file-list">
-                  {!gitStatus?.changes?.some((change) => change.unstaged) ? <p className="empty-state">工作区没有未暂存修改。</p> : gitStatus.changes.filter((change) => change.unstaged).map((change) => <div key={`changed:${change.path}`} className={`git-file-row ${change.conflicted ? "conflicted" : ""} ${centerTab === "git-diff" && gitDiff?.path === change.path && gitDiff.scope === "worktree" ? "active" : ""}`} onContextMenu={(event) => { event.preventDefault(); setGitGroupMenu(null); setGitFileMenu({ change, scope: "unstaged", x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 210) }); }}>
-                    <button className="git-file-open" title={`${change.path} · 点击查看工作区差异，右键查看更多操作`} onClick={() => void openGitDiff(change, "unstaged")}><FileCode2 size={13} /><span><strong>{fileName(change.path)}</strong><small>{change.path.includes("/") ? change.path.slice(0, change.path.lastIndexOf("/")) : "项目根目录"}</small></span><code>{change.untracked ? "U" : change.workTreeStatus}</code></button>
-                    <button className="git-file-action" aria-label={`暂存 ${change.path}`} title="暂存更改" onClick={() => void runGitFileAction("stage", change)}><Plus size={13} /></button>
-                  </div>)}
-                </div>
-              </section>
-
-              <div className="git-actions">
-                <button className="primary" disabled={Boolean(gitBusy) || !gitCommitMessage.trim()} onClick={() => void runGitAction("push-build")}><Rocket size={13} />{gitBusy === "push-build" ? "推送并刷新中…" : "提交、推送并刷新"}</button>
-              </div>
-              {gitConflictPlan && <section className="git-conflict-plan" role="alert">
-                <strong><ShieldAlert size={14} />需要处理 Git 冲突</strong>
-                <p>已生成保留本地修改的处理上下文，可一键复制给 AI。</p>
-                <textarea readOnly value={gitConflictPlan} aria-label="可复制给 AI 的 Git 冲突处理上下文" />
-                <button disabled={copyBusy} onClick={() => void copyText(gitConflictPlan)}><Copy size={13} />{copyBusy ? "正在复制…" : "复制给 AI"}</button>
-              </section>}
-              <section className="git-graph" aria-label="Git 提交图谱">
-                <header><strong>图谱</strong><span>{gitStatus?.commits?.length || 0}</span></header>
-                <div>{gitStatus?.commits?.map((commit, index) => <article key={commit.hash} title={`${commit.hash}\n${commit.author} · ${commit.relativeDate}`}>
-                  <span className="git-graph-line"><i />{index < (gitStatus.commits?.length || 0) - 1 && <b />}</span>
-                  <div><strong>{commit.subject}</strong><small><code>{commit.shortHash}</code>{commit.relativeDate}</small></div>
-                  {commit.refs.slice(0, 1).map((ref) => <em key={ref}>{ref.replace(/^HEAD -> /, "")}</em>)}
-                </article>)}</div>
-              </section>
-            </div>}
-          </div>
-        </aside>
+        <LeftPane
+          leftTab={leftTab}
+          onSelectTab={(tab) => {
+            setLeftTab(tab);
+            if (tab === "git") void loadGitStatus();
+          }}
+          hierarchy={{
+            snapshot,
+            selectedNodeIds,
+            newNodeType,
+            renamingId,
+            renameDraft,
+            dragId: hierDragId,
+            dropHint: hierDrop,
+            treeRef: hierarchyTreeRef,
+            onNewNodeTypeChange: setNewNodeType,
+            onRenameDraftChange: setRenameDraft,
+            onCommitRename: commitRename,
+            onCancelRename: () => setRenamingId(null),
+            onSelect: (id, additive) => {
+              selectCanvasNode(id, additive);
+              if (renamingId && renamingId !== id) setRenamingId(null);
+            },
+            onContextMenu: openNodeContextMenu,
+            onDragStart: (id) => {
+              setHierDragId(id);
+              setSnapshot((current) => current ? { ...current, selectedId: id } : current);
+              toast(`开始拖拽：${id.split(":").slice(-2).join(":")}`, "info");
+            },
+            onDragOver: onHierDragOverId,
+            onDrop: onHierDropId,
+            onRunTreeOp: (op, label) => void runTreeOp(op, label),
+            onDuplicate: duplicateSelected,
+            onBeginRename: beginRenameSelected,
+            notify: toast
+          }}
+          files={files}
+          selectedFilePath={selectedFile}
+          onOpenFile={(path) => void readFile(path)}
+          screens={screens}
+          screensBusy={screensBusy}
+          activeUiPath={activeUiPath}
+          onRescanScreens={() => void rescanUiScreens()}
+          onOpenScreen={(path) => void openUiScreen(path)}
+          assets={assets}
+          onOpenAssetCheckup={openAssetCheckup}
+          onRefreshAssets={() => { void loadAssets(); void loadWorkflow(); }}
+          onShowAssetStatus={toast}
+          git={{
+            gitStatus,
+            gitBusy,
+            gitCommitMessage,
+            onCommitMessageChange: setGitCommitMessage,
+            gitConflictPlan,
+            copyBusy,
+            centerTab,
+            gitDiffPath: gitDiff?.path,
+            gitDiffScope: gitDiff?.scope,
+            onLoadStatus: () => void loadGitStatus(),
+            onRunAction: (action) => void runGitAction(action),
+            onRunFileAction: (action, change) => void runGitFileAction(action, change),
+            onOpenDiff: (change, scope) => void openGitDiff(change, scope),
+            onCopy: (text) => void copyText(text),
+            onOpenGroupMenu: (scope, anchor) => { setGitFileMenu(null); setGitGroupMenu({ scope, ...anchor }); },
+            onOpenFileMenu: (change, scope, anchor) => { setGitGroupMenu(null); setGitFileMenu({ change, scope, ...anchor }); }
+          }}
+        />
         <PanelResizer orientation="col" label="调节左侧栏宽度" onPointerDown={beginLayoutDrag("left")} />
 
         <div className="center-pane-host">
@@ -3879,62 +3726,37 @@ export function App() {
         </div>
       )}
 
-      <section className="terminal-panel panel">
-        <PanelResizer orientation="row" label="调节终端高度" onPointerDown={beginLayoutDrag("terminal", false, true)} />
-        <nav className="terminal-tabs">
-          <span className="terminal-title"><PanelBottom size={14} />终端</span>
-          {LOG_CHANNELS.map((channel) => <button key={channel.id} aria-pressed={activeTerminal === channel.id} className={activeTerminal === channel.id ? "active" : ""} onClick={() => setActiveTerminal(channel.id)}>{channel.label}</button>)}
-          <div className="terminal-panel-actions">
-            <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: layout.terminal <= 42 ? DEFAULT_LAYOUT.terminal : 40 })}>{layout.terminal <= 42 ? "展开" : "收起"}</button>
-            <button className="terminal-size" onClick={() => persistLayout({ ...layout, terminal: terminalMaxHeight() })}>最大化</button>
-            <button className="terminal-reset" onClick={resetLayout} title="一键还原 IDE 布局">还原布局</button>
-          </div>
-        </nav>
-        <div className="terminal-channel">
-          <div className="terminal-channel-actions">
-            <button
-              type="button"
-              className="terminal-channel-action"
-              title={`复制「${LOG_CHANNELS.find((c) => c.id === activeTerminal)?.label ?? "当前"}」全部输出`}
-              onClick={() => {
-                const text = logs[activeTerminal].join("\n");
-                if (!text.trim()) {
-                  toast("当前终端没有可复制的内容", "warn");
-                  return;
-                }
-                void copyText(text);
-              }}
-            >复制</button>
-            <button
-              type="button"
-              className="terminal-channel-action"
-              title={`清空「${LOG_CHANNELS.find((c) => c.id === activeTerminal)?.label ?? "当前"}」输出`}
-              onClick={() => {
-                setLogs((current) => ({ ...current, [activeTerminal]: [] }));
-                toast("已清空终端", "success");
-              }}
-            >清空</button>
-          </div>
-          <pre className={`terminal-output ${activeTerminal === "shell" ? "locked" : ""}`}>{logs[activeTerminal].join("\n")}</pre>
-        </div>
-        {activeTerminal === "shell" && <div className="sandbox-warning"><ShieldAlert size={14} />项目外访问将由 OS 沙箱拒绝；当前实现未通过验证，因此命令入口保持关闭。</div>}
-      </section>
+      <TerminalPanel
+        activeTerminal={activeTerminal}
+        onSelectTerminal={setActiveTerminal}
+        logs={logs}
+        layout={layout}
+        onPersistLayout={persistLayout}
+        onResetLayout={resetLayout}
+        onResizeStart={beginLayoutDrag("terminal", false, true)}
+        onCopyOutput={(text) => {
+          if (!text.trim()) {
+            toast("当前终端没有可复制的内容", "warn");
+            return;
+          }
+          void copyText(text);
+        }}
+        onClearOutput={() => {
+          setLogs((current) => ({ ...current, [activeTerminal]: [] }));
+          toast("已清空终端", "success");
+        }}
+      />
 
-      <footer className="statusbar">
-        <span>{health?.capabilities.makerCli ? `Maker ${health.makerVersion}` : "Maker CLI 未发现"}</span>
-        <span>{project?.makerBound ? "Maker 项目已绑定" : "模拟项目"}</span>
-        <span>{gitStatus ? `Git ${gitStatus.branch}${gitStatus.dirty ? " •" : ""}` : "Git —"}</span>
-        <span>{snapshot ? `UI rev ${snapshot.revision}` : "UI 未连接"}</span>
-        <span>{sidecarInfo.exists ? (sidecarInfo.dirty ? `${sidecarInfo.path || "ui.json"} ●` : `${sidecarInfo.path || "ui.json"} 已同步`) : "视觉旁路未创建"}</span>
-        <span className="status-spacer" />
-        <button type="button" className={`statusbar-button ${runningPreviewRoots.length ? "is-live" : ""}`} title="打开 Runtime 管理：查看所有项目的本地预览进程" onClick={openRuntimeManager}>
-          <Cpu size={11} aria-hidden="true" />{runningPreviewRoots.length ? `Runtime 运行中 ×${runningPreviewRoots.length}` : "Runtime 未运行"}
-        </button>
-        <span>{health?.runtimeAdapter?.installed ? "Runtime 适配器已安装" : "Runtime 适配器未安装"}</span>
-        <span>{health?.capabilities.shellSandbox ? "沙箱就绪" : "沙箱锁定"}</span>
-        <span>{connected ? "本机连接" : "离线"}</span>
-        <span>TapMakerWork {__APP_VERSION__}</span>
-      </footer>
+      <StatusBar
+        health={health}
+        projectMakerBound={Boolean(project?.makerBound)}
+        gitStatus={gitStatus}
+        snapshotRevision={snapshot?.revision}
+        sidecarInfo={sidecarInfo}
+        runningPreviewCount={runningPreviewRoots.length}
+        connected={connected}
+        onOpenRuntimeManager={openRuntimeManager}
+      />
       <ToastStack items={toasts} />
     </main>{legalOverlay}{projectRejectOverlay}{runtimeErrorOverlay}{sponsorOverlay}{roadmapOverlay}{newbieOverlay}{permissionOverlay}{updatePromptOverlay}{makerVersionGate}{accountsDialog}</>
   );
