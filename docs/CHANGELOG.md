@@ -1,5 +1,24 @@
 # Change log
 
+<a id="release-0.1.8"></a>
+
+## 2026-11-12 — TapMakerWork 0.1.8
+
+### 修复
+- **macOS 录屏授权框不再反复弹出**：系统 TCC 授权框由 `desktopCapturer.getSources()` 触发，此前 Runtime 画布（500ms / 1.5s）、预览面板（1s）、Agent 帧上传（10s）三个后台轮询都在无条件枚举窗口，用户点「拒绝」后下一轮又把系统框顶出来。现在主进程在未授权时直接返回 `screen_recording_permission_required`、不再调用窗口枚举，三个轮询在未授权时完全停摆；只有用户主动点「刷新画面」「选择窗口」「打开系统录屏设置」才允许触发一次系统框。
+- **授权状态即时生效**：新增 `useScreenCaptureAllowed`，监听主进程权限变更，并在窗口重新获得焦点 / 可见性变化时重读状态；在系统设置里改完授权回到应用即生效，不必重启。
+- **未授权时给出可操作入口**：Runtime 画布空态新增「打开系统录屏设置」按钮，直接跳到「隐私与安全性 → 屏幕与系统音频录制」。
+- 资源体检在 macOS 上因 `/var` 与 `/private/var` 符号链接导致的路径识别失败已修复。
+
+### 性能
+- 未授权、窗口隐藏时预览与 Runtime 画面完全停止抓屏；主进程继续对重复画面复用缓存帧，减少 PNG 编码与 IPC 传输，CPU 与耗电明显下降。
+
+### 工程
+- IDE 主界面按功能拆分为 `title-bar` / `status-bar` / `terminal-panel` / `git-panel` / `hierarchy-pane` / `left-pane` / `settings-panel` 等独立模块，单文件规模从近 4000 行降到可控范围，改动不再牵动全局。
+
+### 打包与发布
+- 版本号同步至 **0.1.8**（GitHub Release 标签 **`v0.1.8`**）。
+
 <a id="release-0.1.7"></a>
 
 ## 2026-10-12 — TapMakerWork 0.1.7

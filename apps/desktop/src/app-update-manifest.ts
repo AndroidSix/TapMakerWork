@@ -26,22 +26,20 @@ export interface AppUpdateManifest {
 }
 
 export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
-  latest: "0.1.7",
-  title: "TapMakerWork 0.1.7",
+  latest: "0.1.8",
+  title: "TapMakerWork 0.1.8",
   notes: [
-    "【Lua 智能编辑】Lua 语法错误实时标红；补全项目与 urhox-libs 符号，悬停查看文档；编辑器补齐查找、折叠等功能。",
-    "【资源体检】包体报告（按类型占比、最大文件、可压缩候选）；未引用素材一键移入项目回收站，可恢复或清空。",
-    "【图片增量压缩】按内容哈希跳过已压缩过的图片，可强制重压；点击结果查看压缩前后对比，可单张还原原图。",
-    "【安全区检查】画布显示刘海 / Home 条安全区，越界或超出画布的节点高亮，点击即可定位。",
-    "【Runtime 管理】集中查看所有项目的本地预览进程（PID、运行时长、日志），可切换项目或停止；状态栏显示运行数量。",
-    "【一键反馈包】汇总版本、系统、项目、Runtime / Bridge 日志与最近错误并自动脱敏，可复制或保存；运行时错误弹窗可直接生成。",
-    "【更快更省】查询预览状态不再反复启动 Maker CLI；减少重复轮询，窗口隐藏时暂停截图；编辑器与工具面板按需加载。",
-    "【更稳更安全】打包版收紧本机 Bridge 访问来源；修复改 Lua 后颜色/文本回写读到旧值；打开中的项目目录被删除时 Bridge 不再崩溃。"
+    "【不再反复弹录屏授权】后台轮询不再枚举窗口：macOS 的系统录屏授权框只在你自己点「刷新画面」「打开系统录屏设置」时才出现，不再每半秒顶一次。",
+    "【授权状态即时生效】在系统设置里改完授权回到应用即刷新，不用重启；未授权时画布直接给出「打开系统录屏设置」按钮。",
+    "【更低功耗】预览与 Runtime 画面在未授权、窗口隐藏时完全停止抓屏；主进程对重复画面直接复用缓存帧，CPU 与耗电明显下降。",
+    "【更省内存】IDE 主界面按功能拆分为标题栏、状态栏、终端、Git、层级、设置等独立模块，按需渲染，长时间使用内存更平稳。",
+    "【更稳的工程结构】主界面拆模块后单文件从近 4000 行降到可控规模，改动一处不再牵动全局，后续修 bug 更快。",
+    "【顺手修掉的老问题】资源体检在 macOS 上因 /var 与 /private/var 符号链接导致的路径识别失败已修复。"
   ],
   links: [
     {
       label: "完整更新日志",
-      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.7"
+      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.8"
     },
     {
       label: "macOS 安装说明",
@@ -52,13 +50,13 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
       url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/DESKTOP_RELEASE.md#macos-build-from-source"
     }
   ],
-  publishedAt: "2026-10-12",
+  publishedAt: "2026-11-12",
   force: false,
   downloads: {
-    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.7/TapMakerWork-0.1.7-windows-x64.exe",
-    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.7",
+    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.8/TapMakerWork-0.1.8-windows-x64.exe",
+    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.8",
     site: "https://androidsix.github.io/tapmakerwork-site/",
-    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.7"
+    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.8"
   }
 };
 
