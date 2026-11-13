@@ -2005,6 +2005,13 @@ server.listen(port, host, () => {
   if (project) publishAgentContextNow(true);
 });
 
+// 收件箱要灵敏（Agent 等待回执），但 Runtime 文件通道同步与 STATUS 发布是纯文件 IO，
+// 没必要跟着 500ms 跑。拆成两个定时器，写盘频率降到 1/4。
+const agentInboxTimer = setInterval(() => {
+  if (!project) return;
+  processAgentInbox().catch(() => undefined);
+}, 500);
+
 const agentChannelTimer = setInterval(() => {
   if (!project) return;
   try {
@@ -2013,10 +2020,10 @@ const agentChannelTimer = setInterval(() => {
   } catch {
     // ignore periodic sync failures
   }
-  processAgentInbox().catch(() => undefined);
-}, 500);
+}, 2_000);
 
 function shutdown(): void {
+  clearInterval(agentInboxTimer);
   clearInterval(agentChannelTimer);
   if (project) {
     try {

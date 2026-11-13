@@ -93,17 +93,21 @@ describe("adoptWindowsMimeForFile", () => {
 });
 
 describe("resolveProjectAsset", () => {
+  // resolveInsideProject 会返回符号链接解析后的规范路径（macOS 上 /var → /private/var），
+  // 所以断言两边都要先过 realpath，否则会拿字面路径和规范路径对比。
+  const canonical = (target: string) => fs.realpathSync(target);
+
   it("returns project-relative path when assets/foo.png exists", () => {
     const root = makeProject();
     const created = writePng(root, path.join("assets", "hero.png"));
     const resolved = resolveProjectAsset(root, "hero.png");
-    expect(path.resolve(resolved)).toBe(path.resolve(created));
+    expect(canonical(resolved)).toBe(canonical(created));
   });
 
   it("falls back to project root when asset is not under assets/", () => {
     const root = makeProject();
     const created = writePng(root, "logo.png");
-    expect(path.resolve(resolveProjectAsset(root, "logo.png"))).toBe(path.resolve(created));
+    expect(canonical(resolveProjectAsset(root, "logo.png"))).toBe(canonical(created));
   });
 
   it("delegates to adoptWindowsMimeForFile when the path is Windows absolute", () => {
@@ -159,6 +163,19 @@ describe("sendProjectAsset", () => {
     expect(response.headers["content-type"]).toBe("image/png");
     expect(response.headers["x-adopted-path"]).toBe("assets/_external/sample.png");
     expect(response.headers["status"]).toBe(200);
+  });
+
+  it("keeps x-adopted-path when projectRoot reaches the file through a symlink", () => {
+    const realRoot = makeProject();
+    const target = writePng(realRoot, path.join("assets", "hero.png"));
+    // 造一个指向真实项目根的符号链接目录，模拟 macOS 上 /var → /private/var。
+    const linkParent = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-link-"));
+    temporary.push(linkParent);
+    const linkRoot = path.join(linkParent, "project");
+    fs.symlinkSync(realRoot, linkRoot);
+    const response = mockResponse();
+    sendProjectAsset(response, target, linkRoot);
+    expect(response.headers["x-adopted-path"]).toBe("assets/hero.png");
   });
 
   it("omits x-adopted-path when the file lives outside the project", () => {

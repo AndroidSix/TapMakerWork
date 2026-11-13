@@ -431,6 +431,58 @@ export function readLocalPreviewStatus(
   return best;
 }
 
+/**
+ * preview 目录下单个 root 可能有上万个条目、数百个子目录（savedata / runtime-cache 等）。
+ * /api/health 每 1.5 秒轮询一次，每次都做全量深递归会稳定吃掉几十毫秒 CPU。
+ * 缓存「候选状态文件路径」列表，并用浅层签名判断是否可能有新会话目录出现：
+ * 只 stat 前两层目录的 mtime，成本远低于全树遍历；文件内容仍然每次重新读取，保证状态新鲜。
+ */
+interface StatusPathCacheEntry {
+  signature: string;
+  candidates: string[];
+}
+
+const statusPathCache = new Map<string, StatusPathCacheEntry>();
+
+/** 只采样 root 下两层目录的 mtime 与名称；新增/删除会话目录会改变签名。 */
+function shallowSignature(root: string): string {
+  const parts: string[] = [];
+  let level1: fs.Dirent[];
+  try {
+    level1 = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return "unreadable";
+  }
+  parts.push(String(level1.length));
+  for (const entry of level1) {
+    if (!entry.isDirectory() || SKIP_DIRS.has(entry.name)) continue;
+    const full = path.join(root, entry.name);
+    try {
+      parts.push(`${entry.name}:${fs.statSync(full).mtimeMs}`);
+      const level2 = fs.readdirSync(full, { withFileTypes: true });
+      parts.push(String(level2.length));
+    } catch {
+      // 目录在采样期间消失时忽略。
+    }
+  }
+  return parts.join("|");
+}
+
+function cachedStatusCandidates(root: string): string[] {
+  if (!fs.existsSync(root)) return [];
+  const signature = shallowSignature(root);
+  const cached = statusPathCache.get(root);
+  if (cached && cached.signature === signature) return cached.candidates;
+  const candidates: string[] = [];
+  walkStatusFiles(root, candidates);
+  if (statusPathCache.size >= 16 && !statusPathCache.has(root)) {
+    const oldest = statusPathCache.keys().next();
+    if (!oldest.done) statusPathCache.delete(oldest.value);
+  }
+  statusPathCache.set(root, { signature, candidates });
+  return candidates;
+}
+
 export function findRuntimeFileStatus(
   roots = runtimeFileSearchRoots(),
   options?: FindRuntimeFileStatusOptions
@@ -438,7 +490,7 @@ export function findRuntimeFileStatus(
   const candidates: string[] = [];
   for (const root of roots) {
     if (!fs.existsSync(root)) continue;
-    walkStatusFiles(root, candidates);
+    candidates.push(...cachedStatusCandidates(root));
   }
   if (!candidates.length) return undefined;
   const hints = projectMatchHints(options);

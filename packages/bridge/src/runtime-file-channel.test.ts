@@ -260,3 +260,34 @@ describe("runtime file channel", () => {
     });
   });
 });
+
+describe("runtime status path cache", () => {
+  it("serves fresh file content even when the directory structure is unchanged", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-statuscache-"));
+    temporary.push(root);
+    const savedata = path.join(root, "hash1", "storage", "runtime-cache", "127.0.0.1_1", "hash2", "savedata", "0", "tapmakerwork");
+    fs.mkdirSync(savedata, { recursive: true });
+    const statusFile = path.join(savedata, "runtime-status.json");
+    fs.writeFileSync(statusFile, JSON.stringify({ sessionId: "s1", cursor: 1 }), "utf8");
+
+    expect(findRuntimeFileStatus([root])?.cursor).toBe(1);
+
+    // 只改文件内容、不动目录结构：候选路径可复用，但内容必须重新读取。
+    fs.writeFileSync(statusFile, JSON.stringify({ sessionId: "s1", cursor: 2 }), "utf8");
+    expect(findRuntimeFileStatus([root])?.cursor).toBe(2);
+  });
+
+  it("discovers a newly created session directory", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-statuscache-"));
+    temporary.push(root);
+    const first = path.join(root, "hash1", "storage", "runtime-cache", "127.0.0.1_1", "hash2", "savedata", "0", "tapmakerwork");
+    fs.mkdirSync(first, { recursive: true });
+    fs.writeFileSync(path.join(first, "runtime-status.json"), JSON.stringify({ sessionId: "s1", cursor: 1 }), "utf8");
+    expect(findRuntimeFileStatus([root])?.sessionId).toBe("s1");
+
+    const second = path.join(root, "hash9", "storage", "runtime-cache", "x", "y", "savedata", "0", "tapmakerwork");
+    fs.mkdirSync(second, { recursive: true });
+    fs.writeFileSync(path.join(second, "runtime-status.json"), JSON.stringify({ sessionId: "s2", cursor: 1 }), "utf8");
+    expect(findRuntimeFileStatus([root])?.sessionId).toBe("s2");
+  });
+});

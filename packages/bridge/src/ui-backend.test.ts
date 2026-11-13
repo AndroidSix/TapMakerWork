@@ -145,4 +145,32 @@ end
     expect(entry).toContain("TapMakerWorkNanoVGBridge");
     expect(entry).not.toContain("urhox-libs/UI");
   });
+
+  it("re-detects the backend after scripts change instead of serving a stale cache", () => {
+    const root = tempProject({
+      "scripts/ui/Home.lua": `local UI = require("urhox-libs/UI")\nUI.Init({})\nUI.GetRoot()\n`
+    });
+    expect(detectUiBackend(root)).toBe("yoga");
+
+    // 把 Yoga 标记整体换成 NanoVG 绘制，签名变化后必须重新判定。
+    const target = path.join(root, "scripts", "ui", "Home.lua");
+    fs.writeFileSync(target, "nvgBeginFrame(1,1,1)\nnvgText(0,0,'x')\nnvgRect(0,0,1,1)\nnvgFill()\nnvgEndFrame()\n", "utf8");
+    const future = new Date(Date.now() + 5_000);
+    fs.utimesSync(target, future, future);
+    expect(detectUiBackend(root)).toBe("nanovg");
+  });
+
+  it("re-detects the backend when a new Lua file appears", () => {
+    const root = tempProject({
+      "scripts/ui/Home.lua": `local UI = require("urhox-libs/UI")\nUI.Init({})\n`
+    });
+    expect(detectUiBackend(root)).toBe("yoga");
+
+    fs.writeFileSync(
+      path.join(root, "scripts", "draw.lua"),
+      "nvgBeginFrame(1,1,1)\nnvgText(0,0,'x')\nnvgRect(0,0,1,1)\nnvgFill()\nnvgStroke()\nnvgEndFrame()\n",
+      "utf8"
+    );
+    expect(detectUiBackend(root)).toBe("nanovg");
+  });
 });
