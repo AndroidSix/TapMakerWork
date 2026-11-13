@@ -18,6 +18,34 @@
     }
   ],
   "events": {
+    "milestone": {
+      "fields": {
+        "milestoneType": {
+          "path": "$.milestoneType",
+          "type": "string",
+          "valueLabels": {
+            "new_user": "新用户",
+            "global": "全局"
+          }
+        },
+        "milestonePoint": {
+          "path": "$.milestonePoint",
+          "type": "string"
+        },
+        "elapsedSinceRegistrationMs": {
+          "path": "$.elapsedSinceRegistrationMs",
+          "type": "number"
+        }
+      }
+    },
+    "session_end": {
+      "fields": {
+        "sessionDurationMs": {
+          "path": "$.sessionDurationMs",
+          "type": "number"
+        }
+      }
+    },
     "_preview_action": {
       "fields": {
         "action": {
@@ -74,6 +102,25 @@
     }
   },
   "datasets": {
+    "milestone_daily": {
+      "type": "event",
+      "fromEvent": "milestone",
+      "groupBy": ["dt", "milestoneType", "milestonePoint"],
+      "metrics": {
+        "events": { "agg": "count" },
+        "users": { "agg": "count_distinct", "field": "userId" }
+      }
+    },
+    "sdk_session_daily": {
+      "type": "event",
+      "fromEvent": "session_end",
+      "groupBy": ["dt"],
+      "metrics": {
+        "sessions": { "agg": "count" },
+        "users": { "agg": "count_distinct", "field": "userId" },
+        "duration_ms_sum": { "agg": "sum", "field": "sessionDurationMs" }
+      }
+    },
     "preview_daily": {
       "type": "event",
       "fromEvent": "_preview_action",
@@ -139,6 +186,54 @@
       "title": "IDE 功能使用",
       "views": [
         {
+          "id": "milestone_trend",
+          "title": "里程碑到达趋势",
+          "type": "line",
+          "x": "dt",
+          "y": "users",
+          "series": "milestonePoint",
+          "data": {
+            "dataset": "milestone_daily",
+            "groupBy": ["dt", "milestonePoint"],
+            "metrics": {
+              "users": { "agg": "sum", "field": "users" },
+              "events": { "agg": "sum", "field": "events" }
+            }
+          }
+        },
+        {
+          "id": "milestone_point_table",
+          "title": "里程碑节点汇总",
+          "type": "table",
+          "data": {
+            "dataset": "milestone_daily",
+            "groupBy": ["milestoneType", "milestonePoint"],
+            "metrics": {
+              "user_days": { "agg": "sum", "field": "users" },
+              "events": { "agg": "sum", "field": "events" }
+            }
+          },
+          "orderBy": [{ "field": "user_days", "direction": "desc" }],
+          "limit": 30
+        },
+        {
+          "id": "sdk_session_duration",
+          "title": "SDK 会话时长趋势",
+          "type": "line",
+          "x": "dt",
+          "y": "avg_session_min",
+          "format": "number",
+          "data": {
+            "dataset": "sdk_session_daily",
+            "groupBy": ["dt"],
+            "metrics": {
+              "sessions": { "agg": "sum", "field": "sessions" },
+              "duration_ms_sum": { "agg": "sum", "field": "duration_ms_sum" },
+              "avg_session_min": { "formula": "duration_ms_sum / sessions / 60000" }
+            }
+          }
+        },
+        {
           "id": "preview_trend",
           "title": "预览操作趋势",
           "type": "line",
@@ -200,7 +295,7 @@
         },
         {
           "id": "session_duration",
-          "title": "会话时长趋势",
+          "title": "本机会话时长趋势",
           "type": "line",
           "x": "dt",
           "y": "avg_session_min",

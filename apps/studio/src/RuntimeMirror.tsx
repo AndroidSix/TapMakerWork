@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { BoxSelect, CirclePlay, Crosshair, Magnet, MonitorUp, MousePointer2, Move, RefreshCw, RotateCw, Scaling, Unplug, WandSparkles } from "lucide-react";
+import { BoxSelect, CirclePlay, Crosshair, ExternalLink, Magnet, MonitorUp, MousePointer2, Move, RefreshCw, RotateCw, Scaling, Unplug, WandSparkles } from "lucide-react";
 import { type UiNode, type UiSnapshot, type UiValue, type WorkspaceMode } from "@tapmakerwork/protocol";
 import { angleBetween, groupCenter, rectCenter, resizeRect, rotatePoint, scaleRatio, snapValue, toolForShortcut, type Point, type Rect, type TransformTool } from "./runtime-transform";
 import { clipRectToSpace, runtimeCoordinateSpace, runtimeHitCandidates, stagePoint } from "./runtime-hit-test";
 import { CoachMark } from "./NewbieGuide";
+import { useScreenCaptureAllowed } from "./app/screen-permission";
 
 interface RuntimeMirrorProps {
   runtimeLive: boolean;
@@ -180,6 +181,7 @@ export function RuntimeMirror({
   const [error, setError] = useState("");
   const [permission, setPermission] = useState("");
   const [capturing, setCapturing] = useState(false);
+  const screenAllowed = useScreenCaptureAllowed();
   const [tool, setTool] = useState<TransformTool>("move");
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, TransformDraft>>({});
@@ -260,7 +262,13 @@ export function RuntimeMirror({
     setDrafts(value);
   };
 
-  const capture = useCallback(async (requestedSourceId = sourceId, announce = false, syncEditorFrame = true, background = false) => {
+  const capture = useCallback(async (
+    requestedSourceId = sourceId,
+    announce = false,
+    syncEditorFrame = true,
+    background = false,
+    allowPermissionPrompt = false
+  ) => {
     const captureRuntime = window.tapMakerWork?.captureRuntime || window.tapMakerWork?.runtime?.capture;
     if (!captureRuntime || captureInFlight.current) return;
     captureInFlight.current = true;
@@ -271,7 +279,8 @@ export function RuntimeMirror({
         ...(requestedSourceId ? { sourceId: requestedSourceId } : {}),
         orientation,
         viewportWidth: viewport.width,
-        viewportHeight: viewport.height
+        viewportHeight: viewport.height,
+        ...(allowPermissionPrompt ? { allowPermissionPrompt: true } : {})
       });
       setCandidates(result.candidates ?? []);
       setPermission(result.permission || "");
@@ -304,21 +313,29 @@ export function RuntimeMirror({
       setError("runtime_capture_unavailable");
       return;
     }
+    // 未授权时后台轮询一次都不许发：macOS 会为每次窗口枚举重弹系统授权框。
+    // 这里只更新提示文案，真正的抓屏等用户点「刷新画面」或「去授权」再触发。
+    if (!screenAllowed) {
+      setError("screen_recording_permission_required");
+      return;
+    }
     void capture(sourceId, false, true);
     // Keep both panes on the newest engine frame so property edits and
     // transform commits are visible in the edit view as soon as Runtime paints.
+    // 抓屏要枚举全部窗口并做 PNG 编码，属于高开销操作；画面未变化时主进程会
+    // 直接复用缓存帧，因此这里只保留够用的刷新频率，编辑提交另有 60ms 的即时补抓。
     const timer = window.setInterval(
       () => { if (!document.hidden) void capture(sourceId, false, true, true); },
-      mode === "live-edit" ? 220 : 800
+      mode === "live-edit" ? 500 : 1_500
     );
     return () => window.clearInterval(timer);
-  }, [capture, mode, runtimeLive, sourceId]);
+  }, [capture, mode, runtimeLive, screenAllowed, sourceId]);
 
   useEffect(() => {
-    if (!runtimeLive || mode !== "live-edit" || editRevision <= 0) return;
+    if (!runtimeLive || !screenAllowed || mode !== "live-edit" || editRevision <= 0) return;
     const timer = window.setTimeout(() => void capture(sourceId, false, true, true), 60);
     return () => window.clearTimeout(timer);
-  }, [capture, editRevision, mode, runtimeLive, sourceId]);
+  }, [capture, editRevision, mode, runtimeLive, screenAllowed, sourceId]);
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
@@ -577,7 +594,7 @@ export function RuntimeMirror({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [boxMap, editable, logicalScale.x, logicalScale.y, mode, onPatch, onToast, selectedIds]);
 
-  const permissionBlocked = Boolean(permission && permission !== "granted");
+  const permissionBlocked = !screenAllowed || Boolean(permission && permission !== "granted");
   const selectedDraft = selected ? drafts[selected.id] : undefined;
   const selectedRect = selectedDraft?.rect || selected || { x: 0, y: 0, w: 0, h: 0 };
   const resolvedBackend = uiBackend
@@ -646,14 +663,14 @@ export function RuntimeMirror({
             <select value={sourceId} onChange={(event) => {
               const next = event.target.value;
               setSourceId(next);
-              void capture(next, true);
+              void capture(next, true, true, false, true);
             }}>
               <option value="">自动识别</option>
               {candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
             </select>
           </label>
         )}
-        <button type="button" disabled={!runtimeLive || capturing} onClick={() => void capture(sourceId, true)}><RefreshCw size={13} aria-hidden="true" />刷新画面</button>
+        <button type="button" disabled={!runtimeLive || capturing} onClick={() => void capture(sourceId, true, true, false, true)}><RefreshCw size={13} aria-hidden="true" />刷新画面</button>
       </header>
 
       <div className={`runtime-editor-shell ${mode === "live-edit" ? "runtime-editor-split" : ""}`}>
@@ -704,6 +721,12 @@ export function RuntimeMirror({
                         ? "当前不是支持窗口采样的桌面版本；请重启或更新 TapMakerWork。"
                         : error ? `窗口采样失败：${error}` : "启动运行器后，这里直接编辑最终渲染画面。"}
               </p>
+              {permissionBlocked && (
+                <button
+                  type="button"
+                  onClick={() => { void window.tapMakerWork?.permissions?.open?.("screen"); }}
+                ><ExternalLink size={14} aria-hidden="true" />打开系统录屏设置</button>
+              )}
               {!runtimeLive && (
                 <CoachMark label="② 启动 Runtime" active={coachRuntimeStart}>
                   <button

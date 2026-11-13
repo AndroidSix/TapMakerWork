@@ -45,6 +45,9 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
     request: (permission: "screen" | "accessibility") => ipcRenderer.invoke("tapmakerwork:permissions-request", permission),
     open: (permission: "screen" | "accessibility") => ipcRenderer.invoke("tapmakerwork:permissions-open", permission),
     restart: () => ipcRenderer.invoke("tapmakerwork:app-restart"),
+    acknowledge: () => ipcRenderer.invoke("tapmakerwork:permissions-acknowledge"),
+    dismiss: () => ipcRenderer.invoke("tapmakerwork:permissions-dismiss"),
+    reopen: () => ipcRenderer.invoke("tapmakerwork:permissions-reopen"),
     onChanged: (listener: (state: unknown) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, state: unknown) => listener(state);
       ipcRenderer.on("tapmakerwork:permissions-changed", handler);
@@ -94,7 +97,7 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
       return () => ipcRenderer.removeListener("tapmakerwork:telemetry-session-end", handler);
     }
   },
-  captureRuntime: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) =>
+  captureRuntime: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) =>
     ipcRenderer.invoke("tapmakerwork:runtime-capture", opts) as Promise<{
       ok: boolean;
       dataUrl?: string;
@@ -141,7 +144,7 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
     }
   },
   runtime: {
-    capture: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }) =>
+    capture: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) =>
       ipcRenderer.invoke("tapmakerwork:runtime-capture", opts) as Promise<{
         ok: boolean;
         dataUrl?: string;

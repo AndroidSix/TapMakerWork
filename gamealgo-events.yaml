@@ -1,4 +1,24 @@
 events:
+  milestone:
+    desc: 用户首次到达稳定业务节点（标准里程碑）
+    fields:
+      milestoneType:
+        type: string
+        desc: 里程碑类型，如 new_user、global
+        required: true
+      milestonePoint:
+        type: string
+        desc: 里程碑节点名称，如启动 IDE、打开项目
+        required: true
+      elapsedSinceRegistrationMs:
+        type: number
+        desc: SDK 自动补充，距用户注册的毫秒数
+  session_end:
+    desc: SDK 自动上报的会话结束
+    fields:
+      sessionDurationMs:
+        type: number
+        desc: 本次会话持续毫秒数
   _project_open:
     desc: IDE 成功打开一个 Maker 项目
     fields:

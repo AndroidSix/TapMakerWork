@@ -60,6 +60,15 @@ export function resolveProjectAsset(projectRoot: string, assetPath: string): str
   return resolveInsideProject(projectRoot, path.join("assets", assetPath));
 }
 
+/** 解析符号链接后的真实路径；路径不存在时退回字面路径。 */
+function realPathOrSelf(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
 // 把 filename 写到响应里。已经被 adoptWindowsMimeForFile 接管的文件会附带
 // x-adopted-path 头，让调用方拿到权威的相对路径（避免本地 basename 反推）。
 export function sendProjectAsset(response: ServerResponse, filename: string, projectRoot: string): void {
@@ -72,7 +81,9 @@ export function sendProjectAsset(response: ServerResponse, filename: string, pro
     "access-control-allow-origin": "*"
   };
   try {
-    const relative = path.relative(projectRoot, filename).split(path.sep).join("/");
+    // 两侧都要先过 realpath：resolveProjectAsset 返回的是规范路径，若 projectRoot
+    // 仍带符号链接（macOS 上 /var → /private/var），relative 会算出 ".." 并丢掉头。
+    const relative = path.relative(realPathOrSelf(projectRoot), realPathOrSelf(filename)).split(path.sep).join("/");
     if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
       headers["x-adopted-path"] = relative;
     }
