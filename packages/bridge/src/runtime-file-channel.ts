@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { PreviewSessionSummary } from "@tapmakerwork/protocol";
 import { listAccountHomes } from "./maker-accounts.js";
+import { listMakerCacheNames } from "./runtime-cache-index.js";
 
 export interface RuntimeFileStatus {
   kind?: string;
@@ -23,6 +24,7 @@ export interface RuntimeFileStatus {
   projectName?: string;
   backend?: string;
   updatedAt?: number;
+  modifiedAt?: number;
   snapshot?: unknown;
   sourcePath?: string;
   snapshotPath?: string;
@@ -31,6 +33,9 @@ export interface RuntimeFileStatus {
 export interface FindRuntimeFileStatusOptions {
   projectRoot?: string;
   projectName?: string;
+  modifiedSince?: number;
+  includeSnapshot?: boolean;
+  snapshotCache?: RuntimeSnapshotCache;
   /** Test seam: preview hash dir → project_realpath. Defaults to reading Maker preview session.json files. */
   previewProjects?: Map<string, string>;
 }
@@ -41,13 +46,15 @@ function previewRoot(): string {
 
 const SKIP_DIRS = new Set(["assets", "node_modules", "shadercache_runtime", "Cache", "GPUCache", "Code Cache"]);
 
+function makerPreviewRoots(): string[] {
+  return [previewRoot(), ...listAccountHomes().map((home) => path.join(home, "preview"))];
+}
+
 export function runtimeFileSearchRoots(): string[] {
-  const roots = [previewRoot(), ...listAccountHomes().map((home) => path.join(home, "preview"))];
+  const roots = makerPreviewRoots();
   try {
     const temp = os.tmpdir();
-    for (const name of fs.readdirSync(temp)) {
-      if (name.startsWith("maker-cache")) roots.push(path.join(temp, name));
-    }
+    for (const name of listMakerCacheNames(temp)) roots.push(path.join(temp, name));
   } catch {
     // Temp may be unreadable; preview root still works on macOS.
   }
@@ -159,13 +166,46 @@ function snapshotStem(statusPath: string): string {
 export const MAX_SNAPSHOT_PARTS = 256;
 export const MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024;
 
-function readSiblingSnapshot(statusPath: string): unknown {
-  const dir = path.dirname(statusPath);
-  const stem = snapshotStem(statusPath);
-  const metaPath = path.join(dir, `${stem}.meta.json`);
-  const singlePath = path.join(dir, stem);
-  if (fs.existsSync(metaPath)) {
+export interface RuntimeSnapshotCache {
+  entry?: { key: string; files: Map<string, string | undefined>; snapshot: object };
+}
+
+const MAX_CACHED_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+
+function snapshotFileInfo(filename: string) {
+  const stat = fs.statSync(filename, { bigint: true, throwIfNoEntry: false });
+  return stat ? { size: Number(stat.size), stamp: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` } : undefined;
+}
+
+function readSiblingSnapshot(singlePath: string, metaPath: string, hasMeta: boolean, key: string, cache?: RuntimeSnapshotCache): unknown {
+  if (cache?.entry) {
+    const previous = cache.entry;
     try {
+      if (previous.key === key && [...previous.files].every(([filename, stamp]) => snapshotFileInfo(filename)?.stamp === stamp)) {
+        return previous.snapshot;
+      }
+    } catch {
+      // Read the current files if a saved fingerprint is no longer readable.
+    }
+    delete cache.entry;
+  }
+  const files = cache ? new Map<string, string | undefined>() : undefined;
+  const sizeOf = (filename: string): number | undefined => {
+    if (!files) return fs.statSync(filename, { throwIfNoEntry: false })?.size;
+    const info = snapshotFileInfo(filename);
+    files.set(filename, info?.stamp);
+    return info?.size;
+  };
+  const finish = (text: string, bytes: number, cacheable: boolean): unknown => {
+    const snapshot = normalizeRuntimeSnapshot(parseFirstJsonObject(text));
+    if (cache && files && cacheable && bytes <= MAX_CACHED_SNAPSHOT_BYTES && snapshot && typeof snapshot === "object") {
+      cache.entry = { key, files, snapshot };
+    }
+    return snapshot;
+  };
+  if (hasMeta) {
+    try {
+      if (files) sizeOf(metaPath);
       const meta = JSON.parse(fs.readFileSync(metaPath, "utf8").split("\0")[0] || "{}") as { parts?: number; total?: number };
       const parts = Number(meta.parts || 0);
       if (!Number.isInteger(parts) || parts > MAX_SNAPSHOT_PARTS) return undefined;
@@ -173,23 +213,25 @@ function readSiblingSnapshot(statusPath: string): unknown {
         let text = "";
         let totalBytes = 0;
         for (let index = 1; index <= parts; index += 1) {
-          const partPath = path.join(dir, `${stem}.part${String(index).padStart(2, "0")}`);
-          if (!fs.existsSync(partPath)) return undefined;
-          totalBytes += fs.statSync(partPath).size;
+          const partPath = `${singlePath}.part${String(index).padStart(2, "0")}`;
+          const size = sizeOf(partPath);
+          if (size === undefined) return undefined;
+          totalBytes += size;
           if (totalBytes > MAX_SNAPSHOT_BYTES) return undefined;
           // Maker File 分片可能在中间插入 \0，必须全部去掉再拼接
           text += fs.readFileSync(partPath, "utf8").replace(/\0+/g, "");
         }
-        return normalizeRuntimeSnapshot(parseFirstJsonObject(text));
+        return finish(text, totalBytes, true);
       }
     } catch {
       // fall through
     }
   }
-  if (!fs.existsSync(singlePath)) return undefined;
   try {
-    if (fs.statSync(singlePath).size > MAX_SNAPSHOT_BYTES) return undefined;
-    return normalizeRuntimeSnapshot(parseFirstJsonObject(fs.readFileSync(singlePath, "utf8")));
+    if (!hasMeta) files?.set(metaPath, undefined);
+    const size = sizeOf(singlePath);
+    if (size === undefined || size > MAX_SNAPSHOT_BYTES) return undefined;
+    return finish(fs.readFileSync(singlePath, "utf8"), size, !hasMeta);
   } catch {
     return undefined;
   }
@@ -253,7 +295,7 @@ function previewSessionProjectPaths(previewDir: string): Map<string, string> {
 
 function allPreviewSessionProjectPaths(): Map<string, string> {
   const merged = new Map<string, string>();
-  for (const root of runtimeFileSearchRoots().filter((candidate) => path.basename(candidate) === "preview")) {
+  for (const root of makerPreviewRoots()) {
     for (const [previewDir, projectRealpath] of previewSessionProjectPaths(root)) merged.set(previewDir, projectRealpath);
   }
   return merged;
@@ -302,7 +344,7 @@ export function classifyRuntimeProject(runtimeProjectName: string | undefined, o
 }
 
 /** 当前仍在运行 Maker 预览（runtime 进程存活）的项目 realpath 列表。 */
-export function listRunningPreviewProjects(isAlive: (pid: number) => boolean, roots = runtimeFileSearchRoots()): string[] {
+export function listRunningPreviewProjects(isAlive: (pid: number) => boolean, roots = makerPreviewRoots()): string[] {
   return listPreviewSessions((pid) => isAlive(pid) ? "alive" : "missing", roots)
     .filter((session) => session.alive === true)
     .map((session) => session.projectRoot);
@@ -313,7 +355,7 @@ function previewStatusRank(status: LocalPreviewStatus): number {
 }
 
 /** 所有账号目录下未停止的 Maker 预览会话（同一项目取最“活”的一份），存活的排前面。 */
-export function listPreviewSessions(presence: (pid: number) => PidPresence, roots = runtimeFileSearchRoots()): PreviewSessionSummary[] {
+export function listPreviewSessions(presence: (pid: number) => PidPresence, roots = makerPreviewRoots()): PreviewSessionSummary[] {
   const byProject = new Map<string, { status: LocalPreviewStatus; summary: PreviewSessionSummary }>();
   for (const root of new Set(roots.filter((candidate) => path.basename(candidate) === "preview"))) {
     let entries: fs.Dirent[];
@@ -407,7 +449,7 @@ function statusFromSession(previewDir: string, session: PreviewSessionFile, pres
 export function readLocalPreviewStatus(
   projectRoot: string,
   presence: (pid: number) => PidPresence,
-  roots = runtimeFileSearchRoots()
+  roots = makerPreviewRoots()
 ): LocalPreviewStatus {
   let realpath: string;
   try {
@@ -503,9 +545,10 @@ export function findRuntimeFileStatus(
   for (const file of candidates) {
     try {
       const stat = fs.statSync(file);
+      if (stat.mtimeMs < (options?.modifiedSince ?? 0)) continue;
       const parsed = parseFirstJsonObject(fs.readFileSync(file, "utf8"));
       if (!parsed || typeof parsed !== "object" || !parsed.sessionId) continue;
-      const current: RuntimeFileStatus = { ...parsed, sourcePath: file };
+      const current: RuntimeFileStatus = { ...parsed, sourcePath: file, modifiedAt: stat.mtimeMs };
       const bucket = newest[hints.length ? classifyStatusProject(current, hints, previewProjects) : "match"];
       if (stat.mtimeMs >= bucket.mtime) {
         bucket.status = current;
@@ -517,16 +560,18 @@ export function findRuntimeFileStatus(
   }
   // 明确属于其它项目的状态绝不回退使用，避免把 A 项目的 UI 树当成当前项目
   const chosen = newest.match.status ?? newest.unknown.status;
-  return chosen ? withSiblingSnapshot(chosen) : undefined;
+  return chosen && options?.includeSnapshot !== false ? withSiblingSnapshot(chosen, options?.snapshotCache) : chosen;
 }
 
-function withSiblingSnapshot(status: RuntimeFileStatus): RuntimeFileStatus {
+function withSiblingSnapshot(status: RuntimeFileStatus, cache?: RuntimeSnapshotCache): RuntimeFileStatus {
   const file = status.sourcePath!;
   const stem = snapshotStem(file);
   const metaPath = path.join(path.dirname(file), `${stem}.meta.json`);
   const singlePath = path.join(path.dirname(file), stem);
-  const snapshotPath = fs.existsSync(metaPath) ? metaPath : (fs.existsSync(singlePath) ? singlePath : undefined);
-  return { ...status, ...(snapshotPath ? { snapshotPath } : {}), snapshot: readSiblingSnapshot(file) };
+  const hasMeta = fs.existsSync(metaPath);
+  const snapshotPath = hasMeta ? metaPath : (fs.existsSync(singlePath) ? singlePath : undefined);
+  const key = cache ? JSON.stringify([file, status.sessionId, status.revision]) : "";
+  return { ...status, ...(snapshotPath ? { snapshotPath } : {}), snapshot: readSiblingSnapshot(singlePath, metaPath, hasMeta, key, cache) };
 }
 
 export function writeIdeCommandsFile(status: RuntimeFileStatus, commands: Array<Record<string, unknown>>): string | undefined {

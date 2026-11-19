@@ -176,4 +176,14 @@ describe("useDesktopSystem", () => {
     expect(result.current.permissionBusy).toBe("");
     unmount();
   });
+
+  it("does not claim to reset permission if the installed desktop has no reset handler", async () => {
+    const { api } = mockDesktop();
+    delete api.permissions!.reset;
+    const { result, toast, unmount } = setup();
+    await act(() => result.current.runPermissionAction("reset-screen"));
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining("不支持重置"), "error");
+    expect(toast).not.toHaveBeenCalledWith(expect.stringContaining("已清除"), "success");
+    unmount();
+  });
 });

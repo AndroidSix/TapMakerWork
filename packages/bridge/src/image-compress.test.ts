@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { Jimp } from "jimp";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   defaultImageCompressSettings,
   isTooBroadCompressTarget,
@@ -12,6 +13,7 @@ import {
 } from "./image-compress.js";
 import { hashBytes, memoryCompressCache, openCompressCache } from "./image-compress-cache.js";
 import { BUILTIN_COMMUNITY } from "./community-config.js";
+import { compressLocal } from "./local-compress.js";
 
 describe("community builtin", () => {
   it("has required QQ fields", () => {
@@ -107,6 +109,33 @@ describe("image compress progress", () => {
     });
     expect(result).toMatchObject({ state: "cancelled", total: 3, processed: 1 });
     expect(result.finishedAt).toBeTruthy();
+  });
+
+  it("compresses the already-read PNG bytes and keeps encoded output and backup identical", async () => {
+    const root = makeImages(["screen.png"]);
+    vi.stubEnv("HOME", root);
+    vi.stubEnv("USERPROFILE", root);
+    vi.stubEnv("PATH", root);
+    const file = path.join(root, "screen.png");
+    const original = await new Jimp({ width: 64, height: 64, color: 0x335577ff }).getBuffer("image/png", { deflateLevel: 0 });
+    fs.writeFileSync(file, original);
+    const read = vi.spyOn(Jimp, "read");
+    try {
+      const expected = await compressLocal(file);
+      expect(expected).toMatchObject({ ok: true, engine: "Jimp" });
+      read.mockClear();
+      const backupDir = path.join(root, "backup");
+      const result = await runImageCompress({ target: file, backupDir, cache: memoryCompressCache() });
+      expect(result).toMatchObject({ ok: true, compressed: 1 });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read.mock.calls[0]?.[0]).toEqual(original);
+      expect(fs.readFileSync(file)).toEqual(expected.bytes);
+      revertCompressedFile(result, 0, backupDir, memoryCompressCache());
+      expect(fs.readFileSync(file)).toEqual(original);
+    } finally {
+      read.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 
   it("fails fast on a missing target", async () => {

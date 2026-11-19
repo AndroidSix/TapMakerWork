@@ -223,8 +223,7 @@ class TinySession {
     return `...${key.slice(-6)} (${this.compressionCount}/${MONTHLY_LIMIT})`;
   }
 
-  async compress(filePath: string): Promise<{ ok: boolean; skipped?: boolean; engine?: string; error?: string; bytes?: Buffer }> {
-    const raw = fs.readFileSync(filePath);
+  async compress(filePath: string, raw: Buffer): Promise<{ ok: boolean; skipped?: boolean; engine?: string; error?: string; bytes?: Buffer }> {
     if (raw.length > TINYPNG_WEB_MAX) {
       return { ok: false, error: `文件超过 Tiny 限制 (${Math.floor(TINYPNG_WEB_MAX / 1024 / 1024)}MB)` };
     }
@@ -352,11 +351,11 @@ export function resolveDefaultCompressTarget(projectRoot: string): string {
 
 type CompressAttempt = { ok: boolean; skipped?: boolean; engine?: string; error?: string; bytes?: Buffer };
 
-async function compressOne(filePath: string, tiny: TinySession | null): Promise<CompressAttempt> {
-  if (!tiny?.available) return compressLocal(filePath);
-  const result = await tiny.compress(filePath);
+async function compressOne(filePath: string, original: Buffer, tiny: TinySession | null): Promise<CompressAttempt> {
+  if (!tiny?.available) return compressLocal(filePath, original);
+  const result = await tiny.compress(filePath, original);
   if (result.ok || result.skipped) return result;
-  const local = await compressLocal(filePath);
+  const local = await compressLocal(filePath, original);
   return local.ok || local.skipped ? local : result;
 }
 
@@ -420,7 +419,6 @@ export async function runImageCompress(options: {
   progress.total = files.length;
   emit();
   const tiny = settings.tinyEnabled ? new TinySession(settings.tinyKeys, settings.useWebFallback) : null;
-  const compress = options.compress ?? ((filePath: string) => compressOne(filePath, tiny));
 
   for (const filePath of files) {
     if (options.signal?.aborted) return finish("cancelled");
@@ -439,7 +437,7 @@ export async function runImageCompress(options: {
     const startedAt = Date.now();
     let result: CompressAttempt;
     try {
-      result = await compress(filePath);
+      result = await (options.compress ? options.compress(filePath) : compressOne(filePath, original, tiny));
     } catch (error) {
       result = { ok: false, error: error instanceof Error ? error.message : String(error) };
     }

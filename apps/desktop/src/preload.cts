@@ -98,7 +98,7 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
       return () => ipcRenderer.removeListener("tapmakerwork:telemetry-session-end", handler);
     }
   },
-  captureRuntime: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) =>
+  captureRuntime: (opts?: { projectName?: string; projectTitle?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) =>
     ipcRenderer.invoke("tapmakerwork:runtime-capture", opts) as Promise<{
       ok: boolean;
       dataUrl?: string;
@@ -145,7 +145,7 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
     }
   },
   runtime: {
-    capture: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) =>
+    capture: (opts?: { projectName?: string; projectTitle?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) =>
       ipcRenderer.invoke("tapmakerwork:runtime-capture", opts) as Promise<{
         ok: boolean;
         dataUrl?: string;

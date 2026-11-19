@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import luaparse, {
   type AssignmentStatement,
+  type Chunk,
   type Expression,
   type FunctionDeclaration,
   type Statement,
@@ -12,6 +13,47 @@ import luaparse, {
 } from "luaparse";
 import type { UiConversionDiagnostic, UiConversionDocument, UiNode, UiSnapshot, UiValue } from "@tapmakerwork/protocol";
 import { resolveInsideProject } from "./project.js";
+
+const parseLua = (source: string) => luaparse.parse(source, { locations: true, ranges: true, luaVersion: "5.3", encodingMode: "none" });
+
+export function createLuaUiFileCache(projectRoot: string) {
+  const sources = new Map<string, string>();
+  const parsed = new Map<string, Chunk>();
+  let sourceBudget = 8 * 1024 * 1024;
+  let parseBudget = 1024 * 1024;
+  const root = path.resolve(projectRoot);
+  const realRoot = fs.existsSync(root) ? fs.realpathSync(root) : root;
+  const filenameKey = (filename: string) => filename.startsWith(realRoot + path.sep)
+    ? filename
+    : path.resolve(realRoot, path.relative(root, filename));
+  const read = (filename: string) => {
+    const key = filenameKey(filename);
+    let source = sources.get(key);
+    if (source === undefined) {
+      source = fs.readFileSync(key, "utf8");
+      if (source.length <= sourceBudget) {
+        sources.set(key, source);
+        sourceBudget -= source.length;
+      }
+    }
+    return source;
+  };
+  const parse = (filename: string, source = read(filename)) => {
+    const key = filenameKey(filename);
+    let chunk = parsed.get(key);
+    if (!chunk) {
+      chunk = parseLua(source);
+      if (sources.get(key) === source && source.length <= parseBudget) {
+        parsed.set(key, chunk);
+        parseBudget -= source.length;
+      }
+    }
+    return chunk;
+  };
+  return { read, parse };
+}
+
+type LuaUiFileCache = ReturnType<typeof createLuaUiFileCache>;
 
 type Located = {
   loc?: { start: { line: number; column: number }; end: { line: number; column: number } } | undefined;
@@ -567,7 +609,8 @@ function moduleStubDocument(source: string, sourceFile: string, message: string)
 function registerModuleFunctions(
   functions: Map<string, FunctionDeclaration>,
   projectRoot: string,
-  source: string
+  source: string,
+  files: LuaUiFileCache
 ): void {
   const requires = [...source.matchAll(/local\s+([A-Za-z_]\w*)\s*=\s*require\s*\(\s*["']([^"']+)["']\s*\)/g)];
   for (const match of requires) {
@@ -577,8 +620,7 @@ function registerModuleFunctions(
     const relativeModule = `scripts/${moduleName.replace(/\./g, "/")}.lua`;
     try {
       const moduleFile = resolveInsideProject(projectRoot, relativeModule);
-      const moduleSource = fs.readFileSync(moduleFile, "utf8");
-      const chunk = luaparse.parse(moduleSource, { locations: true, ranges: true, luaVersion: "5.3", encodingMode: "none" });
+      const chunk = files.parse(moduleFile);
       const saveFunction = (name: string, declaration: FunctionDeclaration): void => {
         const leaf = name.split(/[.:]/).at(-1) || name;
         functions.set(name, declaration);
@@ -612,12 +654,22 @@ export function convertLuaUiSource(
   constants: Map<string, UiValue> = new Map(),
   extraFunctions?: Map<string, FunctionDeclaration>
 ): UiConversionDocument {
+  return convertLuaUiDocument(source, sourceFile, constants, extraFunctions, () => parseLua(source));
+}
+
+function convertLuaUiDocument(
+  source: string,
+  sourceFile: string,
+  constants: Map<string, UiValue>,
+  extraFunctions: Map<string, FunctionDeclaration> | undefined,
+  parse: () => Chunk
+): UiConversionDocument {
   const context = emptyContext(source, sourceFile, constants);
   if (extraFunctions) {
     for (const [name, declaration] of extraFunctions) context.functions.set(name, declaration);
   }
   try {
-    const chunk = luaparse.parse(source, { locations: true, ranges: true, luaVersion: "5.3", encodingMode: "none" });
+    const chunk = parse();
     collectSymbols(context, chunk.body);
     context.moduleSymbols = new Map(context.symbols);
     scanStatements(context, chunk.body);
@@ -655,14 +707,14 @@ function countConcrete(node: UiNode): number {
   return (node.type === "Slot" || node.type === "Module" ? 0 : 1) + children.reduce((sum, child) => sum + countConcrete(child), 0);
 }
 
-export function convertLuaUiFile(projectRoot: string, relativeFile: string, previewConstants?: Map<string, UiValue>): UiConversionDocument {
+export function convertLuaUiFile(projectRoot: string, relativeFile: string, previewConstants?: Map<string, UiValue>, files = createLuaUiFileCache(projectRoot)): UiConversionDocument {
   const filename = resolveInsideProject(projectRoot, relativeFile);
-  const source = fs.readFileSync(filename, "utf8");
-  const constants = new Map(previewConstants ?? loadProjectPreviewConstants(projectRoot));
-  for (const [key, value] of loadRequiredConstants(projectRoot, source)) constants.set(key, value);
+  const source = files.read(filename);
+  const constants = new Map(previewConstants ?? loadProjectPreviewConstants(projectRoot, files));
+  for (const [key, value] of loadRequiredConstants(projectRoot, source, files)) constants.set(key, value);
   const extraFunctions = new Map<string, FunctionDeclaration>();
-  registerModuleFunctions(extraFunctions, projectRoot, source);
-  return convertLuaUiSource(source, path.relative(projectRoot, filename).split(path.sep).join("/"), constants, extraFunctions);
+  registerModuleFunctions(extraFunctions, projectRoot, source, files);
+  return convertLuaUiDocument(source, path.relative(projectRoot, filename).split(path.sep).join("/"), constants, extraFunctions, () => files.parse(filename, source));
 }
 
 function parseSimpleLiteral(raw: string): UiValue | undefined {
@@ -696,7 +748,7 @@ function tableBodyAfter(source: string, start: number): string | undefined {
   return undefined;
 }
 
-export function loadProjectPreviewConstants(projectRoot: string): Map<string, UiValue> {
+export function loadProjectPreviewConstants(projectRoot: string, files = createLuaUiFileCache(projectRoot)): Map<string, UiValue> {
   const constants = new Map<string, UiValue>();
   const scriptsRoot = path.join(projectRoot, "scripts");
   const pending = fs.existsSync(scriptsRoot) ? [scriptsRoot] : [];
@@ -709,7 +761,7 @@ export function loadProjectPreviewConstants(projectRoot: string): Map<string, Ui
       if (entry.isDirectory()) { pending.push(filename); continue; }
       if (!entry.isFile() || !entry.name.endsWith(".lua")) continue;
       visited += 1;
-      const source = fs.readFileSync(filename, "utf8");
+      const source = files.read(filename);
       for (const match of source.matchAll(/\bUI_STYLE\s*=\s*\{/g)) {
         const body = tableBodyAfter(source, match.index ?? 0);
         if (!body) continue;
@@ -727,7 +779,7 @@ export function loadProjectPreviewConstants(projectRoot: string): Map<string, Ui
   return constants;
 }
 
-function loadRequiredConstants(projectRoot: string, source: string): Map<string, UiValue> {
+function loadRequiredConstants(projectRoot: string, source: string, files: LuaUiFileCache): Map<string, UiValue> {
   const constants = new Map<string, UiValue>();
   const requires = [...source.matchAll(/local\s+([A-Za-z_]\w*)\s*=\s*require\s*\(\s*["']([^"']+)["']\s*\)/g)];
   for (const match of requires) {
@@ -736,7 +788,7 @@ function loadRequiredConstants(projectRoot: string, source: string): Map<string,
     const relativeModule = `scripts/${moduleName.replace(/\./g, "/")}.lua`;
     try {
       const moduleFile = resolveInsideProject(projectRoot, relativeModule);
-      const moduleSource = fs.readFileSync(moduleFile, "utf8");
+      const moduleSource = files.read(moduleFile);
       const moduleContext = emptyContext(moduleSource, relativeModule, new Map());
       moduleContext.constants = new Map();
       const flatten = (prefix: string, value: UiValue): void => {
@@ -746,7 +798,7 @@ function loadRequiredConstants(projectRoot: string, source: string): Map<string,
           for (const [key, nested] of Object.entries(value)) flatten(`${prefix}.${key}`, nested);
         }
       };
-      const chunk = luaparse.parse(moduleSource, { locations: true, ranges: true, luaVersion: "5.3", encodingMode: "none" });
+      const chunk = files.parse(moduleFile, moduleSource);
       for (const statement of chunk.body) {
         if (statement.type === "LocalStatement") {
           statement.variables.forEach((variable, index) => {

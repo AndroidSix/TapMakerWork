@@ -8,6 +8,7 @@ files:
   - apps/desktop/dist/**/*
   - apps/studio/dist/**/*
   - packages/bridge/dist-app/**/*
+  - '!packages/bridge/dist-app/native/**'
   - runtime/**/*
   - package.json
 asar: true
@@ -23,6 +24,7 @@ extraResources:
     to: bridge
     filter:
       - index.mjs
+      - native/*.node
 # Release upload is handled separately. Declaring the generic Gitee directory
 # makes electron-builder emit latest*.yml without attempting to publish during
 # local packaging; the app resolves the actual newest release tag at runtime.

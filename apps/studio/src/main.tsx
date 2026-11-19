@@ -40,7 +40,7 @@ declare global {
         get: () => Promise<DesktopPermissionState>;
         request: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
         open: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
-        reset: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
+        reset?: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
         restart: () => Promise<void>;
         acknowledge: () => Promise<DesktopPermissionState>;
         dismiss: () => Promise<DesktopPermissionState>;
@@ -74,7 +74,7 @@ declare global {
         onTrack?: (listener: (name: string, props?: Record<string, unknown>) => void) => () => void;
         onSessionEnd?: (listener: (payload: { session_ms: number; active_ms: number }) => void) => () => void;
       };
-      captureRuntime?: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) => Promise<{
+      captureRuntime?: (opts?: { projectName?: string; projectTitle?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) => Promise<{
         ok: boolean;
         dataUrl?: string;
         sourceId?: string;
@@ -92,7 +92,7 @@ declare global {
         capture: () => Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
       };
       runtime?: {
-        capture: (opts?: { projectName?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) => Promise<{
+        capture: (opts?: { projectName?: string; projectTitle?: string; sourceId?: string; orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number; allowPermissionPrompt?: boolean }) => Promise<{
           ok: boolean;
           dataUrl?: string;
           sourceId?: string;

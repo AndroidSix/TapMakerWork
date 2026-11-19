@@ -150,7 +150,7 @@ async function compressWithCwebp(filePath: string): Promise<{
   }
 }
 
-async function compressWithJimp(filePath: string): Promise<{
+async function compressWithJimp(filePath: string, original?: Buffer): Promise<{
   ok: boolean;
   skipped?: boolean;
   engine?: string;
@@ -159,16 +159,16 @@ async function compressWithJimp(filePath: string): Promise<{
 }> {
   const ext = path.extname(filePath).toLowerCase();
   try {
-    const image = await Jimp.read(filePath);
+    const image = await Jimp.read(original ?? filePath);
     if (ext === ".jpg" || ext === ".jpeg") {
-      const bytes = Buffer.from(await image.getBuffer("image/jpeg", { quality: 72 }));
-      const before = fs.statSync(filePath).size;
+      const bytes = await image.getBuffer("image/jpeg", { quality: 72 });
+      const before = original?.length ?? fs.statSync(filePath).size;
       if (bytes.length <= 0 || bytes.length >= before) return { ok: false, skipped: true };
       return { ok: true, engine: "Jimp", bytes };
     }
     if (ext === ".png") {
-      const bytes = Buffer.from(await image.getBuffer("image/png"));
-      const before = fs.statSync(filePath).size;
+      const bytes = await image.getBuffer("image/png");
+      const before = original?.length ?? fs.statSync(filePath).size;
       if (bytes.length <= 0 || bytes.length >= before) return { ok: false, skipped: true };
       return { ok: true, engine: "Jimp", bytes };
     }
@@ -181,7 +181,7 @@ async function compressWithJimp(filePath: string): Promise<{
   }
 }
 
-export async function compressLocal(filePath: string): Promise<{
+export async function compressLocal(filePath: string, original?: Buffer): Promise<{
   ok: boolean;
   skipped?: boolean;
   engine?: string;
@@ -192,17 +192,17 @@ export async function compressLocal(filePath: string): Promise<{
   if (ext === ".png") {
     const pngquant = await compressWithPngquant(filePath);
     if (pngquant.ok || pngquant.skipped) return pngquant;
-    return compressWithJimp(filePath);
+    return compressWithJimp(filePath, original);
   }
   if (ext === ".jpg" || ext === ".jpeg") {
     const jpegoptim = await compressWithJpegoptim(filePath);
     if (jpegoptim.ok || jpegoptim.skipped) return jpegoptim;
-    return compressWithJimp(filePath);
+    return compressWithJimp(filePath, original);
   }
   if (ext === ".webp") {
     const webp = await compressWithCwebp(filePath);
     if (webp.ok || webp.skipped) return webp;
-    return compressWithJimp(filePath);
+    return compressWithJimp(filePath, original);
   }
   return { ok: false, error: `不支持的格式: ${ext}` };
 }

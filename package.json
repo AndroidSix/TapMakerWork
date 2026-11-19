@@ -1,6 +1,6 @@
 {
   "name": "tapmakerwork",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "productName": "TapMakerWork",
   "description": "TapTap Maker visual desktop workspace",
   "author": "androidsup",
@@ -16,6 +16,8 @@
     "dev:web": "concurrently -k -n bridge,studio -c yellow,cyan \"npm run dev -w @tapmakerwork/bridge\" \"npm run dev -w @tapmakerwork/studio\"",
     "build": "npm run build -w @tapmakerwork/protocol && npm run build -w @tapmakerwork/bridge && npm run build -w @tapmakerwork/studio && npm run build -w @tapmakerwork/desktop",
     "build:desktop-runtime": "node scripts/build-desktop-runtime.mjs",
+    "build:runtime-index": "node scripts/build-runtime-index.mjs",
+    "bench:runtime-index": "node --import tsx scripts/bench/runtime-index.mjs",
     "build:release": "npm run build && npm run build:desktop-runtime",
     "dist:dir": "npm run build:release && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
     "dist:mac": "npm run build:release && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac && node scripts/build-mac-pkg.mjs",

@@ -61,7 +61,7 @@ export function DesktopPermissionsCard({ permissions: desktopPermissions, busy: 
         ]] as const).map(([key, label, value]) => <div key={key}>
           <span>{value === "granted" ? <CheckCircle2 size={14} /> : <ShieldAlert size={14} />}{label}</span>
           <strong>{value === "granted" ? "已授权" : "未授权"}</strong>
-          <button disabled={value === "granted" || Boolean(permissionBusy)} onClick={() => void runPermissionAction(key)}>{value === "granted" ? "完成" : "打开设置"}</button>
+          <button disabled={value === "granted" || Boolean(permissionBusy)} onClick={() => void runPermissionAction(key)}>{value === "granted" ? "完成" : value === "not-determined" ? "请求授权" : "打开设置"}</button>
         </div>)}
       </div>
       <div className="desktop-card-actions">
@@ -72,7 +72,7 @@ export function DesktopPermissionsCard({ permissions: desktopPermissions, busy: 
         <button className="primary" onClick={() => void runPermissionAction("restart")} disabled={!desktopPermissions.ready && !permissionConfirmed}>重启应用</button>
       </div>
       {!desktopPermissions.packaged && <p className="desktop-card-note">开发模式的授权归属 Electron；请用正式安装包在新机器授权。</p>}
-      {desktopPermissions.packaged && !desktopPermissions.stableIdentity && <p className="desktop-card-note">当前安装包未签名，macOS 按安装位置记录授权；挪动 App 位置后需重新授权。</p>}
+      {desktopPermissions.platform === "darwin" && desktopPermissions.packaged && !desktopPermissions.stableIdentity && <p className="desktop-card-note">当前 App 没有正式的开发者签名。升级或移动 App 后，macOS 可能要求重新授权。</p>}
     </section>
   );
 }

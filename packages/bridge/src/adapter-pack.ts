@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import luaparse, { type Expression, type FunctionDeclaration } from "luaparse";
+import { maskLua54Attributes } from "./lua-symbols.js";
 import {
   adapterModuleName,
   adapterTemplateFile,
@@ -31,7 +33,7 @@ export interface AdapterInstallResult {
 const BOOTSTRAP_START = "-- >>> TapMakerWork live editor (managed)";
 const BOOTSTRAP_END = "-- <<< TapMakerWork live editor (managed)";
 const START_CALL = "TapMakerWorkLiveEditorStart() -- TapMakerWork managed";
-const UPDATE_CALL_PATTERN = /TapMakerWorkLiveEditorUpdate\([A-Za-z_]\w*\) -- TapMakerWork managed/;
+const UPDATE_CALL_PATTERN = /TapMakerWorkLiveEditorUpdate\((?:[A-Za-z_]\w*|TapMakerWorkLiveEditorTimeStep\([A-Za-z_]\w*\))\) -- TapMakerWork managed/;
 const BOM = "\uFEFF";
 
 /** Any `local <name> = <eventData>:GetFloat("TimeStep")` or `<eventData>["TimeStep"]:GetFloat()` line. */
@@ -42,9 +44,9 @@ const ADAPTER_ERROR_HINTS: Record<string, string> = {
   maker_project_config_invalid: ".project/project.json 不是合法 JSON，无法确定客户端入口。",
   maker_client_entry_not_found: "没有找到客户端入口脚本（project.json 的 entry@client / entry，或 scripts/main.lua）。",
   runtime_adapter_start_hook_not_found: "入口脚本里没有 function Start()，无法挂载实时编辑桥。",
-  maker_start_function_not_found: "入口脚本里没有 function Start()，无法挂载实时编辑桥。",
+  runtime_adapter_entry_parse_failed: "无法解析客户端入口脚本；未修改项目文件。",
   runtime_adapter_update_hook_not_found:
-    "入口脚本的 Update 处理函数里没有找到 local <变量> = eventData:GetFloat(\"TimeStep\") 或 eventData[\"TimeStep\"]:GetFloat()，请在 Update 里加上这一行后重试。"
+    "未能定位入口脚本中处理 Update 事件（TimeStep）的函数；未修改项目文件。"
 };
 
 function adapterError(code: string): Error {
@@ -69,7 +71,62 @@ function stripManagedEditor(source: string): string {
   }
   return next
     .replace(/^[ \t]*TapMakerWorkLiveEditorStart\(\) -- TapMakerWork managed\r?\n/gm, "")
-    .replace(/^[ \t]*TapMakerWorkLiveEditorUpdate\([A-Za-z_]\w*\) -- TapMakerWork managed\r?\n/gm, "");
+    .replace(new RegExp(`^[ \\t]*${UPDATE_CALL_PATTERN.source}\\r?\\n`, "gm"), "");
+}
+
+function luaLiteral(expression?: Expression): string | undefined {
+  return expression?.type === "StringLiteral" ? /^['"]([A-Za-z_]\w*)['"]$/.exec(expression.raw)?.[1] : undefined;
+}
+
+function wireRuntimeHooks(source: string, eol: string): string {
+  const subscribed = new Set<string>();
+  let declarations: FunctionDeclaration[];
+  try {
+    const chunk = luaparse.parse(maskLua54Attributes(source), {
+      luaVersion: "5.3", encodingMode: "none", ranges: true,
+      onCreateNode(node) {
+        if (node.type !== "CallExpression" || node.base.type !== "Identifier" || node.base.name !== "SubscribeToEvent") return;
+        if (luaLiteral(node.arguments.at(-2)) !== "Update") return;
+        const handler = luaLiteral(node.arguments.at(-1));
+        if (handler) subscribed.add(handler);
+      }
+    });
+    declarations = chunk.body.filter((node): node is FunctionDeclaration => node.type === "FunctionDeclaration" && !node.isLocal);
+  } catch (error) {
+    throw new Error(`${adapterError("runtime_adapter_entry_parse_failed").message} ${String(error)}`);
+  }
+
+  const named = (fn: FunctionDeclaration) => fn.identifier?.type === "Identifier" ? fn.identifier.name : "";
+  const start = declarations.find((fn) => named(fn) === "Start");
+  if (!start) throw adapterError("runtime_adapter_start_hook_not_found");
+  const rangeOf = (node: object) => (node as { range: [number, number] }).range;
+  const timeStepIndex = (fn: FunctionDeclaration) => fn.body.findIndex((node) => node.type === "LocalStatement"
+    && node.init.length === 1 && node.variables.length === 1 && TIME_STEP_LINE.test(source.slice(...rangeOf(node))));
+  const updates = declarations.filter((fn) => fn !== start && (subscribed.size
+    ? subscribed.has(named(fn))
+    : /^(Handle(?:App)?Update|Update)$/.test(named(fn))));
+  const candidateUpdates = updates.length || subscribed.size ? updates : declarations.filter((fn) => fn !== start && timeStepIndex(fn) >= 0);
+  const update = candidateUpdates.length === 1 ? candidateUpdates[0] : undefined;
+  if (!update) throw adapterError("runtime_adapter_update_hook_not_found");
+  const timeStep = timeStepIndex(update);
+  const eventData = update.parameters[1];
+  const delta = timeStep >= 0
+    ? TIME_STEP_LINE.exec(source.slice(...rangeOf(update.body[timeStep]!)))![1]
+    : eventData?.type === "Identifier" ? `TapMakerWorkLiveEditorTimeStep(${eventData.name})` : undefined;
+  if (!delta) throw adapterError("runtime_adapter_update_hook_not_found");
+
+  const appInit = start.body.findIndex((node) => node.type === "CallStatement" && /^app_:Init\(\)$/.test(source.slice(...rangeOf(node))));
+  const insert = (fn: FunctionDeclaration, index: number, hook: string) => {
+    const next = fn.body[index];
+    const at = next ? rangeOf(next)[0] : rangeOf(fn)[1] - 3;
+    const lineStart = source.lastIndexOf("\n", at - 1) + 1;
+    const inline = /\S/.test(source.slice(lineStart, at));
+    return { at: inline ? at : lineStart, text: `${inline ? eol : ""}    ${hook}${eol}` };
+  };
+  const edits = [insert(start, appInit + 1, START_CALL), insert(update, timeStep + 1, `TapMakerWorkLiveEditorUpdate(${delta}) -- TapMakerWork managed`)];
+  return edits.sort((left, right) => right.at - left.at).reduce(
+    (result, edit) => result.slice(0, edit.at) + edit.text + result.slice(edit.at), source
+  );
 }
 
 function timestampForPath(): string {
@@ -126,15 +183,18 @@ export function resolveBootstrapProjectName(projectRoot: string): string {
 }
 
 function projectNameBootstrapSnippet(projectName: string): string {
-  const escaped = escapeLuaString(projectName);
-  return `    local projectName = "${escaped}"
-    do
-        local okCfg, cfg = pcall(require, "Config")
-        if okCfg and type(cfg) == "table" then
-            projectName = cfg.TITLE or cfg.Name or cfg.APP_NAME or cfg.PRODUCT_NAME or projectName
-        end
-    end`;
+  return `    local projectName = "${escapeLuaString(projectName)}"`;
 }
+
+const TIME_STEP_HELPER = `local function TapMakerWorkLiveEditorTimeStep(eventData)
+    if eventData ~= nil then
+        local ok, dt = pcall(function() return eventData:GetFloat("TimeStep") end)
+        if ok and type(dt) == "number" then return dt end
+        ok, dt = pcall(function() return eventData["TimeStep"]:GetFloat() end)
+        if ok and type(dt) == "number" then return dt end
+    end
+    return 1 / 60
+end`;
 
 function yogaBootstrap(projectName: string): string {
   return `${BOOTSTRAP_START}
@@ -165,6 +225,7 @@ end
 local function TapMakerWorkLiveEditorUpdate(dt)
     if tapMakerWorkLiveEditor_ then tapMakerWorkLiveEditor_.Update(dt) end
 end
+${TIME_STEP_HELPER}
 ${BOOTSTRAP_END}
 
 `;
@@ -194,6 +255,7 @@ end
 local function TapMakerWorkLiveEditorUpdate(dt)
     if tapMakerWorkLiveEditor_ then tapMakerWorkLiveEditor_.Update(dt) end
 end
+${TIME_STEP_HELPER}
 ${BOOTSTRAP_END}
 
 `;
@@ -265,18 +327,7 @@ export function installRuntimeAdapter(options: {
   let next = alreadyManaged ? source : stripManagedEditor(source).replaceAll(BOM, "");
 
   if (!alreadyManaged) {
-    const hasAppInit = /\bapp_:Init\(\)/.test(next);
-    const hasStart = /\bfunction\s+Start\s*\(/.test(next);
-    if (!hasAppInit && !hasStart) throw adapterError("runtime_adapter_start_hook_not_found");
-    const timeStepVariable = TIME_STEP_LINE.exec(next)?.[1];
-    if (!timeStepVariable) throw adapterError("runtime_adapter_update_hook_not_found");
-    if (!hasStart) throw adapterError("maker_start_function_not_found");
-
-    const updateCall = `TapMakerWorkLiveEditorUpdate(${timeStepVariable}) -- TapMakerWork managed`;
-    next = `${expectedBootstrap.replace(/\n/g, eol)}${next}`;
-    if (hasAppInit) next = next.replace(/(\bapp_:Init\(\)[^\n]*\n)/, `$1    ${START_CALL}${eol}`);
-    else next = next.replace(/(\bfunction\s+Start\s*\([^)]*\)[^\n]*\n)/, `$1    ${START_CALL}${eol}`);
-    next = next.replace(new RegExp(`(${TIME_STEP_LINE.source}[^\\n]*\\n)`), `$1    ${updateCall}${eol}`);
+    next = expectedBootstrap.replace(/\n/g, eol) + wireRuntimeHooks(next, eol);
   }
   next = hasBom ? `${BOM}${next}` : next;
 

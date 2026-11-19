@@ -28,8 +28,7 @@ function aspectBonus(width: number | undefined, height: number | undefined, targ
 export function scoreRuntimeWindow(
   name: string,
   projectName: string,
-  executable = "",
-  options: RuntimeWindowScoreOptions = {}
+  executable = ""
 ): number {
   const normalized = name.trim().toLocaleLowerCase();
   const project = projectName.trim().toLocaleLowerCase();
@@ -39,9 +38,9 @@ export function scoreRuntimeWindow(
   if (project) {
     if (normalized === project) {
       // Maker local preview windows are commonly titled with the bare project name.
-      score += 140;
+      score += 320;
     } else if (normalized.startsWith(`${project}:`) || normalized.startsWith(`${project}：`) || normalized.startsWith(`${project} - `)) {
-      score += 180;
+      score += 350;
     } else if (normalized.includes(project)) {
       score += 80;
     }
@@ -53,7 +52,6 @@ export function scoreRuntimeWindow(
   if (/tapmakerwork|cursor|codex|visual studio code|vscode|terminal|finder|xcode/i.test(name)) score -= 500;
   if (/^(tapmakerwork|electron|cursor|code|code - insiders|devenv|powershell|pwsh|cmd|explorer|windowsterminal)(\.exe)?$/i.test(exe)) score -= 500;
   if (looksLikeEditorTitle(name)) score -= 260;
-  score += aspectBonus(options.width, options.height, options.targetAspect);
   return score;
 }
 
@@ -64,14 +62,15 @@ export function selectRuntimeWindow<T extends {
   height?: number;
 }>(
   sources: T[],
-  projectName: string,
+  projectName: string | readonly string[],
   options: RuntimeWindowScoreOptions = {}
 ): T | undefined {
-  const score = (source: T) => scoreRuntimeWindow(source.name, projectName, source.executable ?? "", {
-    ...(options.targetAspect != null ? { targetAspect: options.targetAspect } : {}),
-    ...((source.width ?? options.width) != null ? { width: source.width ?? options.width } : {}),
-    ...((source.height ?? options.height) != null ? { height: source.height ?? options.height } : {})
-  });
-  const selected = [...sources].sort((left, right) => score(right) - score(left))[0];
-  return selected && score(selected) >= 70 ? selected : undefined;
+  const aliases = typeof projectName === "string" ? [projectName] : projectName;
+  return sources.map((source) => ({
+    source,
+    identity: Math.max(...aliases.map((alias) => scoreRuntimeWindow(source.name, alias, source.executable ?? ""))),
+    aspect: aspectBonus(source.width ?? options.width, source.height ?? options.height, options.targetAspect)
+  }))
+    .filter(({ identity }) => identity >= 70)
+    .sort((left, right) => right.identity - left.identity || right.aspect - left.aspect)[0]?.source;
 }

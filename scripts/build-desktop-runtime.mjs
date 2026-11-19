@@ -1,4 +1,7 @@
 import { build } from "esbuild";
+import { buildRuntimeIndex } from "./build-runtime-index.mjs";
+
+buildRuntimeIndex({ optional: true });
 
 await build({
   entryPoints: ["packages/bridge/src/index.ts"],

@@ -30,7 +30,7 @@ export function PermissionGuide({ state, busy, confirmed, onAction, onClose }: {
   onClose: () => void;
 }) {
   const permissionRows = [
-    { key: "screen" as const, title: "屏幕与系统音频录制", description: "用于把 Maker Runtime 的真实窗口并排显示在工作台中。", value: state.screen },
+    { key: "screen" as const, title: "屏幕录制", description: "用于显示 Maker Runtime 的真实窗口，不采集系统音频。", value: state.screen },
     { key: "accessibility" as const, title: "辅助功能", description: "用于把你在 Runtime 镜像上的点击准确转发到真实游戏窗口。", value: state.accessibility }
   ];
   return (
@@ -40,15 +40,15 @@ export function PermissionGuide({ state, busy, confirmed, onAction, onClose }: {
           <div><span className="permission-step">新机器设置 · 1/1</span><h2 id="permission-guide-title">授权 TapMakerWork 完成实时编辑</h2><p>这些权限只用于本机 Runtime 预览和交互，不会自动读取其他窗口内容。</p></div>
           <ShieldAlert size={28} aria-hidden="true" />
         </div>
-        {!state.packaged && <div className="permission-warning"><strong>当前为开发模式</strong><span>可以调试权限，但 macOS 会把授权记在 Electron 上。正式安装包会使用固定的 TapMakerWork 身份，授权更稳定。</span></div>}
-        {state.packaged && !state.stableIdentity && <div className="permission-warning"><strong>当前安装包未签名</strong><span>macOS 按安装位置识别这类应用，授权能跨版本保留；但把 App 换到别的目录后需要重新授权。</span></div>}
+        {!state.packaged && <div className="permission-warning"><strong>当前为开发模式</strong><span>macOS 会把开发版的授权记在 Electron 上，与正式安装的 TapMakerWork 独立。</span></div>}
+        {state.packaged && !state.stableIdentity && <div className="permission-warning"><strong>当前 App 没有正式的开发者签名</strong><span>升级或移动 App 后，macOS 可能要求重新授权。系统设置里已打开但仍无效时，先退出再启动 App。</span></div>}
         <div className="permission-list">
           {permissionRows.map((item) => {
             const granted = item.value === "granted";
             return <article key={item.key} className={granted ? "granted" : "needed"}>
               <span className="permission-status-icon">{granted ? <CheckCircle2 size={18} /> : <ShieldAlert size={18} />}</span>
               <div><strong>{item.title}</strong><p>{item.description}</p><small>{granted ? "已授权" : item.value === "not-determined" ? "尚未询问" : "需要在系统设置中开启"}</small></div>
-              <button disabled={granted || Boolean(busy)} onClick={() => onAction(item.key)}>{busy === item.key ? "正在打开…" : granted ? "已完成" : "去授权"}</button>
+              <button disabled={granted || Boolean(busy)} onClick={() => onAction(item.key)}>{busy === item.key ? "正在请求…" : granted ? "已完成" : "去授权"}</button>
             </article>;
           })}
         </div>

@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import luaparse from "luaparse";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { isUiScreenCandidate, scanUiScreens } from "./ui-screens.js";
 
 const temporaryDirectories: string[] = [];
@@ -44,5 +45,28 @@ describe("project UI screen discovery", () => {
     ]);
     expect(result.documents.has("scripts/network/RoomDialog.lua")).toBe(true);
     expect(result.summaries.find((screen) => screen.path.endsWith("Theme.lua"))?.confidence).toBe("module");
+  });
+
+  it("reads and parses a shared dependency once per scan and picks up edits on the next scan", () => {
+    const root = temporaryProject();
+    const relative = "scripts/config/Palette.lua";
+    const settings = 'Palette.COLOR = "#112233"\nreturn Palette';
+    writeProjectFile(root, relative, settings);
+    for (const name of ["Home", "Shop"]) {
+      writeProjectFile(root, `scripts/ui/${name}.lua`, 'local Palette = require("config.Palette")\nreturn UI.Panel { backgroundColor = Palette.COLOR }');
+    }
+    const read = vi.spyOn(fs, "readFileSync");
+    const parse = vi.spyOn(luaparse, "parse");
+    try {
+      const first = scanUiScreens(root);
+      expect(first.documents.get("scripts/ui/Home.lua")?.root.props.backgroundColor).toBe("#112233");
+      expect(read.mock.calls.filter(([file]) => file === fs.realpathSync(path.join(root, relative)))).toHaveLength(1);
+      expect(parse.mock.calls.filter(([source]) => source === settings)).toHaveLength(1);
+      writeProjectFile(root, relative, settings.replace("#112233", "#445566"));
+      expect(scanUiScreens(root).documents.get("scripts/ui/Shop.lua")?.root.props.backgroundColor).toBe("#445566");
+    } finally {
+      read.mockRestore();
+      parse.mockRestore();
+    }
   });
 });

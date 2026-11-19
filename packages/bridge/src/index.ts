@@ -72,6 +72,7 @@ import {
   listRunningPreviewProjects,
   normalizeUiTree,
   readLocalPreviewStatus,
+  type RuntimeSnapshotCache,
   writeIdeCommandsFile
 } from "./runtime-file-channel.js";
 import { planNodeUpgrade, publicNodeUpgradePlan, runNodeUpgrade } from "./node-upgrade.js";
@@ -119,17 +120,32 @@ let pendingInstanceEdits = new Map<string, Record<string, UiValue>>();
 let skippedRuntimePersistence = 0;
 const appliedRuntimeOverrideKeys = new Set<string>();
 
-function runtimeFileChannelOptions(): { projectRoot?: string; projectName?: string } | undefined {
+const RUNTIME_HEARTBEAT_TIMEOUT_MS = 30_000;
+const runtimeSnapshotCache: RuntimeSnapshotCache = {};
+const runtimeSceneByRoot = new WeakMap<object, "idle" | "loading" | "live">();
+let runtimeFileNotBefore = 0;
+
+function runtimeFileChannelOptions(): { projectRoot?: string; projectName?: string; modifiedSince: number } | undefined {
   if (!project) return undefined;
   return {
     ...(project.root ? { projectRoot: project.root } : {}),
-    ...(project.name ? { projectName: project.name } : {})
+    ...(project.name ? { projectName: project.name } : {}),
+    modifiedSince: Math.max(runtimeFileNotBefore, Date.now() - RUNTIME_HEARTBEAT_TIMEOUT_MS)
   };
 }
 
 function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
-  const status = findRuntimeFileStatus(undefined, runtimeFileChannelOptions());
-  if (!status) return undefined;
+  if (!project) return undefined;
+  const status = findRuntimeFileStatus(undefined, { ...runtimeFileChannelOptions(), snapshotCache: runtimeSnapshotCache });
+  if (!status) {
+    delete runtimeSnapshotCache.entry;
+    if (runtimeConnectedAt && Date.now() - Date.parse(runtimeConnectedAt) > RUNTIME_HEARTBEAT_TIMEOUT_MS) {
+      runtimeConnectedAt = undefined;
+      runtimeSessionId = undefined;
+      runtimeScene = "idle";
+    }
+    return undefined;
+  }
   if (status.sessionId) {
     if (runtimeFileSessionId && runtimeFileSessionId !== status.sessionId) {
       runtimeCommands.splice(0, runtimeCommands.length);
@@ -143,15 +159,27 @@ function syncRuntimeFileChannel(): ReturnType<typeof findRuntimeFileStatus> {
       nextRuntimeCommandId = Math.max(nextRuntimeCommandId, Number(status.cursor || 0) + 1);
     }
     runtimeFileSessionId = status.sessionId;
+    const fileUpdatedAt = new Date(status.modifiedAt ?? Date.now()).toISOString();
+    if (runtimeSessionId !== status.sessionId || !runtimeConnectedAt || fileUpdatedAt > runtimeConnectedAt) {
+      runtimeConnectedAt = fileUpdatedAt;
+    }
     runtimeSessionId = status.sessionId;
-    runtimeConnectedAt = new Date().toISOString();
   }
   const snap = status.snapshot as UiSnapshot | undefined;
   if (snap?.root) {
-    const sceneText = JSON.stringify(snap.root).slice(0, 8000);
-    if (/loadingScreen|bootProgress|overlayProgress|正在加载|渡劫准备|正在开辟|loading_keyart/i.test(sceneText)) {
+    const root = snap.root;
+    const cacheable = typeof root === "object";
+    let scene = cacheable ? runtimeSceneByRoot.get(root) : undefined;
+    if (!scene) {
+      const sceneText = JSON.stringify(root).slice(0, 8000);
+      scene = /loadingScreen|bootProgress|overlayProgress|正在加载|渡劫准备|正在开辟|loading_keyart/i.test(sceneText)
+        ? "loading"
+        : /hud|MainShell|Button|Label|NanoVG|"\$backend":"nanovg"/i.test(sceneText) ? "live" : "idle";
+      if (cacheable) runtimeSceneByRoot.set(root, scene);
+    }
+    if (scene === "loading") {
       runtimeScene = "loading";
-    } else if (/hud|MainShell|Button|Label|NanoVG|"\$backend":"nanovg"/i.test(sceneText)) {
+    } else if (scene === "live") {
       if (runtimeScene === "loading") {
         broadcast({ type: "log.append", channel: "runtime", lines: ["真机已离开加载画面，正在同步活树…"] });
       }
@@ -472,7 +500,7 @@ function enqueueRuntimeCommand(command: RuntimeCommandInput): RuntimeCommand {
   if (runtimeCommands.length > 1_000) runtimeCommands.splice(0, runtimeCommands.length - 1_000);
   // Maker HttpClient often blocks 127.0.0.1; push patches to savedata immediately.
   try {
-    const status = findRuntimeFileStatus(undefined, runtimeFileChannelOptions());
+    const status = findRuntimeFileStatus(undefined, { ...runtimeFileChannelOptions(), includeSnapshot: false });
     if (status?.sourcePath) {
       const cursor = Number(status.cursor || 0);
       const pending = runtimeCommands.filter((item) => item.id > cursor);
@@ -965,6 +993,7 @@ const server = http.createServer(async (request, response) => {
         }
       }
       project = undefined;
+      delete runtimeSnapshotCache.entry;
       lastAgentPublishKey = "";
       activeUiEntry = defaultUiEntry;
       uiScreens = { summaries: [] as UiScreenSummary[], documents: new Map<string, UiConversionDocument>() };
@@ -985,7 +1014,9 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request) as { path?: string };
       const nextProject = resolveProjectRoot(body.path || "");
       if (project?.root !== nextProject.root) {
+        delete runtimeSnapshotCache.entry;
         runtimeCommands.length = 0;
+        runtimeFileNotBefore = 0;
         runtimeConnectedAt = undefined;
         runtimeSessionId = undefined;
         runtimeFileSessionId = undefined;
@@ -1828,13 +1859,22 @@ const server = http.createServer(async (request, response) => {
             broadcast({ type: "log.append", channel: "runtime", lines: [message] });
           }, home)
           : await runMakerCommand(makerRuntime, previewRoot, command, undefined, home);
-        if (command === "stop") previewAccountHomes.delete(previewKey);
         const failed = result && typeof result === "object" && "ok" in result && (result as { ok?: boolean }).ok === false;
         if (failed) {
           const message = withAccountHint(formatMakerPreviewError(JSON.stringify(result)), account?.label ?? "当前账号");
           broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command} 失败：${message}`] });
           sendJson(response, 400, { error: message, maker: result });
           return;
+        }
+        if (command === "stop") {
+          previewAccountHomes.delete(previewKey);
+          if (previewRoot === project?.root) {
+            delete runtimeSnapshotCache.entry;
+            runtimeFileNotBefore = Date.now();
+            runtimeConnectedAt = undefined;
+            runtimeSessionId = undefined;
+            runtimeScene = "idle";
+          }
         }
         broadcast({ type: "log.append", channel: "runtime", lines: [`Maker preview ${command} 完成。`] });
         sendJson(response, 200, result);
