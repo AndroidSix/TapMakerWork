@@ -26,7 +26,7 @@ export function PermissionGuide({ state, busy, confirmed, onAction, onClose }: {
   state: DesktopPermissionState;
   busy: string;
   confirmed: boolean;
-  onAction: (permission: "screen" | "accessibility" | "restart" | "refresh" | "confirm") => void;
+  onAction: (permission: "screen" | "accessibility" | "restart" | "refresh" | "confirm" | "reset-screen" | "reset-accessibility") => void;
   onClose: () => void;
 }) {
   const permissionRows = [
@@ -40,9 +40,8 @@ export function PermissionGuide({ state, busy, confirmed, onAction, onClose }: {
           <div><span className="permission-step">新机器设置 · 1/1</span><h2 id="permission-guide-title">授权 TapMakerWork 完成实时编辑</h2><p>这些权限只用于本机 Runtime 预览和交互，不会自动读取其他窗口内容。</p></div>
           <ShieldAlert size={28} aria-hidden="true" />
         </div>
-        {state.signatureValid === false
-          ? <div className="permission-warning"><strong>安装包签名无效</strong><span>macOS 无法把录屏授权记到当前安装包上，所以每次抓屏都会重新弹框。请重新安装官方签名版本；如果仍然弹，先到系统设置里移除旧的 TapMakerWork 条目再授权一次。</span></div>
-          : !state.stableIdentity && <div className="permission-warning"><strong>当前为开发模式</strong><span>可以调试权限，但 macOS 会把授权记在 Electron 上。正式签名安装包会使用固定的 TapMakerWork 身份，授权更稳定。</span></div>}
+        {!state.packaged && <div className="permission-warning"><strong>当前为开发模式</strong><span>可以调试权限，但 macOS 会把授权记在 Electron 上。正式安装包会使用固定的 TapMakerWork 身份，授权更稳定。</span></div>}
+        {state.packaged && !state.stableIdentity && <div className="permission-warning"><strong>当前安装包未签名</strong><span>macOS 按安装位置识别这类应用，授权能跨版本保留；但把 App 换到别的目录后需要重新授权。</span></div>}
         <div className="permission-list">
           {permissionRows.map((item) => {
             const granted = item.value === "granted";
@@ -56,6 +55,7 @@ export function PermissionGuide({ state, busy, confirmed, onAction, onClose }: {
         <div className="permission-guide-actions">
           <button className="secondary" onClick={onClose}>稍后设置</button>
           <button className="secondary" disabled={Boolean(busy)} onClick={() => onAction("refresh")}><RefreshCw size={14} />重新检测</button>
+          <button className="secondary" disabled={Boolean(busy)} onClick={() => onAction("reset-screen")} title="系统设置里开关已开但仍未生效时使用">重置授权</button>
           <button className={confirmed ? "secondary confirmed" : "secondary"} disabled={Boolean(busy)} onClick={() => onAction("confirm")}><CheckCircle2 size={14} />{confirmed ? "已确认授权" : "我已授权"}</button>
           <button className="primary" disabled={(!state.ready && !confirmed) || Boolean(busy)} onClick={() => onAction("restart")}>重启应用并继续</button>
         </div>

@@ -40,6 +40,7 @@ declare global {
         get: () => Promise<DesktopPermissionState>;
         request: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
         open: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
+        reset: (permission: "screen" | "accessibility") => Promise<DesktopPermissionState>;
         restart: () => Promise<void>;
         acknowledge: () => Promise<DesktopPermissionState>;
         dismiss: () => Promise<DesktopPermissionState>;

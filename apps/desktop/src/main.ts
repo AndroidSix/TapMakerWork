@@ -240,8 +240,6 @@ interface DesktopPermissionState {
   platform: NodeJS.Platform;
   packaged: boolean;
   stableIdentity: boolean;
-  /** 安装包签名是否通过 codesign 校验；无效时系统无法保存录屏授权。 */
-  signatureValid: boolean;
   screen: PermissionValue;
   accessibility: PermissionValue;
   ready: boolean;
@@ -304,27 +302,10 @@ function desktopLog(message: string): void {
 desktopLog(`main loaded packaged=${app.isPackaged} ready=${app.isReady()}`);
 app.once("ready", () => desktopLog("ready event received"));
 
-/**
- * 安装包自身签名是否有效。macOS 的 TCC 靠代码签名把录屏授权绑定到 app 身份上：
- * 签名损坏时（electron-builder 跳过签名会导致 CodeDirectory 声明有资源却没有
- * _CodeSignature/CodeResources），系统无法复用已记录的授权，每次抓屏都重新弹框。
- * 结果只在启动后计算一次，运行期签名不会变化。
- */
-let signatureValidCache: boolean | undefined;
-function appSignatureValid(): boolean {
-  if (!app.isPackaged || process.platform !== "darwin") return true;
-  if (signatureValidCache !== undefined) return signatureValidCache;
-  const bundlePath = path.resolve(app.getPath("exe"), "..", "..", "..");
-  const result = spawnSync("/usr/bin/codesign", ["--verify", "--strict", bundlePath], { encoding: "utf8", windowsHide: true });
-  signatureValidCache = result.status === 0;
-  return signatureValidCache;
-}
-
 function permissionState(): DesktopPermissionState {
   const settings = readDesktopSettings();
   const acknowledged = Boolean(settings.permissionsAcknowledgedAt);
   const dismissed = Boolean(settings.permissionsDismissedAt);
-  const signatureValid = appSignatureValid();
   const stableIdentity = (() => {
     if (!app.isPackaged) return false;
     if (process.platform !== "darwin") return true;
@@ -333,7 +314,7 @@ function permissionState(): DesktopPermissionState {
     return result.status === 0 && !/flags=.*adhoc/i.test(details) && !/TeamIdentifier=not set/i.test(details);
   })();
   if (process.platform !== "darwin") {
-    return { platform: process.platform, packaged: app.isPackaged, stableIdentity, signatureValid, screen: "granted", accessibility: "granted", ready: true, acknowledged, dismissed };
+    return { platform: process.platform, packaged: app.isPackaged, stableIdentity, screen: "granted", accessibility: "granted", ready: true, acknowledged, dismissed };
   }
   const screen = systemPreferences.getMediaAccessStatus("screen") as PermissionValue;
   const accessibility = systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied";
@@ -341,7 +322,6 @@ function permissionState(): DesktopPermissionState {
     platform: process.platform,
     packaged: app.isPackaged,
     stableIdentity,
-    signatureValid,
     screen,
     accessibility,
     ready: screen === "granted" && accessibility === "granted",
@@ -864,6 +844,17 @@ ipcMain.handle("tapmakerwork:permissions-open", async (_event, permission: Permi
   }
   return permissionState();
 });
+/**
+ * 清掉系统里记着的旧授权记录。TCC 把授权绑定在 app 的代码身份上，重新打包后
+ * 身份变了（ad-hoc 签名的 cdhash 每次都不同），旧记录匹配不上新二进制，系统设置
+ * 里的开关会一直亮着却实际不生效。这时只能清掉旧记录，让系统重新问一次。
+ */
+ipcMain.handle("tapmakerwork:permissions-reset", (_event, permission: PermissionName) => {
+  if (process.platform !== "darwin") return permissionState();
+  const service = permission === "screen" ? "ScreenCapture" : "Accessibility";
+  spawnSync("/usr/bin/tccutil", ["reset", service, "com.androidsup.tapmakerwork"], { encoding: "utf8", windowsHide: true });
+  return sendPermissionState();
+});
 ipcMain.handle("tapmakerwork:app-restart", () => {
   // app.exit 不会触发 before-quit，必须先停 Bridge，否则旧进程占着端口让新实例启动失败
   stopPackagedBridge();
@@ -1359,16 +1350,6 @@ ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
 }) => {
   if (process.platform === "win32") return captureOnWindows(opts);
   const permission = process.platform === "darwin" ? systemPreferences.getMediaAccessStatus("screen") : "granted";
-  // 签名无效时 TCC 认不出这是同一个 app，每次 getSources() 都会重新弹系统框，
-  // 无论授权状态写的是什么。这种情况下抓屏不可能成功，直接返回明确错误。
-  if (process.platform === "darwin" && !appSignatureValid()) {
-    return {
-      ok: false,
-      error: "app_signature_invalid",
-      permission,
-      candidates: []
-    };
-  }
   // macOS 的录屏授权无法在应用内申请（askForMediaAccess 只支持麦克风与摄像头），
   // 而 getSources() 一旦在未授权时被调用就会顶出系统 TCC 授权框。渲染层有三个
   // 后台轮询在抓屏，放行会让系统框反复出现，因此默认拦住：只有显式请求才枚举窗口。

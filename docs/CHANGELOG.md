@@ -1,5 +1,19 @@
 # Change log
 
+<a id="release-0.1.10"></a>
+
+## 2026-11-18 — TapMakerWork 0.1.10
+
+### 修复
+- **回退 0.1.9 的 ad-hoc 补签**：0.1.9 引入的 `scripts/after-pack.cjs` 用 ad-hoc 签名，而 ad-hoc 的 designated requirement 绑定 `cdhash`，每次重新打包都会变。结果是系统设置里的录屏开关一直是打开的，TCC 却持续报 `Failed to match existing code requirement`，界面只能提示「未允许录屏」——这正是用户遇到的回归。
+- 现已回到 0.1.7/0.1.8 的完全未签名状态（`CSC_IDENTITY_AUTO_DISCOVERY=false`，产物 `Identifier=Electron`）。此时 macOS 按**安装路径**识别应用（实测 TCC `subject=/Applications/TapMakerWork.app/...`），覆盖升级到同一路径时授权得以保留，实测 `Failed to match` 出现 0 次。
+- 新增「重置授权」入口（设置页、授权向导、Runtime 镜像画布）：调用 `tccutil reset ScreenCapture com.androidsup.tapmakerwork` 清掉匹配不上的旧记录，让系统重新询问一次。这是旧记录已经失效时的唯一解法。
+- 修正误导文案：原来一律显示「macOS 未允许录屏」，即使开关已经打开。现在区分「确实未授权」与「授权记录停在旧版本上」两种情况，并直接给出重置指引。
+- 权限卡片与授权向导的「开发模式」提示改为按 `packaged` 判断；正式未签名包不再被误报为开发模式，而是提示「按安装位置记录授权，挪动 App 位置后需重新授权」。
+
+### 打包与发布
+- 版本号同步至 **0.1.10**。
+
 <a id="release-0.1.9"></a>
 
 ## 2026-11-13 — TapMakerWork 0.1.9

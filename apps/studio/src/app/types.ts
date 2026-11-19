@@ -145,5 +145,5 @@ export type CenterTab = "workflow" | "visual" | "runtime" | "code" | "git-diff";
 export type DocumentTab = Exclude<CenterTab, "git-diff"> | "preview";
 export type FloatingWorkspace = { x: number; y: number; width: number; height: number };
 
-export type PermissionAction = "screen" | "accessibility" | "restart" | "refresh" | "confirm";
+export type PermissionAction = "screen" | "accessibility" | "restart" | "refresh" | "confirm" | "reset-screen" | "reset-accessibility";
 export type DesktopUpdateAction = "check" | "download" | "restart" | "snooze" | "mute";

@@ -19,6 +19,7 @@ function mockDesktop() {
       get: vi.fn(async () => notReady),
       request: vi.fn(async () => ({ ...notReady, screen: "granted" as const })),
       open: vi.fn(async () => notReady),
+      reset: vi.fn(async () => notReady),
       restart: vi.fn(async () => undefined),
       acknowledge: vi.fn(async () => ({ ...notReady, acknowledged: true })),
       dismiss: vi.fn(async () => ({ ...notReady, dismissed: true })),

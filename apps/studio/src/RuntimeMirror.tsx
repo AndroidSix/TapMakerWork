@@ -4,7 +4,7 @@ import { type UiNode, type UiSnapshot, type UiValue, type WorkspaceMode } from "
 import { angleBetween, groupCenter, rectCenter, resizeRect, rotatePoint, scaleRatio, snapValue, toolForShortcut, type Point, type Rect, type TransformTool } from "./runtime-transform";
 import { clipRectToSpace, runtimeCoordinateSpace, runtimeHitCandidates, stagePoint } from "./runtime-hit-test";
 import { CoachMark } from "./NewbieGuide";
-import { screenSignatureInvalid, useScreenCaptureAllowed, useScreenPermissionState } from "./app/screen-permission";
+import { useScreenCaptureAllowed } from "./app/screen-permission";
 
 interface RuntimeMirrorProps {
   runtimeLive: boolean;
@@ -182,8 +182,6 @@ export function RuntimeMirror({
   const [permission, setPermission] = useState("");
   const [capturing, setCapturing] = useState(false);
   const screenAllowed = useScreenCaptureAllowed();
-  const screenPermission = useScreenPermissionState();
-  const signatureInvalid = screenSignatureInvalid(screenPermission);
   const [tool, setTool] = useState<TransformTool>("move");
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, TransformDraft>>({});
@@ -713,23 +711,27 @@ export function RuntimeMirror({
               <MonitorUp size={36} aria-hidden="true" />
               <strong>{runtimeLive ? "等待捕获 Runtime 窗口" : "Runtime 尚未启动"}</strong>
               <p>
-                {signatureInvalid
-                  ? "当前安装包签名无效，macOS 无法记住录屏授权，所以每次抓屏都会重新询问。请重新安装官方签名版本，或在“系统设置 → 隐私与安全性”里移除旧的 TapMakerWork 条目后再授权一次。"
-                  : permissionBlocked || error === "screen_recording_permission_required"
-                    ? "macOS 未允许录屏。请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中允许 TapMakerWork。"
-                    : error === "runtime_window_not_found"
-                      ? "未自动识别到游戏窗口；请确认窗口已出现，或从上方窗口列表手动选择。"
-                      : error === "runtime_frame_empty"
-                        ? "找到了 Runtime 窗口，但画面是空的。请让游戏窗口保持可见且不要最小化，然后再试。"
-                        : error === "runtime_capture_unavailable"
-                          ? "当前不是支持窗口采样的桌面版本；请重启或更新 TapMakerWork。"
-                          : error ? `窗口采样失败：${error}` : "启动运行器后，这里直接编辑最终渲染画面。"}
+                {permissionBlocked || error === "screen_recording_permission_required"
+                  ? "macOS 尚未把录屏权限交给当前这个 TapMakerWork。若系统设置里开关已是打开状态，说明记录还停在旧版本上：点下面的“重置授权”清掉旧记录，再重新允许一次即可。"
+                  : error === "runtime_window_not_found"
+                    ? "未自动识别到游戏窗口；请确认窗口已出现，或从上方窗口列表手动选择。"
+                    : error === "runtime_frame_empty"
+                      ? "找到了 Runtime 窗口，但画面是空的。请让游戏窗口保持可见且不要最小化，然后再试。"
+                      : error === "runtime_capture_unavailable"
+                        ? "当前不是支持窗口采样的桌面版本；请重启或更新 TapMakerWork。"
+                        : error ? `窗口采样失败：${error}` : "启动运行器后，这里直接编辑最终渲染画面。"}
               </p>
-              {permissionBlocked && !signatureInvalid && (
-                <button
-                  type="button"
-                  onClick={() => { void window.tapMakerWork?.permissions?.open?.("screen"); }}
-                ><ExternalLink size={14} aria-hidden="true" />打开系统录屏设置</button>
+              {permissionBlocked && (
+                <div className="runtime-mirror-actions">
+                  <button
+                    type="button"
+                    onClick={() => { void window.tapMakerWork?.permissions?.open?.("screen"); }}
+                  ><ExternalLink size={14} aria-hidden="true" />打开系统录屏设置</button>
+                  <button
+                    type="button"
+                    onClick={() => { void window.tapMakerWork?.permissions?.reset?.("screen"); }}
+                  ><RefreshCw size={14} aria-hidden="true" />重置授权</button>
+                </div>
               )}
               {!runtimeLive && (
                 <CoachMark label="② 启动 Runtime" active={coachRuntimeStart}>

@@ -84,8 +84,9 @@ softwareupdate --install-rosetta --agree-to-license
 
 - **macOS（`.pkg`）**
   - 未签名安装包的常见提示是「无法验证开发者」。双击一次后，**隐私与安全性** 会出现 **「仍要打开」**。点过之后安装器把 App 写到「应用程序」，这份 App 不带下载隔离属性，可以启动。
-  - **不要改发 `.dmg` / 从 ZIP 里拖出 `.app`。** 包内 App 只是 ad-hoc 签名。Finder 复制时会带上隔离属性，macOS 15 及更新系统会把它当成「已损坏」，并且不提供「仍要打开」。
-  - 屏幕录制 / 辅助功能授权不稳定（身份是 adhoc，不是正式 Developer ID），换机器或升级后可能要重新授权。
+  - **不要改发 `.dmg` / 从 ZIP 里拖出 `.app`。** 包内 App 完全未签名（`Identifier=Electron`、无 `_CodeSignature`）。Finder 复制时会带上隔离属性，macOS 15 及更新系统会把它当成「已损坏」，并且不提供「仍要打开」。
+  - 屏幕录制 / 辅助功能授权：完全未签名时 macOS 按**安装路径**识别应用（`subject=/Applications/TapMakerWork.app/...`），覆盖升级到同一路径时授权会保留。但**把 App 换到别的目录、或从别的路径启动，就需重新授权一次**。
+  - 旧版（0.1.9）曾用 ad-hoc 补签，身份绑定 cdhash，每次打包都会变，导致系统设置里开关亮着却反复提示没权限。现已回退为完全未签名。
   - 自动更新走 ZIP，同样未公证，不可靠。
 - **Windows（`.exe` NSIS）**
   - SmartScreen：「Windows 已保护你的电脑」，需「更多信息 → 仍要运行」。

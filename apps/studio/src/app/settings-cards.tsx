@@ -67,11 +67,12 @@ export function DesktopPermissionsCard({ permissions: desktopPermissions, busy: 
       <div className="desktop-card-actions">
         <button onClick={onOpenGuide}>查看授权向导</button>
         <button onClick={() => void runPermissionAction("refresh")} disabled={Boolean(permissionBusy)}><RefreshCw size={13} />重新检测</button>
+        <button onClick={() => void runPermissionAction("reset-screen")} disabled={Boolean(permissionBusy)} title="系统设置里开关已开但仍未生效时使用">重置授权</button>
         <button onClick={() => void runPermissionAction("confirm")} disabled={Boolean(permissionBusy)}><CheckCircle2 size={13} />{permissionConfirmed ? "已确认授权" : "我已授权"}</button>
         <button className="primary" onClick={() => void runPermissionAction("restart")} disabled={!desktopPermissions.ready && !permissionConfirmed}>重启应用</button>
       </div>
-      {desktopPermissions.signatureValid === false && <p className="desktop-card-note warning">当前安装包签名无效，macOS 会忘记录屏授权并每次重新询问。请重新安装官方签名版本。</p>}
-      {desktopPermissions.signatureValid !== false && !desktopPermissions.stableIdentity && <p className="desktop-card-note">开发模式的授权归属 Electron；请用签名后的正式安装包在新机器授权。</p>}
+      {!desktopPermissions.packaged && <p className="desktop-card-note">开发模式的授权归属 Electron；请用正式安装包在新机器授权。</p>}
+      {desktopPermissions.packaged && !desktopPermissions.stableIdentity && <p className="desktop-card-note">当前安装包未签名，macOS 按安装位置记录授权；挪动 App 位置后需重新授权。</p>}
     </section>
   );
 }
