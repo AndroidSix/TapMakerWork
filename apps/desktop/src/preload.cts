@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld("tapMakerWork", {
     get: () => ipcRenderer.invoke("tapmakerwork:permissions-get"),
     request: (permission: "screen" | "accessibility") => ipcRenderer.invoke("tapmakerwork:permissions-request", permission),
     open: (permission: "screen" | "accessibility") => ipcRenderer.invoke("tapmakerwork:permissions-open", permission),
+    reset: (permission: "screen" | "accessibility") => ipcRenderer.invoke("tapmakerwork:permissions-reset", permission),
     restart: () => ipcRenderer.invoke("tapmakerwork:app-restart"),
     acknowledge: () => ipcRenderer.invoke("tapmakerwork:permissions-acknowledge"),
     dismiss: () => ipcRenderer.invoke("tapmakerwork:permissions-dismiss"),

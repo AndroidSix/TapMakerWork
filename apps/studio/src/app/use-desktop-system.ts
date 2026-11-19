@@ -145,9 +145,17 @@ export function useDesktopSystem({ toast, trackTelemetry }: {
         toast(state.ready ? "系统权限已检测为就绪，可以重启应用" : "已记录你的授权确认；现在可以重启应用完成系统状态刷新", "success");
         return;
       }
+      if (action === "reset-screen" || action === "reset-accessibility") {
+        // 重新打包后 app 的代码身份变了，系统里旧授权记录匹配不上新二进制，
+        // 设置里的开关亮着却实际不生效。清掉旧记录让系统重新问一次。
+        const target = action === "reset-screen" ? "screen" : "accessibility";
+        const state = api.reset ? await api.reset(target) : await api.get();
+        setDesktopPermissions(state);
+        toast("已清除旧的系统授权记录，请重新授权一次", "success");
+        return;
+      }
       const state = action === "refresh" ? await api.get() : await api.request(action);
-      setDesktopPermissions(state);
-      if (state.ready) {
+      setDesktopPermissions(state);      if (state.ready) {
         setPermissionConfirmed(true);
         toast("系统权限已就绪，可以使用真实 Runtime 预览与交互", "success");
       } else if (action === "refresh") {
