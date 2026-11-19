@@ -13,6 +13,7 @@ interface RuntimeMirrorProps {
   adapterInstalled: boolean;
   installBusy: boolean;
   projectName: string;
+  projectTitle?: string | undefined;
   orientation: "portrait" | "landscape";
   snapshot?: UiSnapshot | undefined;
   snapshotSource?: "conversion" | "sidecar" | "runtime" | "empty" | undefined;
@@ -23,6 +24,8 @@ interface RuntimeMirrorProps {
   onCoachRuntimeStartDone?: () => void;
   onModeChange: (mode: WorkspaceMode) => void;
   onStart: () => void;
+  onPermissionAction: (action: "screen" | "reset-screen") => Promise<void>;
+  permissionBusy?: boolean;
   onInstallAdapter: () => void;
   onSelect: (nodeId: string, additive?: boolean) => void;
   onContextMenu: (nodeId: string, x: number, y: number) => void;
@@ -154,6 +157,7 @@ export function RuntimeMirror({
   adapterInstalled,
   installBusy,
   projectName,
+  projectTitle,
   orientation,
   snapshot,
   snapshotSource,
@@ -164,6 +168,8 @@ export function RuntimeMirror({
   onCoachRuntimeStartDone,
   onModeChange,
   onStart,
+  onPermissionAction,
+  permissionBusy,
   onInstallAdapter,
   onSelect,
   onContextMenu,
@@ -207,14 +213,14 @@ export function RuntimeMirror({
   const rootRect = asRect(snapshot?.root.props.$screen);
   const coordinateSpace = runtimeCoordinateSpace(snapshot, rootRect);
   const viewport = { width: coordinateSpace.width, height: coordinateSpace.height };
+  const hasRuntimeViewport = runtimeLive && runtimeConnected && snapshotSource === "runtime" && coordinateSpace.source !== "fallback";
   const logicalScale = {
     x: snapshot?.viewport?.width ? snapshot.viewport.width / Math.max(1, coordinateSpace.width) : 1,
     y: snapshot?.viewport?.height ? snapshot.viewport.height / Math.max(1, coordinateSpace.height) : 1
   };
   const editable = runtimeLive && runtimeConnected && snapshotSource === "runtime" && boxes.length > 0;
-  const stageRatio = snapshotSource === "runtime" && viewport.height > 0
-    ? viewport.width / viewport.height
-    : frameAspect > 0 ? frameAspect : viewport.width / Math.max(1, viewport.height);
+  const stageRatio = hasRuntimeViewport ? viewport.width / viewport.height
+    : frameAspect || (orientation === "landscape" ? 16 / 9 : 9 / 16);
 
   useEffect(() => {
     const fit = (element: HTMLDivElement | null): StageSize | undefined => {
@@ -255,7 +261,7 @@ export function RuntimeMirror({
       observer?.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, [frameAspect, mode, snapshotSource, stageRatio, viewport.height, viewport.width]);
+  }, [mode, stageRatio]);
 
   const setDraftValues = (value: Record<string, TransformDraft>) => {
     draftsRef.current = value;
@@ -276,10 +282,10 @@ export function RuntimeMirror({
     try {
       const result = await captureRuntime({
         projectName,
+        ...(projectTitle ? { projectTitle } : {}),
         ...(requestedSourceId ? { sourceId: requestedSourceId } : {}),
         orientation,
-        viewportWidth: viewport.width,
-        viewportHeight: viewport.height,
+        ...(hasRuntimeViewport ? { viewportWidth: viewport.width, viewportHeight: viewport.height } : {}),
         ...(allowPermissionPrompt ? { allowPermissionPrompt: true } : {})
       });
       setCandidates(result.candidates ?? []);
@@ -291,13 +297,18 @@ export function RuntimeMirror({
           frameRef.current = result.dataUrl;
           setFrame(result.dataUrl);
         }
-        setSourceId(result.sourceId || requestedSourceId);
         setSourceName(result.sourceName || "Maker Runtime");
         setError("");
         if (announce) onToast("已同步真实 Runtime 画面", "success");
       } else {
         setError(result.error || "runtime_capture_failed");
-        if (result.error === "runtime_window_not_found") setSourceId("");
+        if (result.error === "runtime_window_not_found" || result.error === "screen_recording_permission_required") {
+          frameRef.current = "";
+          setFrame("");
+          setLiveFrame("");
+          setFrameAspect(0);
+          if (result.error === "runtime_window_not_found") setSourceId("");
+        }
       }
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : String(captureError));
@@ -305,7 +316,7 @@ export function RuntimeMirror({
       captureInFlight.current = false;
       if (!background) setCapturing(false);
     }
-  }, [onToast, orientation, projectName, sourceId, viewport.height, viewport.width]);
+  }, [hasRuntimeViewport, onToast, orientation, projectName, projectTitle, sourceId, viewport.height, viewport.width]);
 
   useEffect(() => {
     if (!runtimeLive) return;
@@ -673,7 +684,7 @@ export function RuntimeMirror({
         <button type="button" disabled={!runtimeLive || capturing} onClick={() => void capture(sourceId, true, true, false, true)}><RefreshCw size={13} aria-hidden="true" />刷新画面</button>
       </header>
 
-      <div className={`runtime-editor-shell ${mode === "live-edit" ? "runtime-editor-split" : ""}`}>
+      <div className={`runtime-editor-shell${mode === "live-edit" ? " runtime-editor-split" : ""}${mode === "live-edit" && stageRatio > 1 ? " runtime-editor-stacked" : ""}`}>
         <section className="runtime-editor-pane">
           <header><strong>{mode === "live-edit" ? "编辑视图" : "Runtime 场景"}</strong><span>{mode === "live-edit" ? "移动、旋转、缩放、Shift 多选" : "单击检查节点"}</span></header>
           <div className="runtime-stage-viewport" ref={editorViewportRef}>
@@ -712,7 +723,7 @@ export function RuntimeMirror({
               <strong>{runtimeLive ? "等待捕获 Runtime 窗口" : "Runtime 尚未启动"}</strong>
               <p>
                 {permissionBlocked || error === "screen_recording_permission_required"
-                  ? "macOS 尚未把录屏权限交给当前这个 TapMakerWork。若系统设置里开关已是打开状态，说明记录还停在旧版本上：点下面的“重置授权”清掉旧记录，再重新允许一次即可。"
+                  ? "macOS 尚未报告录屏权限生效。若系统设置里已经开启，请先退出再启动 TapMakerWork；仍无效时再尝试重置录屏授权。"
                   : error === "runtime_window_not_found"
                     ? "未自动识别到游戏窗口；请确认窗口已出现，或从上方窗口列表手动选择。"
                     : error === "runtime_frame_empty"
@@ -725,11 +736,13 @@ export function RuntimeMirror({
                 <div className="runtime-mirror-actions">
                   <button
                     type="button"
-                    onClick={() => { void window.tapMakerWork?.permissions?.open?.("screen"); }}
-                  ><ExternalLink size={14} aria-hidden="true" />打开系统录屏设置</button>
+                    disabled={permissionBusy}
+                    onClick={() => void onPermissionAction("screen")}
+                  ><ExternalLink size={14} aria-hidden="true" />去授权</button>
                   <button
                     type="button"
-                    onClick={() => { void window.tapMakerWork?.permissions?.reset?.("screen"); }}
+                    disabled={permissionBusy}
+                    onClick={() => void onPermissionAction("reset-screen")}
                   ><RefreshCw size={14} aria-hidden="true" />重置授权</button>
                 </div>
               )}
@@ -744,6 +757,12 @@ export function RuntimeMirror({
                     }}
                   ><CirclePlay size={14} aria-hidden="true" />{runtimeBusy ? "启动中…" : "启动 Maker Runtime"}</button>
                 </CoachMark>
+              )}
+              {runtimeLive && !editable && (
+                <button type="button" disabled={installBusy || runtimeBusy} onClick={onInstallAdapter}>
+                  <RefreshCw size={14} aria-hidden="true" />
+                  {installBusy ? "接入中…" : adapterInstalled ? "重新接入并连接" : "接入当前项目"}
+                </button>
               )}
             </div>
           )}
@@ -806,7 +825,7 @@ export function RuntimeMirror({
 
         {mode === "live-edit" && (
           <section className="runtime-editor-pane runtime-live-pane" aria-label="实际 Runtime 实时画面">
-            <header><strong>实际 Runtime</strong><span><i />约 220ms 刷新</span></header>
+            <header><strong>实际 Runtime</strong><span><i />约 500ms 刷新</span></header>
             <div className="runtime-stage-viewport" ref={liveViewportRef}>
               <div
                 className={`runtime-live-stage orientation-${orientation}`}
@@ -830,7 +849,7 @@ export function RuntimeMirror({
           <div className="runtime-editor-gate">
             {adapterInstalled ? <Unplug size={22} aria-hidden="true" /> : <WandSparkles size={22} aria-hidden="true" />}
             <div>
-              <strong>{adapterInstalled ? "运行时编辑桥尚未连接" : "启用所见即所得编辑"}</strong>
+              <strong>{runtimeConnected ? "编辑桥已连接，等待可编辑的 UI" : adapterInstalled ? "运行时编辑桥尚未连接" : "启用所见即所得编辑"}</strong>
               <p>{adapterInstalled
                 ? "将重新校验客户端入口并重启 Runtime；连接成功后即可读取真实绘制/控件树并拖拽编辑。"
                 : "安装项目内编辑桥后，画面上的选择框来自引擎实际布局。Yoga 走控件树；NanoVG 项目会自动注入绘制代理，无需改游戏业务代码。"}</p>
@@ -839,9 +858,6 @@ export function RuntimeMirror({
               {adapterInstalled ? <RefreshCw size={14} /> : <BoxSelect size={14} />}
               {installBusy ? "接入中…" : adapterInstalled ? "重新接入并连接" : "接入当前项目"}
             </button>
-            {adapterInstalled && !editable && (
-              <p className="runtime-editor-gate-hint">因为项目众多，如果启动注入失败，请自行点击这里「重新接入并连接」再注入一次。</p>
-            )}
           </div>
         )}
       </div>

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { UiConversionDocument, UiNode } from "@tapmakerwork/protocol";
-import { convertLuaUiFile, loadProjectPreviewConstants } from "./lua-converter.js";
+import { convertLuaUiFile, createLuaUiFileCache, loadProjectPreviewConstants } from "./lua-converter.js";
 import { scoreUiBackendMarkers } from "./ui-backend.js";
 
 export interface UiScreenSummary {
@@ -60,7 +60,8 @@ export function scanUiScreens(projectRoot: string): { summaries: UiScreenSummary
   const documents = new Map<string, UiConversionDocument>();
   const summaries: UiScreenSummary[] = [];
   if (!fs.existsSync(scriptsRoot)) return { summaries, documents };
-  const constants = loadProjectPreviewConstants(projectRoot);
+  const files = createLuaUiFileCache(projectRoot);
+  const constants = loadProjectPreviewConstants(projectRoot, files);
   const pending = [scriptsRoot];
   while (pending.length) {
     const directory = pending.pop()!;
@@ -70,10 +71,10 @@ export function scanUiScreens(projectRoot: string): { summaries: UiScreenSummary
       if (entry.isDirectory()) { pending.push(filename); continue; }
       if (!entry.isFile() || !entry.name.endsWith(".lua")) continue;
       const relativePath = path.relative(projectRoot, filename).split(path.sep).join("/");
-      const source = fs.readFileSync(filename, "utf8");
+      const source = files.read(filename);
       if (!isUiScreenCandidate(relativePath, source)) continue;
       try {
-        let document = convertLuaUiFile(projectRoot, relativePath, constants);
+        let document = convertLuaUiFile(projectRoot, relativePath, constants, files);
         const nanovgOnly = isNanoVgScreenSource(source);
         // scripts/ui is an explicit UI catalog and keeps its helper/theme modules.
         // Outside that directory, only surface files that produced a real tree —

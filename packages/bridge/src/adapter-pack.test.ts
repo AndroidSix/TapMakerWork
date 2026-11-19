@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import luaparse from "luaparse";
 import { afterEach, describe, expect, it } from "vitest";
 import { installRuntimeAdapter } from "./adapter-pack.js";
+import { classifyRuntimeProject } from "./runtime-file-channel.js";
 
 const temporary: string[] = [];
 
@@ -157,6 +159,42 @@ end
     expect(installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root }).changed).toBe(false);
   });
 
+  it("wires the subscribed Update callback when the game reads TimeStep inline", () => {
+    const root = makerProject();
+    const entryPath = path.join(root, "scripts", "main.lua");
+    fs.writeFileSync(entryPath, `-- function Start()
+function Start() SubscribeToEvent("Update", "Tick") end
+
+function HandleOtherEvent(eventType, eventData)
+    local dt = eventData:GetFloat("TimeStep")
+end
+
+function Tick(eventType, data)
+    Game.Update(data:GetFloat("TimeStep"))
+end`, "utf8");
+    const options = { bridgePackageRoot: process.cwd(), projectRoot: root };
+    installRuntimeAdapter(options);
+    const entry = fs.readFileSync(entryPath, "utf8");
+    expect(() => luaparse.parse(entry, { luaVersion: "5.3" })).not.toThrow();
+    expect(entry).toMatch(/function Start\(\)\s+TapMakerWorkLiveEditorStart\(\) -- TapMakerWork managed\s+SubscribeToEvent/);
+    expect(entry).toMatch(/function Tick\(eventType, data\)\s+TapMakerWorkLiveEditorUpdate[^\n]*\bdata\b[^\n]* -- TapMakerWork managed/);
+    expect(entry).not.toContain("TapMakerWorkLiveEditorUpdate(dt) -- TapMakerWork managed");
+    expect(installRuntimeAdapter(options).changed).toBe(false);
+  });
+
+  it("wires an Update callback without any local TimeStep assignment", () => {
+    const root = makerProject();
+    fs.writeFileSync(path.join(root, "scripts", "main.lua"), `function Start()
+    SubscribeToEvent("Update", "HandleUpdate")
+end
+function HandleUpdate(eventType, eventData)
+    if screen_ then screen_:Update(eventData:GetFloat("TimeStep")) end
+end
+`, "utf8");
+    const result = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    expect(fs.readFileSync(result.entryPath, "utf8")).toMatch(/function HandleUpdate\([^)]*\)\s+TapMakerWorkLiveEditorUpdate[^\n]*\beventData\b[^\n]* -- TapMakerWork managed/);
+  });
+
   it("keeps a UTF-8 BOM at the top of the file and preserves CRLF line endings", () => {
     const root = makerProject();
     const entryPath = path.join(root, "scripts", "main.lua");
@@ -197,5 +235,18 @@ end
     expect(fs.readFileSync(result.entryPath, "utf8")).toContain("TapMakerWorkLiveEditorStart()");
     expect(fs.readFileSync(path.join(root, "scripts", "main.lua"), "utf8")).toBe("-- shared fallback entry\n");
     expect(fs.readFileSync(path.join(root, "scripts", "server_main.lua"), "utf8")).toBe("-- server entry\n");
+  });
+
+  it("reports an identity the Bridge accepts even if Config uses a different title", () => {
+    const root = makerProject();
+    fs.mkdirSync(path.join(root, ".project"));
+    fs.writeFileSync(path.join(root, ".project", "project.json"), JSON.stringify({ taptap_publish: { title: "Published Game" } }));
+    fs.writeFileSync(path.join(root, "scripts", "Config.lua"), 'return { TITLE = "Internal Title" }');
+    const { entryPath } = installRuntimeAdapter({ bridgePackageRoot: process.cwd(), projectRoot: root });
+    const entry = fs.readFileSync(entryPath, "utf8");
+    expect(entry).not.toContain('pcall(require, "Config")');
+    const advertisedName = /local projectName = "([^"]+)"/.exec(entry)?.[1];
+    expect(classifyRuntimeProject(advertisedName, { projectRoot: root })).toBe("match");
+    expect(classifyRuntimeProject("Internal Title", { projectRoot: root })).toBe("mismatch");
   });
 });

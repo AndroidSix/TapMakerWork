@@ -48,4 +48,13 @@ describe("Maker Runtime window selection", () => {
     ], "台球大师", { targetAspect: 720 / 1280 });
     expect(selected?.id).toBe("game");
   });
+
+  it("does not mistake an unrelated window for the game based only on aspect ratio", () => {
+    expect(selectRuntimeWindow([{ name: "浏览器", width: 1280, height: 720 }], "Wide game", { targetAspect: 16 / 9 })).toBeUndefined();
+  });
+
+  it("finds a landscape game by its published title despite a stale portrait hint", () => {
+    const game = { name: "横屏游戏", width: 1440, height: 750 };
+    expect(selectRuntimeWindow([game, { name: "UrhoXRuntime", width: 720, height: 1280 }], ["wide-game", "横屏游戏"], { targetAspect: 9 / 16 })).toBe(game);
+  });
 });

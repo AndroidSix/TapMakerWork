@@ -47,7 +47,7 @@ export function useDesktopSystem({ toast, trackTelemetry }: {
         const legacyDismissed = localStorage.getItem("tapmakerwork.permissions.dismissed") === "1";
         const settled = Boolean(state.acknowledged) || Boolean(state.dismissed) || legacyDismissed;
         if (state.platform === "darwin" && !state.ready && !settled) setPermissionGuideOpen(true);
-      });
+      }).catch(() => undefined);
     }
     if (updatesApi) {
       void updatesApi.get().then((state) => {
@@ -142,20 +142,21 @@ export function useDesktopSystem({ toast, trackTelemetry }: {
         const state = api.acknowledge ? await api.acknowledge() : await api.get();
         setDesktopPermissions(state);
         setPermissionConfirmed(true);
-        toast(state.ready ? "系统权限已检测为就绪，可以重启应用" : "已记录你的授权确认；现在可以重启应用完成系统状态刷新", "success");
+        if (state.ready) toast("已检测到系统授权", "success");
+        else toast("已记录确认，但系统尚未报告授权生效。请在系统设置中检查，必要时重启应用。", "info");
         return;
       }
       if (action === "reset-screen" || action === "reset-accessibility") {
-        // 重新打包后 app 的代码身份变了，系统里旧授权记录匹配不上新二进制，
-        // 设置里的开关亮着却实际不生效。清掉旧记录让系统重新问一次。
         const target = action === "reset-screen" ? "screen" : "accessibility";
-        const state = api.reset ? await api.reset(target) : await api.get();
+        if (!api.reset) throw new Error("当前版本不支持重置系统授权，请在 macOS 系统设置中手动处理。");
+        const state = await api.reset(target);
         setDesktopPermissions(state);
-        toast("已清除旧的系统授权记录，请重新授权一次", "success");
+        toast("系统已接受重置请求。请重新授权；若状态未更新，请重启应用。", "info");
         return;
       }
       const state = action === "refresh" ? await api.get() : await api.request(action);
-      setDesktopPermissions(state);      if (state.ready) {
+      setDesktopPermissions(state);
+      if (state.ready) {
         setPermissionConfirmed(true);
         toast("系统权限已就绪，可以使用真实 Runtime 预览与交互", "success");
       } else if (action === "refresh") {

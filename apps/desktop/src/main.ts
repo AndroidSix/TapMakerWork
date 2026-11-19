@@ -68,11 +68,23 @@ function windowsBridge(): WindowsRuntime {
   return windowsRuntime;
 }
 
-function runtimeTargetAspect(opts?: { orientation?: "portrait" | "landscape"; viewportWidth?: number; viewportHeight?: number }): number {
+type RuntimeCaptureOptions = {
+  projectName?: string;
+  projectTitle?: string;
+  sourceId?: string;
+  orientation?: "portrait" | "landscape";
+  viewportWidth?: number;
+  viewportHeight?: number;
+  allowPermissionPrompt?: boolean;
+};
+
+function runtimeViewportAspect(opts?: RuntimeCaptureOptions): number | undefined {
   const requestedWidth = Number(opts?.viewportWidth || 0);
   const requestedHeight = Number(opts?.viewportHeight || 0);
-  if (requestedWidth > 0 && requestedHeight > 0) return requestedWidth / requestedHeight;
-  return opts?.orientation === "landscape" ? 16 / 9 : 9 / 16;
+  if (Number.isFinite(requestedWidth) && Number.isFinite(requestedHeight) && requestedWidth > 0 && requestedHeight > 0) {
+    return requestedWidth / requestedHeight;
+  }
+  return undefined;
 }
 
 function cropRuntimeFrame(frame: NativeImage, targetAspect: number): NativeImage {
@@ -133,13 +145,7 @@ function encodeRuntimeFrame(
   return { dataUrl, width: size.width, height: size.height, unchanged: false };
 }
 
-async function captureOnWindows(opts?: {
-  projectName?: string;
-  sourceId?: string;
-  orientation?: "portrait" | "landscape";
-  viewportWidth?: number;
-  viewportHeight?: number;
-}) {
+async function captureOnWindows(opts?: RuntimeCaptureOptions) {
   const permission = "granted";
   let candidates: { id: string; name: string }[] = [];
   try {
@@ -147,9 +153,9 @@ async function captureOnWindows(opts?: {
     candidates = windowsCaptureCandidates(windows);
     const selected = chooseWindowsRuntimeWindow(
       windows,
-      opts?.projectName?.trim() || "",
+      [opts?.projectName || "", opts?.projectTitle || ""],
       opts?.sourceId || "",
-      runtimeTargetAspect(opts)
+      runtimeViewportAspect(opts) ?? (opts?.orientation === "landscape" ? 16 / 9 : 9 / 16)
     );
     if (!selected) return { ok: false as const, error: "runtime_window_not_found", permission, candidates };
     const shot = await windowsBridge().capture(selected.hwnd, 1280, 1280);
@@ -302,17 +308,20 @@ function desktopLog(message: string): void {
 desktopLog(`main loaded packaged=${app.isPackaged} ready=${app.isReady()}`);
 app.once("ready", () => desktopLog("ready event received"));
 
+let stablePermissionIdentity: boolean | undefined;
+
 function permissionState(): DesktopPermissionState {
   const settings = readDesktopSettings();
   const acknowledged = Boolean(settings.permissionsAcknowledgedAt);
   const dismissed = Boolean(settings.permissionsDismissedAt);
-  const stableIdentity = (() => {
+  stablePermissionIdentity ??= (() => {
     if (!app.isPackaged) return false;
     if (process.platform !== "darwin") return true;
     const result = spawnSync("/usr/bin/codesign", ["-dv", "--verbose=4", app.getPath("exe")], { encoding: "utf8", windowsHide: true });
     const details = `${result.stdout || ""}\n${result.stderr || ""}`;
     return result.status === 0 && !/flags=.*adhoc/i.test(details) && !/TeamIdentifier=not set/i.test(details);
   })();
+  const stableIdentity = stablePermissionIdentity;
   if (process.platform !== "darwin") {
     return { platform: process.platform, packaged: app.isPackaged, stableIdentity, screen: "granted", accessibility: "granted", ready: true, acknowledged, dismissed };
   }
@@ -833,7 +842,16 @@ ipcMain.handle("tapmakerwork:permissions-request", async (_event, permission: Pe
   if (permission === "accessibility") {
     systemPreferences.isTrustedAccessibilityClient(true);
   } else if (permission === "screen") {
-    await shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture");
+    if (systemPreferences.getMediaAccessStatus("screen") === "not-determined") {
+      try {
+        await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 1, height: 1 } });
+      } catch (error) {
+        desktopLog(`Initial screen permission request: ${String(error)}`);
+      }
+    }
+    if (systemPreferences.getMediaAccessStatus("screen") !== "granted") {
+      await shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture");
+    }
   }
   return sendPermissionState();
 });
@@ -844,15 +862,17 @@ ipcMain.handle("tapmakerwork:permissions-open", async (_event, permission: Permi
   }
   return permissionState();
 });
-/**
- * 清掉系统里记着的旧授权记录。TCC 把授权绑定在 app 的代码身份上，重新打包后
- * 身份变了（ad-hoc 签名的 cdhash 每次都不同），旧记录匹配不上新二进制，系统设置
- * 里的开关会一直亮着却实际不生效。这时只能清掉旧记录，让系统重新问一次。
- */
-ipcMain.handle("tapmakerwork:permissions-reset", (_event, permission: PermissionName) => {
+ipcMain.handle("tapmakerwork:permissions-reset", async (_event, permission: PermissionName) => {
   if (process.platform !== "darwin") return permissionState();
+  if (!app.isPackaged) throw new Error("开发模式不支持自动重置 Electron 的授权，请在 macOS 系统设置中手动处理。");
+  if (permission !== "screen" && permission !== "accessibility") throw new Error("无效的权限类型。");
   const service = permission === "screen" ? "ScreenCapture" : "Accessibility";
-  spawnSync("/usr/bin/tccutil", ["reset", service, "com.androidsup.tapmakerwork"], { encoding: "utf8", windowsHide: true });
+  try {
+    await execFileAsync("/usr/bin/tccutil", ["reset", service, "com.androidsup.tapmakerwork"]);
+  } catch (error) {
+    desktopLog(`Permission reset failed for ${service}: ${String(error)}`);
+    throw new Error("macOS 未能仅重置 TapMakerWork 的授权。请在系统设置中移除旧的 TapMakerWork 条目，再重新授权。");
+  }
   return sendPermissionState();
 });
 ipcMain.handle("tapmakerwork:app-restart", () => {
@@ -1339,21 +1359,13 @@ ipcMain.handle("tapmakerwork:preview-capture", async () => {
   }
 });
 
-ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
-  projectName?: string;
-  sourceId?: string;
-  orientation?: "portrait" | "landscape";
-  viewportWidth?: number;
-  viewportHeight?: number;
-  /** 只有用户显式操作（刷新画面 / 选窗口 / 去授权）才允许触发系统授权框。 */
-  allowPermissionPrompt?: boolean;
-}) => {
+ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: RuntimeCaptureOptions) => {
   if (process.platform === "win32") return captureOnWindows(opts);
   const permission = process.platform === "darwin" ? systemPreferences.getMediaAccessStatus("screen") : "granted";
   // macOS 的录屏授权无法在应用内申请（askForMediaAccess 只支持麦克风与摄像头），
   // 而 getSources() 一旦在未授权时被调用就会顶出系统 TCC 授权框。渲染层有三个
   // 后台轮询在抓屏，放行会让系统框反复出现，因此默认拦住：只有显式请求才枚举窗口。
-  if (permission !== "granted" && !opts?.allowPermissionPrompt) {
+  if (permission !== "granted" && !(permission === "not-determined" && opts?.allowPermissionPrompt)) {
     return {
       ok: false,
       error: "screen_recording_permission_required",
@@ -1362,17 +1374,18 @@ ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
     };
   }
   try {
-    const portrait = opts?.orientation !== "landscape";
+    const viewportAspect = runtimeViewportAspect(opts);
+    const targetAspect = viewportAspect ?? (opts?.orientation === "landscape" ? 16 / 9 : 9 / 16);
+    const thumbnailSize = viewportAspect == null ? { width: 1280, height: 1280 }
+      : targetAspect > 1 ? { width: 1280, height: 720 } : { width: 720, height: 1280 };
     const sources = await desktopCapturer.getSources({
       types: ["window"],
-      thumbnailSize: portrait ? { width: 720, height: 1280 } : { width: 1280, height: 720 },
+      thumbnailSize,
       fetchWindowIcons: false
     });
     const eligibleSources = sources.filter((source) => !/^TapMakerWork$/i.test(source.name));
     const candidates = eligibleSources
       .map((source) => ({ id: source.id, name: source.name }));
-    const normalizedProjectName = opts?.projectName?.trim().toLocaleLowerCase() || "";
-    const targetAspect = runtimeTargetAspect(opts);
     const rankedSources = eligibleSources.map((source) => {
       const size = source.thumbnail.getSize();
       return {
@@ -1384,7 +1397,7 @@ ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
     });
     const selectedRanked = opts?.sourceId
       ? rankedSources.find((item) => item.source.id === opts.sourceId)
-      : selectRuntimeWindow(rankedSources, normalizedProjectName, { targetAspect });
+      : selectRuntimeWindow(rankedSources, [opts?.projectName || "", opts?.projectTitle || ""], { targetAspect });
     const selected = selectedRanked?.source;
     // A bare project-name window is commonly the editor (Cursor/VS Code). Do
     // not present it as the game's final frame unless the user picks it.
@@ -1404,14 +1417,9 @@ ipcMain.handle("tapmakerwork:runtime-capture", async (_event, opts?: {
         candidates
       };
     }
-    let frame = selected.thumbnail;
-    const size = frame.getSize();
-    const rawAspect = size.width / Math.max(1, size.height);
     // Runtime window captures include native title chrome on macOS. Crop the largest
     // viewport-shaped rect, anchored to the bottom so the title bar is removed first.
-    if (Number.isFinite(targetAspect) && targetAspect > 0 && Math.abs(rawAspect - targetAspect) > 0.003) {
-      frame = cropRuntimeFrame(frame, targetAspect);
-    }
+    const frame = viewportAspect == null ? selected.thumbnail : cropRuntimeFrame(selected.thumbnail, viewportAspect);
     const frameSize = frame.getSize();
     const encoded = encodeRuntimeFrame(`${selected.id}:${frameSize.width}x${frameSize.height}`, frame);
     return {
@@ -1627,6 +1635,9 @@ app.whenReady().then(async () => {
   createWindow();
   ensureTelemetry().start();
   sendPermissionState();
+  app.on("browser-window-focus", (_event, window) => {
+    if (window === mainWindow) sendPermissionState();
+  });
   if (app.isPackaged && updateConfigured) {
     setTimeout(() => {
       void checkForDesktopUpdates(true);
@@ -1643,8 +1654,6 @@ app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
       if (app.isPackaged && updateConfigured) startUpdateCheckTimer();
-    } else {
-      sendPermissionState();
     }
   });
 }).catch((error) => {

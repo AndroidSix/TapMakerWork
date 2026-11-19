@@ -2200,6 +2200,7 @@ export function App() {
             : (detail.split("\n")[0] || "Runtime 操作失败");
         upsertPreviewToast(toastText, "error", { autoHideMs: 5000 });
         trackTelemetry("preview.action", { action, result: "fail" });
+        return false;
       } else {
         trackTelemetry("preview.action", { action, result: "ok" });
         setMakerPreviewStatus((current) => ({
@@ -2235,6 +2236,7 @@ export function App() {
             if (statusResponse.ok) setMakerPreviewStatus(await statusResponse.json() as MakerPreviewStatus);
           }).catch(() => undefined);
         }, 600);
+        return true;
       }
     } finally {
       setRuntimeBusy(false);
@@ -2267,26 +2269,29 @@ export function App() {
     setAdapterInstallBusy(true);
     try {
       const response = await fetch(`${API}/api/runtime/adapter/install`, { method: "POST" });
-      const result = await response.json() as { changed?: boolean; adapterPath?: string; entryPath?: string; backupPath?: string; error?: string };
+      const result = await response.json() as { changed?: boolean; adapterPath?: string; entryPath?: string; backupPath?: string; backend?: "yoga" | "nanovg"; error?: string };
       if (!response.ok) throw new Error(result.error || "运行时编辑桥接入失败");
       setAdapterExport(`已接入：${result.adapterPath || "scripts/tapmakerwork/TapMakerWorkBridge.lua"}${result.entryPath ? `\n客户端入口：${result.entryPath}` : ""}${result.backupPath ? `\n入口备份：${result.backupPath}` : ""}`);
       setHealth((current) => current ? {
         ...current,
-        runtimeAdapter: { installed: true, paths: ["scripts/tapmakerwork/TapMakerWorkBridge.lua"] }
+        runtimeAdapter: { installed: true, paths: result.adapterPath ? [result.adapterPath] : [], ...(result.backend ? { backend: result.backend } : {}) }
       } : current);
       setLogs((current) => ({
         ...current,
         runtime: [...current.runtime, `实时编辑桥已接入${result.entryPath ? `客户端入口 ${result.entryPath}` : "当前项目"}${result.changed ? "；需要重启 Runtime" : ""}`]
       }));
-      toast("实时编辑桥已接入，正在重启 Runtime 并建立连接…", "success");
+      toast("实时编辑桥已写入，正在重新启动 Runtime…", "info");
       trackTelemetry("adapter.install", { result: "ok" });
-      if (runtimeLive) await runtimeAction("stop");
-      await runtimeAction("start");
+      if (runtimeLive && !(await runtimeAction("stop"))) return;
+      if (!(await runtimeAction("start"))) return;
       setMode("live-edit");
       setCenterTab("runtime");
       [1200, 2500, 4500, 7000].forEach((delay) => window.setTimeout(() => void syncFromRuntime(), delay));
     } catch (error) {
-      toast(error instanceof Error ? error.message : String(error), "error");
+      const message = error instanceof Error ? error.message : String(error);
+      setLogs((current) => ({ ...current, runtime: [...current.runtime, `实时编辑桥接入失败：${message}`] }));
+      setActiveTerminal("runtime");
+      toast(message, "error");
     } finally {
       setAdapterInstallBusy(false);
     }
@@ -3330,12 +3335,14 @@ export function App() {
                 </section>
               ) : centerTab === "runtime" ? (
                 <RuntimeMirror
+                  key={project?.root}
                   runtimeLive={runtimeLive}
                   runtimeBusy={runtimeBusy}
                   runtimeConnected={Boolean(health?.runtimeSessionId)}
                   adapterInstalled={Boolean(health?.runtimeAdapter?.installed)}
                   installBusy={adapterInstallBusy}
                   projectName={project?.name || ""}
+                  projectTitle={makerMeta.title}
                   orientation={previewPanel?.orientation || (makerMeta.orientation === "landscape" ? "landscape" : "portrait")}
                   snapshot={snapshot}
                   snapshotSource={effectiveSource}
@@ -3349,6 +3356,8 @@ export function App() {
                   }}
                   onModeChange={(next) => { if (next !== "play") setMode(next); }}
                   onStart={() => { void runtimeAction("start"); }}
+                  onPermissionAction={runPermissionAction}
+                  permissionBusy={Boolean(permissionBusy)}
                   onInstallAdapter={() => void installRuntimeEditor()}
                   onSelect={selectCanvasNode}
                   onContextMenu={openNodeContextMenu}
@@ -3502,10 +3511,12 @@ export function App() {
                 <PanelResizer orientation="col" label="调节预览坞宽度" onPointerDown={beginLayoutDrag("previewDock", true)} />
                 <aside className="preview-side panel">
                   <PreviewDock
+                    key={project?.root}
                     compact
                     runtimeLive={runtimeLive}
                     panel={previewPanel}
                     projectName={project?.name || ""}
+                    projectTitle={makerMeta.title}
                     desktopAvailable={Boolean(window.tapMakerWork?.desktop && window.tapMakerWork?.preview)}
                     onChanged={setPreviewPanel}
                     onLog={(line) => setLogs((current) => ({ ...current, runtime: [...current.runtime, line] }))}

@@ -1,0 +1,16 @@
+[package]
+name = "tapmakerwork-runtime-index"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = ["napi3"] }
+napi-derive = "3"
+
+[build-dependencies]
+napi-build = "2"

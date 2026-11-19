@@ -649,6 +649,7 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
 .runtime-mirror-empty p { max-width: 360px; margin: 0; font-size: 11px; line-height: 1.55; }
 .runtime-editor-shell { min-height: 0; position: relative; display: grid; place-items: stretch; overflow: hidden; padding: 12px; background: radial-gradient(circle at center, #172033 0%, #080b11 68%); }
 .runtime-editor-shell.runtime-editor-split { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.runtime-editor-shell.runtime-editor-stacked { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 2fr) minmax(0, 1fr); }
 .runtime-editor-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: 27px minmax(0, 1fr); overflow: hidden; border: 1px solid #303b4c; border-radius: 6px; background: #070a10; box-shadow: 0 14px 44px #0007; }
 .runtime-editor-pane > header { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 8px; color: #9eacbf; border-bottom: 1px solid #273142; background: #111722; font-size: 9px; }
 .runtime-editor-pane > header strong { color: #d9e5f5; font-size: 10px; font-weight: 600; }
@@ -1987,7 +1988,7 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
   .workspace { grid-template-columns: 210px minmax(360px, 1fr) 250px; }
   .cockpit-grid { grid-template-columns: 1fr; }
   .stage-rail { grid-template-columns: 1fr; }
-  .runtime-editor-shell.runtime-editor-split { grid-template-columns: 1fr; grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  .runtime-editor-shell.runtime-editor-split:not(.runtime-editor-stacked) { grid-template-columns: 1fr; grid-template-rows: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2279,18 +2280,6 @@ body.resizing-workspace, body.resizing-workspace * { cursor: nwse-resize !import
   margin: 0;
   color: #f0d59a;
   font-size: 12px;
-  line-height: 1.45;
-}
-.runtime-editor-gate-hint {
-  margin: 2px 0 0;
-  grid-column: 1 / -1;
-  padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid #7a3a3a;
-  background: #2a1618f0;
-  color: #ff8f8f;
-  font-size: 15px;
-  font-weight: 600;
   line-height: 1.45;
 }
 .newbie-backdrop { z-index: 2100; }

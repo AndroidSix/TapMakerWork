@@ -26,18 +26,18 @@ export interface AppUpdateManifest {
 }
 
 export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
-  latest: "0.1.10",
-  title: "TapMakerWork 0.1.10",
+  latest: "0.1.11",
+  title: "TapMakerWork 0.1.11",
   notes: [
-    "【修复录屏授权反复失效】0.1.9 的 ad-hoc 签名把授权绑在 cdhash 上，每次重新打包都会变。现已回退为未签名状态，macOS 改按安装路径识别应用，覆盖升级后授权得以保留。",
-    "【新增“重置授权”】旧授权记录已失效时，设置页、授权向导和 Runtime 画布都提供一键重置。",
-    "【提示更准确】不再把“授权记录停在旧版本上”一律说成“未允许录屏”。",
-    "【正式包不再误报开发模式】未签名的正式安装包会提示“按安装位置记录授权”。"
+    "【macOS 安装】请下载对应芯片的 .pkg。安装包未公证，若系统拦截请参考安装说明；升级后可能需要重新授权。",
+    "【实时编辑】兼容更多 Lua Update 写法，识别项目发布标题，停止后不再误连旧会话；接入失败原因写入 Runtime 日志。",
+    "【横屏与授权】连上 Runtime 前保留完整画面，横屏编辑区上下排列；首次录屏只在主动申请时触发，授权重置失败如实提示。",
+    "【性能】减少 Lua 索引重复读取和解析，复用未变化的 Runtime 快照，图片压缩复用已读字节；macOS 可使用 Rust 加速临时目录筛选。"
   ],
   links: [
     {
       label: "完整更新日志",
-      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.10"
+      url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/CHANGELOG.md#release-0.1.11"
     },
     {
       label: "macOS 安装说明",
@@ -48,15 +48,14 @@ export const BUILTIN_UPDATE_MANIFEST: Omit<AppUpdateManifest, "source"> = {
       url: "https://github.com/AndroidSix/TapMakerWork/blob/main/docs/DESKTOP_RELEASE.md#macos-build-from-source"
     }
   ],
-  publishedAt: "2026-11-18",
   force: false,
   downloads: {
-    macArm64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.10/TapMakerWork-0.1.10-mac-arm64.pkg",
-    macX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.10/TapMakerWork-0.1.10-mac-x64.pkg",
-    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.10/TapMakerWork-0.1.10-windows-x64.exe",
-    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.10",
+    macArm64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.11/TapMakerWork-0.1.11-mac-arm64.pkg",
+    macX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.11/TapMakerWork-0.1.11-mac-x64.pkg",
+    windowsX64: "https://github.com/AndroidSix/TapMakerWork/releases/download/v0.1.11/TapMakerWork-0.1.11-windows-x64.exe",
+    page: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.11",
     site: "https://androidsix.github.io/tapmakerwork-site/",
-    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.10"
+    githubPage: "https://github.com/AndroidSix/TapMakerWork/releases/tag/v0.1.11"
   }
 };
 

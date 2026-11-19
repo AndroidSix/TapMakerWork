@@ -8,5 +8,6 @@ coverage/
 work/
 outputs/installers/
 packages/bridge/dist-app/
+packages/bridge/native/runtime-index/target/
 
 .gamealgo/

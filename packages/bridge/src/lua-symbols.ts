@@ -11,7 +11,7 @@ const MAX_SYMBOLS = 20_000;
 const FIELD_PREVIEW_CHARS = 60;
 
 /** luaparse only speaks Lua 5.3; blank out 5.4 `<const>` / `<close>` attributes (same length) so positions stay exact. */
-function maskLua54Attributes(source: string): string {
+export function maskLua54Attributes(source: string): string {
   return source.replace(/<(const|close)>/g, (match) => " ".repeat(match.length));
 }
 

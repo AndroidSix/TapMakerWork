@@ -350,7 +350,7 @@ export function parseWindowsSourceId(sourceId: string | undefined): string | und
   return hwnd;
 }
 
-export function chooseWindowsRuntimeWindow(windows: ListedWindow[], projectName: string, sourceId = "", targetAspect?: number): ListedWindow | undefined {
+export function chooseWindowsRuntimeWindow(windows: ListedWindow[], projectName: string | readonly string[], sourceId = "", targetAspect?: number): ListedWindow | undefined {
   const eligible = windows.filter((item) => item.width >= 80 && item.height >= 80 && !/^TapMakerWork$/i.test(item.title));
   if (sourceId) {
     const hwnd = parseWindowsSourceId(sourceId) || (/^\d{1,20}$/.test(sourceId) ? sourceId : undefined);

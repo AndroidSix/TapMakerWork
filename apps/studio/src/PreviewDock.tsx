@@ -7,6 +7,7 @@ import { useScreenCaptureAllowed } from "./app/screen-permission";
 export interface PreviewDockProps {
   panel: PreviewPanelState | undefined;
   projectName: string;
+  projectTitle?: string | undefined;
   desktopAvailable: boolean;
   compact?: boolean;
   runtimeLive?: boolean;
@@ -20,6 +21,7 @@ export interface PreviewDockProps {
 export function PreviewDock({
   panel,
   projectName,
+  projectTitle,
   desktopAvailable,
   compact = false,
   runtimeLive = false,
@@ -92,7 +94,7 @@ export function PreviewDock({
       if (inFlight || document.hidden) return;
       inFlight = true;
       try {
-        const result = await captureRuntime({ projectName, orientation: panel?.orientation || "portrait" });
+        const result = await captureRuntime({ projectName, ...(projectTitle ? { projectTitle } : {}), orientation: panel?.orientation || "portrait" });
         // 画面未变化时主进程会返回同一份 dataUrl；跳过 setState 避免无谓的重渲染。
         if (active && result.ok && result.dataUrl && result.dataUrl !== lastDataUrl) {
           lastDataUrl = result.dataUrl;
@@ -113,7 +115,7 @@ export function PreviewDock({
     void capture();
     const timer = window.setInterval(capture, 1_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [embeddable, panel?.orientation, projectName, runtimeLive, screenAllowed]);
+  }, [embeddable, panel?.orientation, projectName, projectTitle, runtimeLive, screenAllowed]);
 
   const interactWithRuntime = useCallback(async (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (!runtimeFrame?.sourceId || !runtimeFrame.sourceName || !window.tapMakerWork?.runtime?.interact) return;

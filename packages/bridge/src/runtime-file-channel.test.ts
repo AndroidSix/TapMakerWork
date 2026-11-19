@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   classifyRuntimeProject,
   findRuntimeFileStatus,
@@ -20,6 +20,19 @@ afterEach(() => {
 });
 
 describe("runtime file channel", () => {
+  it("does not reconnect to status files that were written before a stop or heartbeat cutoff", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-channel-"));
+    temporary.push(root);
+    const statusFile = path.join(root, "tapmakerwork-runtime-status.json");
+    fs.writeFileSync(statusFile, JSON.stringify({ sessionId: "old", projectName: "横屏游戏" }));
+    const now = Date.now();
+    fs.utimesSync(statusFile, new Date(now - 60_000), new Date(now - 60_000));
+    const options = { projectName: "横屏游戏", modifiedSince: now - 30_000, previewProjects: new Map() };
+    expect(findRuntimeFileStatus([root], options)?.sessionId).toBeUndefined();
+    fs.writeFileSync(statusFile, JSON.stringify({ sessionId: "new", projectName: "横屏游戏" }));
+    expect(findRuntimeFileStatus([root], options)?.sessionId).toBe("new");
+  });
+
   it("reads a flat Windows savedata status and writes the matching command file", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-channel-"));
     temporary.push(root);
@@ -262,6 +275,54 @@ describe("runtime file channel", () => {
 });
 
 describe("runtime status path cache", () => {
+  it("reuses unchanged snapshot parts, but reloads a replaced part with the same revision and mtime", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-snapshotcache-"));
+    temporary.push(root);
+    const snapshot = path.join(root, "tapmakerwork-runtime-snapshot.json");
+    fs.writeFileSync(path.join(root, "tapmakerwork-runtime-status.json"), '{"sessionId":"s1","revision":1}');
+    const meta = `${snapshot}.meta.json`;
+    const first = `${snapshot}.part01`;
+    const second = `${snapshot}.part02`;
+    fs.writeFileSync(meta, '{"parts":2}');
+    fs.writeFileSync(first, '{"root":{"name":\0');
+    fs.writeFileSync(second, '"first","children":{}}}');
+    const time = new Date("2025-01-01T00:00:00Z");
+    fs.utimesSync(second, time, time);
+    const options = { previewProjects: new Map(), snapshotCache: {} };
+    expect(findRuntimeFileStatus([root], options)?.snapshot).toEqual({ root: { name: "first", children: [] } });
+
+    const read = vi.spyOn(fs, "readFileSync");
+    try {
+      expect(findRuntimeFileStatus([root], options)?.snapshot).toEqual({ root: { name: "first", children: [] } });
+      expect(read.mock.calls.some(([filename]) => filename === first || filename === second || filename === meta)).toBe(false);
+      fs.writeFileSync(`${second}.next`, '"other","children":{}}}');
+      fs.utimesSync(`${second}.next`, time, time);
+      fs.renameSync(`${second}.next`, second);
+      expect(findRuntimeFileStatus([root], options)?.snapshot).toEqual({ root: { name: "other", children: [] } });
+      fs.unlinkSync(second);
+      expect(findRuntimeFileStatus([root], options)?.snapshot).toBeUndefined();
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it("looks up a command target without reading or decoding its snapshot", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-snapshotcache-"));
+    temporary.push(root);
+    const snapshot = path.join(root, "tapmakerwork-runtime-snapshot.json");
+    fs.writeFileSync(path.join(root, "tapmakerwork-runtime-status.json"), '{"sessionId":"s1","cursor":8}');
+    fs.writeFileSync(snapshot, '{"root":{"name":"first","children":[]}}');
+    const read = vi.spyOn(fs, "readFileSync");
+    try {
+      const status = findRuntimeFileStatus([root], { includeSnapshot: false, previewProjects: new Map() });
+      expect(status).toMatchObject({ sessionId: "s1", cursor: 8 });
+      expect(status).not.toHaveProperty("snapshot");
+      expect(read.mock.calls.some(([filename]) => filename === snapshot)).toBe(false);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it("serves fresh file content even when the directory structure is unchanged", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "tapmakerwork-statuscache-"));
     temporary.push(root);

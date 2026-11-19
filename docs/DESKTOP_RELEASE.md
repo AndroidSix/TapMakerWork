@@ -85,7 +85,7 @@ softwareupdate --install-rosetta --agree-to-license
 - **macOS（`.pkg`）**
   - 未签名安装包的常见提示是「无法验证开发者」。双击一次后，**隐私与安全性** 会出现 **「仍要打开」**。点过之后安装器把 App 写到「应用程序」，这份 App 不带下载隔离属性，可以启动。
   - **不要改发 `.dmg` / 从 ZIP 里拖出 `.app`。** 包内 App 完全未签名（`Identifier=Electron`、无 `_CodeSignature`）。Finder 复制时会带上隔离属性，macOS 15 及更新系统会把它当成「已损坏」，并且不提供「仍要打开」。
-  - 屏幕录制 / 辅助功能授权：完全未签名时 macOS 按**安装路径**识别应用（`subject=/Applications/TapMakerWork.app/...`），覆盖升级到同一路径时授权会保留。但**把 App 换到别的目录、或从别的路径启动，就需重新授权一次**。
+  - 屏幕录制 / 辅助功能授权：没有正式开发者签名的 App，升级或移动后可能需要重新授权；安装路径相同不代表系统一定会保留旧授权。系统设置中已开启但 IDE 尚未读到时，先退出并重新启动 App；若应用内「重置授权」失败，请只移除系统设置中这款 App 的旧条目后重试，不要重置其他应用。
   - 旧版（0.1.9）曾用 ad-hoc 补签，身份绑定 cdhash，每次打包都会变，导致系统设置里开关亮着却反复提示没权限。现已回退为完全未签名。
   - 自动更新走 ZIP，同样未公证，不可靠。
 - **Windows（`.exe` NSIS）**
@@ -155,6 +155,18 @@ CI（`.github/workflows/desktop-release.yml`）目前只构建 **Windows**；mac
 5. 应用内更新读取 Gitee Release：把同一批文件上传到 Gitee 的同名 Release，并确认 `version.json` 里的下载直链可访问。
 
 手动运行（`workflow_dispatch`）只产出 Actions 构建产物，不会创建 Release。
+
+### Runtime 临时目录索引（可选 Rust 加速）
+
+macOS / Linux 在存在 Cargo（Rust 1.88+）时，`npm run build:desktop-runtime` 会构建并带上对应架构的 Rust 扫描模块。没有 Cargo、Windows、缺少对应架构产物或原生扫描不支持该路径时，继续走原有 Node 扫描。Apple 芯片机器如果也要给 Intel Mac 打包，可先执行 `rustup target add x86_64-apple-darwin` 和 `npm run build:runtime-index -- x64`。
+
+扫描逻辑仍按原有大小写和顺序匹配 `maker-cache` 前缀，不按目录类型过滤、不缓存列表。仅查询 Maker 的 `preview` 会话时，不再枚举不可能入选的临时目录。测试和基准可按以下方式复跑：
+
+```bash
+npm run build:runtime-index
+TAPMAKERWORK_REQUIRE_RUST_INDEX=1 npm exec -- vitest run packages/bridge/src/runtime-cache-index.test.ts
+npm run bench:runtime-index
+```
 
 ### Signing credentials
 
